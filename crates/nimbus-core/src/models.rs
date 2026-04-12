@@ -43,6 +43,9 @@ pub struct Folder {
     pub delimiter: Option<String>,
     /// IMAP folder attributes (e.g. \Sent, \Trash, \Drafts)
     pub attributes: Vec<String>,
+    /// Number of unseen (unread) messages in this folder.
+    /// `None` if the server didn't respond to the STATUS query.
+    pub unread_count: Option<u32>,
 }
 
 /// Represents a contact from CardDAV / Nextcloud.

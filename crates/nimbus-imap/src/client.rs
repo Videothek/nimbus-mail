@@ -94,7 +94,8 @@ impl ImapClient {
             .await
             .map_err(|e| NimbusError::Protocol(format!("Failed to read folder list: {e}")))?;
 
-        let folders: Vec<Folder> = mailboxes
+        // Build folder list, then query each folder for its unread count.
+        let mut folders: Vec<Folder> = mailboxes
             .iter()
             .map(|mailbox| {
                 let attributes = mailbox
@@ -107,15 +108,35 @@ impl ImapClient {
                     name: mailbox.name().to_string(),
                     delimiter: mailbox.delimiter().map(|d| d.to_string()),
                     attributes,
+                    unread_count: None,
                 }
             })
             .collect();
 
-        info!("Found {} folders", folders.len());
-        for folder in &folders {
-            debug!("  Folder: {} (attrs: {:?})", folder.name, folder.attributes);
+        // For each folder, ask the server for the UNSEEN count via STATUS.
+        // STATUS returns the *number* of unseen messages (unlike SELECT/EXAMINE
+        // where `unseen` is the sequence number of the first unseen message).
+        for folder in &mut folders {
+            match session.status(&folder.name, "(UNSEEN)").await {
+                Ok(mailbox_status) => {
+                    folder.unread_count = mailbox_status.unseen;
+                    debug!(
+                        "  Folder: {} — unread: {:?} (attrs: {:?})",
+                        folder.name, folder.unread_count, folder.attributes
+                    );
+                }
+                Err(e) => {
+                    // Some folders (e.g. \Noselect) don't support STATUS — that's fine,
+                    // we just leave unread_count as None.
+                    debug!(
+                        "  Folder: {} — could not get STATUS: {e} (attrs: {:?})",
+                        folder.name, folder.attributes
+                    );
+                }
+            }
         }
 
+        info!("Found {} folders", folders.len());
         Ok(folders)
     }
 
