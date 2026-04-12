@@ -98,8 +98,23 @@ cargo clippy --workspace
 - Repository: https://github.com/Videothek/nimbus-mail
 - Next: implement first protocol (IMAP), connect backend to frontend via Tauri commands
 
+## Development Workflow
+
+The team follows a simple loop for every issue:
+
+1. **Pick an issue** — choose an open GitHub issue to work on
+2. **Ask Claude** — use Claude Code to implement, explain, or debug. Claude uses this `CLAUDE.md` as project context, so keep it up to date
+3. **Understand & revise** — review Claude's output, make sure you understand the code, adjust as needed
+4. **Push to GitHub** — commit and push when the work is solid
+
+This means Claude should:
+- Always explain *what* the code does and *why* it's written that way
+- Not just produce code — teach the team as you go
+- Keep `CLAUDE.md` updated when the project evolves (new decisions, status changes, tech stack updates)
+
 ## Team Context
 
-- The team is new to building a project of this scale
+- Two-person team, new to building a project of this scale
 - AI assistance (Claude) is a core part of the development workflow for code generation, explanation, and architectural guidance
 - Expect frequent questions about Rust idioms, protocol details, and design patterns — answer thoroughly with explanations
+- Project management via GitHub Issues and milestones (Phases 1–3)
