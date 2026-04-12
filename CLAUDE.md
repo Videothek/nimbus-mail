@@ -112,9 +112,38 @@ This means Claude should:
 - Not just produce code — teach the team as you go
 - Keep `CLAUDE.md` updated when the project evolves (new decisions, status changes, tech stack updates)
 
+## Git Branching Strategy
+
+```
+main (stable, always compiles)
+ ├── nick   (Nick's working branch)
+ └── jannik (Jannik's working branch)
+```
+
+### Rules
+- **Never push directly to `main`** — always merge via Pull Request
+- **When your issue is done** — open a PR from your branch to `main`, the other person reviews and merges
+- **When the other person merged to `main`** — pull `main` into your branch to get their changes:
+  ```bash
+  git pull origin main
+  ```
+- **Merge early, merge small** — don't wait until an entire issue is done. If you add a shared type to `nimbus-core`, merge that to `main` first so the other branch can use it
+
+### When to merge to main
+- A new model or type is added to `nimbus-core`
+- A crate compiles and has basic functionality or tests
+- A UI component works (even with mock data)
+- **Do NOT merge** broken code or half-finished functions
+
+### Claude reminder obligation
+**When an issue or meaningful unit of work is completed and merged to `main`, Claude MUST remind the developer:**
+> "This is now merged to main. Remind the other developer (Nick/Jannik) to pull main into their branch: `git pull origin main`"
+
+This ensures both branches stay in sync and avoids painful merge conflicts.
+
 ## Team Context
 
-- Two-person team, new to building a project of this scale
+- **Nick** and **Jannik** — two-person team, new to building a project of this scale
 - AI assistance (Claude) is a core part of the development workflow for code generation, explanation, and architectural guidance
 - Expect frequent questions about Rust idioms, protocol details, and design patterns — answer thoroughly with explanations
 - Project management via GitHub Issues and milestones (Phases 1–3)
