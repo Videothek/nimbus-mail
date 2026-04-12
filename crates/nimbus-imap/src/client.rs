@@ -3,9 +3,10 @@
 
 use async_imap::Session;
 use async_native_tls::TlsStream;
+use async_std::net::TcpStream;
+use futures::TryStreamExt;
 use nimbus_core::error::NimbusError;
 use nimbus_core::models::Folder;
-use tokio::net::TcpStream;
 use tracing::{debug, info};
 
 /// An authenticated IMAP session, ready to interact with mailboxes.
@@ -85,14 +86,18 @@ impl ImapClient {
         })?;
 
         // LIST "" "*" means: starting from root (""), list all folders ("*")
-        let mailboxes = session.list(Some(""), Some("*")).await.map_err(|e| {
-            NimbusError::Protocol(format!("Failed to list folders: {e}"))
-        })?;
+        // This returns an async Stream, so we collect all results with try_collect().
+        let mailboxes: Vec<_> = session
+            .list(Some(""), Some("*"))
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to list folders: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read folder list: {e}")))?;
 
         let folders: Vec<Folder> = mailboxes
             .iter()
             .map(|mailbox| {
-                // Convert async-imap's NameAttribute flags to strings
                 let attributes = mailbox
                     .attributes()
                     .iter()
