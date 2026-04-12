@@ -15,7 +15,8 @@ A modern, native desktop mail client built in Rust that stands out through deep 
 
 - **Language:** Rust (core logic, protocol handling, backend)
 - **UI Framework:** Tauri 2 (native desktop app with Rust backend + system webview for UI)
-- **Frontend:** Vite + JavaScript/TypeScript (framework TBD — React, Svelte, or SolidJS)
+- **Frontend:** Svelte 5 + TypeScript + Vite
+- **UI Library:** Skeleton UI v3 (Tailwind CSS-based component library, theme: cerberus)
 - **Platform targets:** Windows, macOS, Linux
 
 ## Project Structure
@@ -33,12 +34,12 @@ nimbus-mail/
 │   ├── nimbus-nextcloud/   # Nextcloud API (Talk, Files, OCS)
 │   └── nimbus-store/       # Local storage, caching, keychain
 ├── src-tauri/              # Tauri app (Rust entry point + config)
-└── ui/                     # Frontend (Vite + JS/TS)
+└── ui/                     # Frontend (Svelte 5 + TypeScript + Vite)
     ├── src/
-    │   ├── components/     # Reusable UI components
-    │   ├── views/          # Page-level views (inbox, calendar, etc.)
-    │   ├── stores/         # State management
-    │   └── styles/         # CSS / design tokens
+    │   ├── lib/            # Svelte components
+    │   ├── app.css         # Global styles (Tailwind + Skeleton)
+    │   ├── App.svelte      # Root component
+    │   └── main.ts         # Entry point
     └── public/             # Static assets
 ```
 
@@ -90,11 +91,12 @@ cargo clippy --workspace
 
 ## Project Status
 
-**Phase: Initial scaffolding**
-- Project structure created
-- Workspace with modular crates set up
-- Tauri 2 + Vite frontend scaffolding in place
-- Next: choose frontend framework, implement first protocol (IMAP), build basic UI shell
+**Phase: Scaffolding complete**
+- Rust workspace with modular crates set up
+- Tauri 2 + Svelte 5 + Skeleton UI frontend in place
+- Basic mail client UI shell (sidebar, mail list, reading pane)
+- Repository: https://github.com/Videothek/nimbus-mail
+- Next: implement first protocol (IMAP), connect backend to frontend via Tauri commands
 
 ## Team Context
 

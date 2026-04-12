@@ -1,0 +1,17 @@
+@import 'tailwindcss';
+@import '@skeletonlabs/skeleton';
+@import '@skeletonlabs/skeleton/themes/cerberus';
+
+html,
+body {
+  @apply h-full overflow-hidden;
+  margin: 0;
+}
+
+body {
+  @apply bg-surface-50 text-surface-900 dark:bg-surface-900 dark:text-surface-50;
+}
+
+#app {
+  @apply h-full;
+}
