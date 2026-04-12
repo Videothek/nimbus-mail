@@ -5,5 +5,5 @@
 //! - Nextcloud Files: file sharing and attachment integration
 //! - Nextcloud OCS API: user and capability queries
 
-pub mod talk;
 pub mod files;
+pub mod talk;

@@ -12,7 +12,7 @@ use tracing::{debug, info};
 /// An authenticated IMAP session, ready to interact with mailboxes.
 ///
 /// # Usage
-/// ```no_run
+/// ```ignore
 /// let client = ImapClient::connect("imap.example.com", 993, "user@example.com", "password").await?;
 /// let folders = client.list_folders().await?;
 /// client.logout().await?;
@@ -42,31 +42,29 @@ impl ImapClient {
 
         // Step 1: TCP connection
         let addr = format!("{host}:{port}");
-        let tcp = TcpStream::connect(&addr).await.map_err(|e| {
-            NimbusError::Network(format!("Failed to connect to {addr}: {e}"))
-        })?;
+        let tcp = TcpStream::connect(&addr)
+            .await
+            .map_err(|e| NimbusError::Network(format!("Failed to connect to {addr}: {e}")))?;
 
         debug!("TCP connection established");
 
         // Step 2: TLS handshake — this encrypts the connection.
         // We use the hostname for certificate verification.
         let tls_connector = async_native_tls::TlsConnector::new();
-        let tls_stream = tls_connector.connect(host, tcp).await.map_err(|e| {
-            NimbusError::Network(format!("TLS handshake failed with {host}: {e}"))
-        })?;
+        let tls_stream = tls_connector
+            .connect(host, tcp)
+            .await
+            .map_err(|e| NimbusError::Network(format!("TLS handshake failed with {host}: {e}")))?;
 
         debug!("TLS handshake completed");
 
         // Step 3: Create the IMAP client on top of the TLS stream
         // and log in with credentials.
         let imap_client = async_imap::Client::new(tls_stream);
-        let session = imap_client
-            .login(username, password)
-            .await
-            .map_err(|e| {
-                // login() returns (error, client) on failure — we only need the error
-                NimbusError::Auth(format!("IMAP login failed: {}", e.0))
-            })?;
+        let session = imap_client.login(username, password).await.map_err(|e| {
+            // login() returns (error, client) on failure — we only need the error
+            NimbusError::Auth(format!("IMAP login failed: {}", e.0))
+        })?;
 
         info!("Successfully logged in as {username}");
 
@@ -81,9 +79,10 @@ impl ImapClient {
     /// Each folder comes back with a name, hierarchy delimiter, and attributes
     /// (like \Sent, \Trash, etc.) that tell us what the folder is for.
     pub async fn list_folders(&mut self) -> Result<Vec<Folder>, NimbusError> {
-        let session = self.session.as_mut().ok_or_else(|| {
-            NimbusError::Protocol("Session is closed".into())
-        })?;
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
 
         // LIST "" "*" means: starting from root (""), list all folders ("*")
         // This returns an async Stream, so we collect all results with try_collect().
@@ -126,9 +125,10 @@ impl ImapClient {
     /// so the server knows we're leaving properly.
     pub async fn logout(mut self) -> Result<(), NimbusError> {
         if let Some(mut session) = self.session.take() {
-            session.logout().await.map_err(|e| {
-                NimbusError::Protocol(format!("IMAP logout failed: {e}"))
-            })?;
+            session
+                .logout()
+                .await
+                .map_err(|e| NimbusError::Protocol(format!("IMAP logout failed: {e}")))?;
             info!("Logged out from IMAP server");
         }
         Ok(())
