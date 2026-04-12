@@ -8,3 +8,5 @@ nimbus-core.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+async-imap.workspace = true
+async-native-tls.workspace = true

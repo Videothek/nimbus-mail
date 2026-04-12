@@ -34,6 +34,17 @@ pub struct Email {
     pub has_attachments: bool,
 }
 
+/// Represents an IMAP mailbox folder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Folder {
+    /// Full folder name (e.g. "INBOX", "INBOX/Work")
+    pub name: String,
+    /// Hierarchy delimiter used by the server (e.g. "/" or ".")
+    pub delimiter: Option<String>,
+    /// IMAP folder attributes (e.g. \Sent, \Trash, \Drafts)
+    pub attributes: Vec<String>,
+}
+
 /// Represents a contact from CardDAV / Nextcloud.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Contact {
