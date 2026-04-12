@@ -1,4 +1,10 @@
 <script lang="ts">
+  // Props passed from App.svelte
+  interface Props {
+    onsettings: () => void
+  }
+  let { onsettings }: Props = $props()
+
   const folders = [
     { name: 'Inbox', icon: '📥', count: 12 },
     { name: 'Sent', icon: '📤', count: 0 },
@@ -62,8 +68,14 @@
     {/each}
   </nav>
 
-  <!-- Account info -->
-  <div class="p-3 border-t border-surface-200 dark:border-surface-700 text-xs text-surface-500">
-    <p>user@example.com</p>
+  <!-- Account / Settings -->
+  <div class="p-3 border-t border-surface-200 dark:border-surface-700">
+    <button
+      class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors text-surface-500"
+      onclick={onsettings}
+    >
+      <span>&#9881;</span>
+      <span>Account Settings</span>
+    </button>
   </div>
 </aside>
