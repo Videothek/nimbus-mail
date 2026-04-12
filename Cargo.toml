@@ -16,7 +16,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0"
-repository = "https://github.com/YOUR_USERNAME/nimbus-mail"
+repository = "https://github.com/Videothek/nimbus-mail"
 
 [workspace.dependencies]
 # Async runtime

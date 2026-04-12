@@ -10,7 +10,6 @@
     "beforeBuildCommand": "cd ui && npm run build"
   },
   "app": {
-    "title": "Nimbus Mail",
     "windows": [
       {
         "title": "Nimbus Mail",
