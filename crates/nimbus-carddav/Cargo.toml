@@ -1,0 +1,12 @@
+[package]
+name = "nimbus-carddav"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nimbus-core.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

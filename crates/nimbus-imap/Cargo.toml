@@ -1,0 +1,10 @@
+[package]
+name = "nimbus-imap"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nimbus-core.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

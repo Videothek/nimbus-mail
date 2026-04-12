@@ -1,0 +1,23 @@
+[package]
+name = "nimbus-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nimbus-core.workspace = true
+nimbus-imap.workspace = true
+nimbus-smtp.workspace = true
+nimbus-jmap.workspace = true
+nimbus-caldav.workspace = true
+nimbus-carddav.workspace = true
+nimbus-nextcloud.workspace = true
+nimbus-store.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tauri = { version = "2", features = [] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

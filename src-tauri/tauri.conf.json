@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/packages/tauri-config-schema/schema.json",
+  "productName": "Nimbus",
+  "version": "0.1.0",
+  "identifier": "com.nimbus.mail",
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "cd ui && npm run dev",
+    "beforeBuildCommand": "cd ui && npm run build"
+  },
+  "app": {
+    "title": "Nimbus Mail",
+    "windows": [
+      {
+        "title": "Nimbus Mail",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}
