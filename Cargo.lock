@@ -2561,6 +2561,7 @@ dependencies = [
 name = "nimbus-store"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "nimbus-core",
  "serde",
  "serde_json",

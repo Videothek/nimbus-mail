@@ -2,3 +2,5 @@
 //!
 //! Handles offline storage, caching of emails/contacts/events,
 //! and account credential management via the OS keychain.
+
+pub mod account_store;
