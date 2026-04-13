@@ -1,8 +1,8 @@
 //! SMTP client — connects to a mail server and sends emails.
 
 use lettre::message::{
-    header::ContentType, Attachment as LettreAttachment, Mailbox, MessageBuilder, MultiPart,
-    SinglePart,
+    Attachment as LettreAttachment, Mailbox, MessageBuilder, MultiPart, SinglePart,
+    header::ContentType,
 };
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
@@ -53,18 +53,17 @@ impl SmtpClient {
         } else {
             debug!("Using STARTTLS (port {port})");
             AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
-                .map_err(|e| {
-                    NimbusError::Network(format!("Failed to create STARTTLS relay: {e}"))
-                })?
+                .map_err(|e| NimbusError::Network(format!("Failed to create STARTTLS relay: {e}")))?
                 .port(port)
                 .credentials(credentials)
                 .build()
         };
 
         // Test the connection by verifying we can reach the server.
-        transport.test_connection().await.map_err(|e| {
-            NimbusError::Network(format!("SMTP connection test failed: {e}"))
-        })?;
+        transport
+            .test_connection()
+            .await
+            .map_err(|e| NimbusError::Network(format!("SMTP connection test failed: {e}")))?;
 
         info!("SMTP connection established and authenticated");
 
@@ -88,10 +87,9 @@ impl SmtpClient {
         );
 
         // Parse the sender address into a Mailbox.
-        let from_mailbox: Mailbox = email
-            .from
-            .parse()
-            .map_err(|e| NimbusError::Protocol(format!("Invalid 'from' address '{}': {e}", email.from)))?;
+        let from_mailbox: Mailbox = email.from.parse().map_err(|e| {
+            NimbusError::Protocol(format!("Invalid 'from' address '{}': {e}", email.from))
+        })?;
 
         // Start building the message with From and Subject.
         let mut builder: MessageBuilder = Message::builder()
@@ -100,29 +98,29 @@ impl SmtpClient {
 
         // Add recipients (To, CC, BCC).
         for addr in &email.to {
-            let mailbox: Mailbox = addr
-                .parse()
-                .map_err(|e| NimbusError::Protocol(format!("Invalid 'to' address '{addr}': {e}")))?;
+            let mailbox: Mailbox = addr.parse().map_err(|e| {
+                NimbusError::Protocol(format!("Invalid 'to' address '{addr}': {e}"))
+            })?;
             builder = builder.to(mailbox);
         }
         for addr in &email.cc {
-            let mailbox: Mailbox = addr
-                .parse()
-                .map_err(|e| NimbusError::Protocol(format!("Invalid 'cc' address '{addr}': {e}")))?;
+            let mailbox: Mailbox = addr.parse().map_err(|e| {
+                NimbusError::Protocol(format!("Invalid 'cc' address '{addr}': {e}"))
+            })?;
             builder = builder.cc(mailbox);
         }
         for addr in &email.bcc {
-            let mailbox: Mailbox = addr
-                .parse()
-                .map_err(|e| NimbusError::Protocol(format!("Invalid 'bcc' address '{addr}': {e}")))?;
+            let mailbox: Mailbox = addr.parse().map_err(|e| {
+                NimbusError::Protocol(format!("Invalid 'bcc' address '{addr}': {e}"))
+            })?;
             builder = builder.bcc(mailbox);
         }
 
         // Optional Reply-To header.
         if let Some(reply_to) = &email.reply_to {
-            let mailbox: Mailbox = reply_to
-                .parse()
-                .map_err(|e| NimbusError::Protocol(format!("Invalid 'reply-to' address '{reply_to}': {e}")))?;
+            let mailbox: Mailbox = reply_to.parse().map_err(|e| {
+                NimbusError::Protocol(format!("Invalid 'reply-to' address '{reply_to}': {e}"))
+            })?;
             builder = builder.reply_to(mailbox);
         }
 
@@ -256,8 +254,8 @@ fn build_with_attachments(
             .parse::<ContentType>()
             .unwrap_or(ContentType::parse("application/octet-stream").unwrap());
 
-        let lettre_attachment =
-            LettreAttachment::new(attachment.filename.clone()).body(attachment.data.clone(), content_type);
+        let lettre_attachment = LettreAttachment::new(attachment.filename.clone())
+            .body(attachment.data.clone(), content_type);
 
         mp.singlepart(lettre_attachment)
     });
