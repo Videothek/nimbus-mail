@@ -1,7 +1,8 @@
 # Rust
 /target/
 **/*.rs.bk
-Cargo.lock
+# Note: Cargo.lock is committed because this is an application, not a library.
+# See https://doc.rust-lang.org/cargo/faq.html#why-have-cargolock-in-version-control
 
 # Node / UI
 ui/node_modules/
