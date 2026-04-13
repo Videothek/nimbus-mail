@@ -48,6 +48,48 @@ pub struct Folder {
     pub unread_count: Option<u32>,
 }
 
+/// Represents an email to be composed and sent via SMTP.
+///
+/// Unlike `Email` (which models a received message), this struct
+/// carries only the fields needed for *sending*: recipients, subject,
+/// body (plain text and/or HTML), and optional attachments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutgoingEmail {
+    /// Sender address (e.g. "alice@example.com")
+    pub from: String,
+    /// Primary recipients
+    pub to: Vec<String>,
+    /// Carbon-copy recipients
+    pub cc: Vec<String>,
+    /// Blind carbon-copy recipients
+    pub bcc: Vec<String>,
+    /// Optional Reply-To address (if different from `from`)
+    pub reply_to: Option<String>,
+    /// Subject line
+    pub subject: String,
+    /// Plain-text body (at least one of body_text / body_html should be set)
+    pub body_text: Option<String>,
+    /// HTML body
+    pub body_html: Option<String>,
+    /// File attachments
+    #[serde(skip)]
+    pub attachments: Vec<Attachment>,
+}
+
+/// A file attachment for an outgoing email.
+///
+/// The raw bytes are held in memory. For large files, consider
+/// streaming from disk in the future.
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    /// Display filename (e.g. "report.pdf")
+    pub filename: String,
+    /// MIME type (e.g. "application/pdf")
+    pub content_type: String,
+    /// Raw file contents
+    pub data: Vec<u8>,
+}
+
 /// Represents a contact from CardDAV / Nextcloud.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Contact {
