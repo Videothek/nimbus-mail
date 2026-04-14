@@ -4,10 +4,12 @@
 use async_imap::Session;
 use async_native_tls::TlsStream;
 use async_std::net::TcpStream;
+use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
+use mail_parser::MessageParser;
 use nimbus_core::error::NimbusError;
-use nimbus_core::models::Folder;
-use tracing::{debug, info};
+use nimbus_core::models::{Email, EmailEnvelope, Folder};
+use tracing::{debug, info, warn};
 
 /// An authenticated IMAP session, ready to interact with mailboxes.
 ///
@@ -140,6 +142,277 @@ impl ImapClient {
         Ok(folders)
     }
 
+    /// Select a folder for reading (uses EXAMINE — read-only, no state changes).
+    ///
+    /// In IMAP you must SELECT (or EXAMINE) a folder before you can fetch messages
+    /// from it. EXAMINE is like SELECT but opens the mailbox read-only, so marking
+    /// messages as seen, etc. won't happen as a side effect. Returns the number
+    /// of messages in the folder (the `exists` count from the server).
+    async fn select_folder(&mut self, folder: &str) -> Result<u32, NimbusError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        let mailbox = session.examine(folder).await.map_err(|e| {
+            NimbusError::Protocol(format!("Failed to select folder '{folder}': {e}"))
+        })?;
+
+        debug!("Selected '{folder}' ({} messages)", mailbox.exists);
+        Ok(mailbox.exists)
+    }
+
+    /// Fetch lightweight envelope data for the newest `limit` messages in a folder.
+    ///
+    /// This is what populates the mail list view — it's deliberately cheap:
+    /// no message bodies, just the headers + flags. For a 10,000-message inbox
+    /// we only pull the newest 50 or so at a time.
+    ///
+    /// IMAP messages have two kinds of identifiers:
+    /// - **sequence numbers**: 1..N in current session, change as messages are deleted
+    /// - **UIDs**: stable across sessions — this is what we store and return
+    ///
+    /// We fetch by sequence number (easier to ask "the last 50") but expose the UID.
+    pub async fn fetch_envelopes(
+        &mut self,
+        folder: &str,
+        limit: u32,
+    ) -> Result<Vec<EmailEnvelope>, NimbusError> {
+        let total = self.select_folder(folder).await?;
+        if total == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Take the newest `limit` messages. IMAP sequence numbers start at 1
+        // and higher numbers = newer messages, so we want `start..=total`.
+        let start = total.saturating_sub(limit.saturating_sub(1)).max(1);
+        let range = format!("{start}:{total}");
+
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        // Ask for: UID, flags, internal date, and the envelope (which contains
+        // parsed From/To/Subject/Date already — the server does this work for us).
+        let fetches: Vec<_> = session
+            .fetch(&range, "(UID FLAGS INTERNALDATE ENVELOPE)")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("FETCH failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read FETCH response: {e}")))?;
+
+        let mut envelopes: Vec<EmailEnvelope> = fetches
+            .iter()
+            .filter_map(|fetch| {
+                let uid = fetch.uid?;
+                let envelope = fetch.envelope()?;
+
+                // Subject — decode the RFC 2047 header if needed. async-imap
+                // returns raw bytes; mail-parser's header_to_string handles
+                // the encoded-word decoding for us.
+                let subject = envelope
+                    .subject
+                    .as_ref()
+                    .map(|s| decode_header(s))
+                    .unwrap_or_default();
+
+                // From — take the first address, formatted as "Name <addr>"
+                let from = envelope
+                    .from
+                    .as_ref()
+                    .and_then(|addrs| addrs.first())
+                    .map(format_address)
+                    .unwrap_or_default();
+
+                let date = envelope
+                    .date
+                    .as_ref()
+                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                    .and_then(parse_rfc2822)
+                    .or_else(|| {
+                        fetch.internal_date().map(|dt| {
+                            // INTERNALDATE is a chrono::DateTime<FixedOffset>; convert to UTC
+                            dt.with_timezone(&Utc)
+                        })
+                    })
+                    .unwrap_or_else(Utc::now);
+
+                // Flags: \Seen means read, \Flagged means starred
+                let mut is_read = false;
+                let mut is_starred = false;
+                for flag in fetch.flags() {
+                    match flag {
+                        async_imap::types::Flag::Seen => is_read = true,
+                        async_imap::types::Flag::Flagged => is_starred = true,
+                        _ => {}
+                    }
+                }
+
+                Some(EmailEnvelope {
+                    uid,
+                    folder: folder.to_string(),
+                    from,
+                    subject,
+                    date,
+                    is_read,
+                    is_starred,
+                })
+            })
+            .collect();
+
+        // Server returns oldest-first within our range; reverse so newest is first
+        envelopes.reverse();
+
+        info!("Fetched {} envelopes from '{folder}'", envelopes.len());
+        Ok(envelopes)
+    }
+
+    /// Fetch a single full message (headers + body) by its UID.
+    ///
+    /// This uses UID FETCH BODY.PEEK[] to grab the entire raw RFC 5322 message,
+    /// then hands it to `mail-parser` to split out text/HTML parts, decode
+    /// transfer encodings (base64, quoted-printable), and convert charsets.
+    ///
+    /// BODY.PEEK[] is used instead of BODY[] so the server does NOT mark the
+    /// message as \Seen — we want marking-as-read to be an explicit action.
+    pub async fn fetch_message(
+        &mut self,
+        folder: &str,
+        uid: u32,
+        account_id: &str,
+    ) -> Result<Email, NimbusError> {
+        self.select_folder(folder).await?;
+
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        let fetches: Vec<_> = session
+            .uid_fetch(uid.to_string(), "(UID FLAGS INTERNALDATE BODY.PEEK[])")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID FETCH failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read UID FETCH: {e}")))?;
+
+        let fetch = fetches
+            .into_iter()
+            .next()
+            .ok_or_else(|| NimbusError::Protocol(format!("No message with UID {uid}")))?;
+
+        let raw = fetch
+            .body()
+            .ok_or_else(|| NimbusError::Protocol("FETCH returned no body".into()))?;
+
+        // mail-parser does the heavy lifting: MIME tree, charset decoding, etc.
+        let parsed = MessageParser::default()
+            .parse(raw)
+            .ok_or_else(|| NimbusError::Protocol("Failed to parse message".into()))?;
+
+        let subject = parsed.subject().unwrap_or("").to_string();
+        let from = parsed
+            .from()
+            .and_then(|list| list.first())
+            .map(|addr| {
+                let name = addr.name().unwrap_or("");
+                let email = addr.address().unwrap_or("");
+                if name.is_empty() {
+                    email.to_string()
+                } else {
+                    format!("{name} <{email}>")
+                }
+            })
+            .unwrap_or_default();
+
+        let to = parsed
+            .to()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|a| a.address().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let cc = parsed
+            .cc()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|a| a.address().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // body_text: concatenate all text/plain parts (usually just one).
+        // body_html: same for text/html. Either may be absent.
+        let body_text = (0..parsed.text_body_count())
+            .filter_map(|i| parsed.body_text(i).map(|s| s.to_string()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body_text = if body_text.is_empty() {
+            None
+        } else {
+            Some(body_text)
+        };
+
+        let body_html = (0..parsed.html_body_count())
+            .filter_map(|i| parsed.body_html(i).map(|s| s.to_string()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body_html = if body_html.is_empty() {
+            None
+        } else {
+            Some(body_html)
+        };
+
+        let has_attachments = parsed.attachment_count() > 0;
+
+        let date = parsed
+            .date()
+            .and_then(|d| {
+                // mail_parser::DateTime -> RFC3339 string -> chrono
+                DateTime::parse_from_rfc3339(&d.to_rfc3339())
+                    .ok()
+                    .map(|dt| dt.with_timezone(&Utc))
+            })
+            .or_else(|| fetch.internal_date().map(|dt| dt.with_timezone(&Utc)))
+            .unwrap_or_else(Utc::now);
+
+        let mut is_read = false;
+        let mut is_starred = false;
+        for flag in fetch.flags() {
+            match flag {
+                async_imap::types::Flag::Seen => is_read = true,
+                async_imap::types::Flag::Flagged => is_starred = true,
+                _ => {}
+            }
+        }
+
+        info!(
+            "Fetched message UID {uid} from '{folder}' ({} bytes, {} attachments)",
+            raw.len(),
+            parsed.attachment_count()
+        );
+
+        Ok(Email {
+            id: format!("{folder}:{uid}"),
+            account_id: account_id.to_string(),
+            folder: folder.to_string(),
+            from,
+            to,
+            cc,
+            subject,
+            body_text,
+            body_html,
+            date,
+            is_read,
+            is_starred,
+            has_attachments,
+        })
+    }
+
     /// Log out from the IMAP server and close the connection cleanly.
     ///
     /// Always call this when you're done — it sends the LOGOUT command
@@ -153,5 +426,61 @@ impl ImapClient {
             info!("Logged out from IMAP server");
         }
         Ok(())
+    }
+}
+
+// ── Helpers ────────────────────────────────────────────────────
+
+/// Decode a possibly RFC 2047-encoded header value (e.g. `=?UTF-8?B?...?=`).
+fn decode_header(bytes: &[u8]) -> String {
+    // We reuse mail-parser's header decoding by wrapping the value in a
+    // fake "Subject:" header and parsing. This handles encoded-word decoding
+    // for us. If parsing fails, fall back to lossy UTF-8.
+    let raw = format!("Subject: {}\r\n\r\n", String::from_utf8_lossy(bytes));
+    MessageParser::default()
+        .parse(raw.as_bytes())
+        .and_then(|m| m.subject().map(str::to_string))
+        .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())
+}
+
+/// Format an IMAP envelope address as "Name <user@host>" (or just the address).
+fn format_address(addr: &async_imap::imap_proto::types::Address<'_>) -> String {
+    let name = addr
+        .name
+        .as_ref()
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .unwrap_or("");
+    let mailbox = addr
+        .mailbox
+        .as_ref()
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .unwrap_or("");
+    let host = addr
+        .host
+        .as_ref()
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .unwrap_or("");
+
+    let email = if mailbox.is_empty() || host.is_empty() {
+        String::new()
+    } else {
+        format!("{mailbox}@{host}")
+    };
+
+    match (name.is_empty(), email.is_empty()) {
+        (true, _) => email,
+        (false, true) => decode_header(name.as_bytes()),
+        (false, false) => format!("{} <{email}>", decode_header(name.as_bytes())),
+    }
+}
+
+/// Parse an RFC 2822 date string (as found in Date: headers) to chrono UTC.
+fn parse_rfc2822(s: &str) -> Option<DateTime<Utc>> {
+    match DateTime::parse_from_rfc2822(s) {
+        Ok(dt) => Some(dt.with_timezone(&Utc)),
+        Err(e) => {
+            warn!("Failed to parse date '{s}': {e}");
+            None
+        }
     }
 }

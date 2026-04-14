@@ -43,6 +43,8 @@ async-std = { version = "1.13", features = ["attributes"] }
 futures = "0.3"
 # SMTP
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+# MIME / email parsing (headers, bodies, encodings)
+mail-parser = "0.11"
 # Internal crates
 nimbus-core = { path = "crates/nimbus-core" }
 nimbus-imap = { path = "crates/nimbus-imap" }

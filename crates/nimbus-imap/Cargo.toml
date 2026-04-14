@@ -12,3 +12,5 @@ async-imap.workspace = true
 async-native-tls.workspace = true
 async-std.workspace = true
 futures.workspace = true
+mail-parser.workspace = true
+chrono.workspace = true
