@@ -16,6 +16,25 @@ pub struct Account {
     pub use_jmap: bool,
 }
 
+/// Lightweight email metadata for list views.
+///
+/// This is what we fetch when populating the mail list sidebar — just
+/// enough to render a row. Full body / HTML / attachments come from
+/// a separate `fetch_message` call when the user clicks an email.
+///
+/// `uid` is the IMAP UID within the folder and uniquely identifies the
+/// message across sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailEnvelope {
+    pub uid: u32,
+    pub folder: String,
+    pub from: String,
+    pub subject: String,
+    pub date: DateTime<Utc>,
+    pub is_read: bool,
+    pub is_starred: bool,
+}
+
 /// Represents an email message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Email {

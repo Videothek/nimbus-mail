@@ -7,8 +7,8 @@
 
 use std::path::PathBuf;
 
-use nimbus_core::models::Account;
 use nimbus_core::NimbusError;
+use nimbus_core::models::Account;
 use tracing::{debug, info};
 
 /// Returns the path to the accounts JSON file.
@@ -31,7 +31,10 @@ pub fn load_accounts() -> Result<Vec<Account>, NimbusError> {
     let path = accounts_file_path()?;
 
     if !path.exists() {
-        debug!("No accounts file found at {}, returning empty list", path.display());
+        debug!(
+            "No accounts file found at {}, returning empty list",
+            path.display()
+        );
         return Ok(Vec::new());
     }
 
@@ -41,7 +44,11 @@ pub fn load_accounts() -> Result<Vec<Account>, NimbusError> {
     let accounts: Vec<Account> = serde_json::from_str(&data)
         .map_err(|e| NimbusError::Storage(format!("failed to parse accounts file: {e}")))?;
 
-    info!("Loaded {} account(s) from {}", accounts.len(), path.display());
+    info!(
+        "Loaded {} account(s) from {}",
+        accounts.len(),
+        path.display()
+    );
     Ok(accounts)
 }
 
@@ -77,7 +84,10 @@ pub fn add_account(account: Account) -> Result<(), NimbusError> {
         )));
     }
 
-    info!("Adding account '{}' ({})", account.display_name, account.email);
+    info!(
+        "Adding account '{}' ({})",
+        account.display_name, account.email
+    );
     accounts.push(account);
     save_accounts(&accounts)
 }
@@ -89,7 +99,9 @@ pub fn remove_account(id: &str) -> Result<(), NimbusError> {
     accounts.retain(|a| a.id != id);
 
     if accounts.len() == before {
-        return Err(NimbusError::Storage(format!("no account found with id '{id}'")));
+        return Err(NimbusError::Storage(format!(
+            "no account found with id '{id}'"
+        )));
     }
 
     info!("Removed account '{id}'");
@@ -103,9 +115,14 @@ pub fn update_account(updated: Account) -> Result<(), NimbusError> {
     let existing = accounts
         .iter_mut()
         .find(|a| a.id == updated.id)
-        .ok_or_else(|| NimbusError::Storage(format!("no account found with id '{}'", updated.id)))?;
+        .ok_or_else(|| {
+            NimbusError::Storage(format!("no account found with id '{}'", updated.id))
+        })?;
 
-    info!("Updating account '{}' ({})", updated.display_name, updated.email);
+    info!(
+        "Updating account '{}' ({})",
+        updated.display_name, updated.email
+    );
     *existing = updated;
     save_accounts(&accounts)
 }
@@ -131,7 +148,10 @@ mod tests {
     #[test]
     fn accounts_file_path_is_valid() {
         let path = accounts_file_path().expect("should resolve path");
-        assert!(path.ends_with("nimbus-mail/accounts.json") || path.ends_with("nimbus-mail\\accounts.json"));
+        assert!(
+            path.ends_with("nimbus-mail/accounts.json")
+                || path.ends_with("nimbus-mail\\accounts.json")
+        );
     }
 
     #[test]

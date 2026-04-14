@@ -6,8 +6,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use nimbus_core::models::Account;
 use nimbus_core::NimbusError;
+use nimbus_core::models::Account;
 use nimbus_store::account_store;
 
 // ── Tauri commands ──────────────────────────────────────────────
