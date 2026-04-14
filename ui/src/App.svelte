@@ -24,6 +24,13 @@
   type View = 'loading' | 'setup' | 'inbox' | 'settings'
   let currentView = $state<View>('loading')
 
+  // ── Inbox state ─────────────────────────────────────────────
+  // The active account (first configured one for now — multi-account
+  // switching comes later) and the currently selected message UID.
+  // Kept at the App level so MailList and MailView stay in sync.
+  let activeAccountId = $state<string | null>(null)
+  let selectedUid = $state<number | null>(null)
+
   // ── Check for existing accounts on startup ──────────────────
   // This runs once when the component mounts. It calls get_accounts
   // to see if the user has already configured an email account.
@@ -33,8 +40,13 @@
 
   async function checkAccounts() {
     try {
-      const accounts = await invoke<any[]>('get_accounts')
-      currentView = accounts.length > 0 ? 'inbox' : 'setup'
+      const accounts = await invoke<Array<{ id: string }>>('get_accounts')
+      if (accounts.length > 0) {
+        activeAccountId = accounts[0].id
+        currentView = 'inbox'
+      } else {
+        currentView = 'setup'
+      }
     } catch {
       // If we can't load accounts (e.g. first launch, file doesn't exist),
       // show the setup wizard
@@ -55,9 +67,15 @@
     currentView = 'settings'
   }
 
-  function onSetupComplete() {
-    // After adding an account, go to the inbox
+  async function onSetupComplete() {
+    // After adding an account, refresh the account list so we pick
+    // up the new account's ID, then switch to the inbox.
+    await checkAccounts()
     currentView = 'inbox'
+  }
+
+  function selectMessage(uid: number) {
+    selectedUid = uid
   }
 </script>
 
@@ -76,10 +94,18 @@
   <AccountSettings onclose={goToInbox} onaddaccount={goToSetup} />
 
 <!-- Main inbox: the 3-panel mail client layout -->
-{:else}
+{:else if activeAccountId}
   <div class="h-full flex">
     <Sidebar onsettings={goToSettings} />
-    <MailList />
-    <MailView />
+    <MailList
+      accountId={activeAccountId}
+      selectedUid={selectedUid}
+      onselect={selectMessage}
+    />
+    <MailView accountId={activeAccountId} uid={selectedUid} />
+  </div>
+{:else}
+  <div class="h-full flex items-center justify-center bg-surface-50 dark:bg-surface-900">
+    <p class="text-surface-500">No account selected.</p>
   </div>
 {/if}

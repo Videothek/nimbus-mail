@@ -33,6 +33,7 @@
   // ── Form fields ─────────────────────────────────────────────
   let displayName = $state('')
   let email = $state('')
+  let password = $state('')     // stored in the OS keychain, never on disk
   let imapHost = $state('')
   let imapPort = $state(993)    // 993 = standard IMAP-over-TLS port
   let smtpHost = $state('')
@@ -48,8 +49,8 @@
       error = 'Please fill in your name and email address.'
       return
     }
-    if (step === 1 && !imapHost.trim()) {
-      error = 'Please enter your IMAP server hostname.'
+    if (step === 1 && (!imapHost.trim() || !password)) {
+      error = 'Please enter your IMAP server hostname and password.'
       return
     }
     if (step === 2 && !smtpHost.trim()) {
@@ -87,7 +88,9 @@
       // (and Tauri's webview).
       const id = crypto.randomUUID()
 
-      // Call the Rust backend to save this account
+      // Call the Rust backend to save this account. The password is
+      // handed over as a separate argument so the Rust side can stash
+      // it in the OS keychain — it never gets written to accounts.json.
       await invoke('add_account', {
         account: {
           id,
@@ -99,6 +102,7 @@
           smtp_port: smtpPort,
           use_jmap: useJmap,
         },
+        password,
       })
 
       // Success! Tell the parent component to switch to inbox
@@ -188,6 +192,19 @@
               bind:value={imapPort}
               class="input w-full mt-1 px-3 py-2 rounded-md"
             />
+          </label>
+          <label class="block mb-4">
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Password</span>
+            <input
+              type="password"
+              bind:value={password}
+              placeholder="Your IMAP/SMTP password"
+              class="input w-full mt-1 px-3 py-2 rounded-md"
+              autocomplete="current-password"
+            />
+            <span class="block text-xs text-surface-500 mt-1">
+              Stored securely in your OS keychain — never written to disk in plain text.
+            </span>
           </label>
         </div>
 

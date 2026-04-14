@@ -1,48 +1,135 @@
 <script lang="ts">
-  // Placeholder content for the reading pane
+  /**
+   * MailView — the right-hand reading pane.
+   *
+   * Given an account + folder + UID, calls `fetch_message` to pull the
+   * full message (headers + body) from the IMAP server. Renders plain
+   * text if we have it, otherwise falls back to the HTML body inside a
+   * sandboxed iframe (to keep any remote-content / scripts in the mail
+   * isolated from the app).
+   */
+
+  import { invoke } from '@tauri-apps/api/core'
+  import { formatError } from './errors'
+
+  interface Email {
+    id: string
+    account_id: string
+    folder: string
+    from: string
+    to: string[]
+    cc: string[]
+    subject: string
+    body_text: string | null
+    body_html: string | null
+    date: string
+    is_read: boolean
+    is_starred: boolean
+    has_attachments: boolean
+  }
+
+  interface Props {
+    accountId: string
+    folder?: string
+    uid: number | null
+  }
+  let { accountId, folder = 'INBOX', uid }: Props = $props()
+
+  let email = $state<Email | null>(null)
+  let loading = $state(false)
+  let error = $state('')
+
+  $effect(() => {
+    if (uid == null) {
+      email = null
+      return
+    }
+    void load(accountId, folder, uid)
+  })
+
+  async function load(id: string, f: string, u: number) {
+    loading = true
+    error = ''
+    email = null
+    try {
+      email = await invoke<Email>('fetch_message', {
+        accountId: id,
+        folder: f,
+        uid: u,
+      })
+    } catch (e: any) {
+      error = formatError(e) || 'Failed to load message'
+    } finally {
+      loading = false
+    }
+  }
+
+  function formatFullDate(iso: string): string {
+    return new Date(iso).toLocaleString()
+  }
 </script>
 
 <main class="flex-1 flex flex-col overflow-hidden">
-  <!-- Email header -->
-  <div class="p-6 border-b border-surface-200 dark:border-surface-700">
-    <div class="flex items-start justify-between mb-2">
-      <h2 class="text-xl font-semibold">Project kickoff meeting</h2>
-      <span class="text-sm text-surface-500">10:30 AM</span>
+  {#if uid == null}
+    <div class="flex-1 flex items-center justify-center text-surface-500">
+      Select a message to read.
     </div>
-    <div class="flex items-center gap-2 text-sm text-surface-600 dark:text-surface-400">
-      <span class="font-medium">Alice Johnson</span>
-      <span>&lt;alice@example.com&gt;</span>
+  {:else if loading}
+    <div class="flex-1 flex items-center justify-center text-surface-500">Loading message…</div>
+  {:else if error}
+    <div class="p-6 text-sm text-red-500">{error}</div>
+  {:else if email}
+    <!-- Email header -->
+    <div class="p-6 border-b border-surface-200 dark:border-surface-700">
+      <div class="flex items-start justify-between mb-2 gap-4">
+        <h2 class="text-xl font-semibold">{email.subject || '(no subject)'}</h2>
+        <span class="text-sm text-surface-500 shrink-0">{formatFullDate(email.date)}</span>
+      </div>
+      <div class="flex items-center gap-2 text-sm text-surface-600 dark:text-surface-400">
+        <span class="font-medium">{email.from || '(unknown sender)'}</span>
+      </div>
+      {#if email.to.length > 0}
+        <div class="text-xs text-surface-500 mt-1">
+          To: {email.to.join(', ')}
+        </div>
+      {/if}
+      {#if email.cc.length > 0}
+        <div class="text-xs text-surface-500">
+          Cc: {email.cc.join(', ')}
+        </div>
+      {/if}
     </div>
-    <div class="text-xs text-surface-500 mt-1">
-      To: me, team@example.com
-    </div>
-  </div>
 
-  <!-- Action bar -->
-  <div class="flex items-center gap-2 px-6 py-2 border-b border-surface-200 dark:border-surface-700 text-sm">
-    <button class="btn btn-sm preset-outlined-surface-500">Reply</button>
-    <button class="btn btn-sm preset-outlined-surface-500">Reply All</button>
-    <button class="btn btn-sm preset-outlined-surface-500">Forward</button>
-    <div class="flex-1"></div>
-    <button class="btn btn-sm preset-outlined-surface-500">Archive</button>
-    <button class="btn btn-sm preset-outlined-surface-500">Delete</button>
-  </div>
-
-  <!-- Email body -->
-  <div class="flex-1 overflow-y-auto p-6">
-    <div class="prose dark:prose-invert max-w-none">
-      <p>Hi team,</p>
-      <p>
-        I'd like to schedule our project kickoff meeting for next week.
-        Please let me know your availability for Monday or Tuesday afternoon.
-      </p>
-      <p>
-        We'll cover the project scope, timeline, and assign initial tasks.
-        I've shared the project brief on Nextcloud — you can find it in the
-        shared "Nimbus" folder.
-      </p>
-      <p>Looking forward to getting started!</p>
-      <p>Best,<br />Alice</p>
+    <!-- Action bar -->
+    <div class="flex items-center gap-2 px-6 py-2 border-b border-surface-200 dark:border-surface-700 text-sm">
+      <button class="btn btn-sm preset-outlined-surface-500">Reply</button>
+      <button class="btn btn-sm preset-outlined-surface-500">Reply All</button>
+      <button class="btn btn-sm preset-outlined-surface-500">Forward</button>
+      <div class="flex-1"></div>
+      <button class="btn btn-sm preset-outlined-surface-500">Archive</button>
+      <button class="btn btn-sm preset-outlined-surface-500">Delete</button>
     </div>
-  </div>
+
+    <!-- Email body -->
+    <div class="flex-1 overflow-y-auto p-6">
+      {#if email.body_text}
+        <!-- Prefer plain text: safe, simple, no remote content. -->
+        <pre class="whitespace-pre-wrap font-sans text-sm">{email.body_text}</pre>
+      {:else if email.body_html}
+        <!--
+          HTML-only messages go in a sandboxed iframe. `sandbox=""` (no
+          allow-* tokens) disables scripts, form submission, same-origin,
+          and top-navigation — so even malicious mail can't attack the app.
+        -->
+        <iframe
+          title="Message body"
+          class="w-full h-full border-0 bg-white"
+          sandbox=""
+          srcdoc={email.body_html}
+        ></iframe>
+      {:else}
+        <p class="text-sm text-surface-500">(This message has no visible body.)</p>
+      {/if}
+    </div>
+  {/if}
 </main>

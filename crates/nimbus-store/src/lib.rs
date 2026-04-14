@@ -4,3 +4,4 @@
 //! and account credential management via the OS keychain.
 
 pub mod account_store;
+pub mod credentials;
