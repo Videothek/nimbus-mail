@@ -36,6 +36,8 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 chrono = { version = "0.4", features = ["serde"] }
 # App data directories
 dirs = "6"
+# OS keychain access (Credential Manager / Keychain / Secret Service)
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 # IMAP
 async-imap = "0.10"
 async-native-tls = "0.5"

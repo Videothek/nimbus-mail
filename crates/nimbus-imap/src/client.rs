@@ -158,7 +158,7 @@ impl ImapClient {
             NimbusError::Protocol(format!("Failed to select folder '{folder}': {e}"))
         })?;
 
-        debug!("Selected '{folder}' ({} messages)", mailbox.exists);
+        info!("Selected '{folder}' ({} messages)", mailbox.exists);
         Ok(mailbox.exists)
     }
 
