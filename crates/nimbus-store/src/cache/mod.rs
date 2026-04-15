@@ -151,11 +151,7 @@ impl Cache {
     /// so we wipe-and-reinsert inside a transaction rather than trying to
     /// diff. The folder list is small (dozens of rows at most) so this
     /// is effectively free.
-    pub fn upsert_folders(
-        &self,
-        account_id: &str,
-        folders: &[Folder],
-    ) -> Result<(), CacheError> {
+    pub fn upsert_folders(&self, account_id: &str, folders: &[Folder]) -> Result<(), CacheError> {
         let mut conn = self.pool.get()?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM folders WHERE account_id = ?1", [account_id])?;
@@ -176,7 +172,10 @@ impl Cache {
             }
         }
         tx.commit()?;
-        debug!("Cached {} folders for account '{account_id}'", folders.len());
+        debug!(
+            "Cached {} folders for account '{account_id}'",
+            folders.len()
+        );
         Ok(())
     }
 
@@ -197,8 +196,7 @@ impl Cache {
         )?;
         let rows = stmt.query_map(params![account_id], |r| {
             let attrs_json: String = r.get(2)?;
-            let attributes: Vec<String> =
-                serde_json::from_str(&attrs_json).unwrap_or_default();
+            let attributes: Vec<String> = serde_json::from_str(&attrs_json).unwrap_or_default();
             let unread: Option<i64> = r.get(3)?;
             Ok(Folder {
                 name: r.get(0)?,
@@ -294,10 +292,7 @@ impl Cache {
         )?;
         let rows = stmt.query_map(params![account_id, folder, limit as i64], |r| {
             let ts: i64 = r.get(4)?;
-            let date = Utc
-                .timestamp_opt(ts, 0)
-                .single()
-                .unwrap_or_else(Utc::now);
+            let date = Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now);
             Ok(EmailEnvelope {
                 uid: r.get::<_, i64>(0)? as u32,
                 folder: r.get(1)?,
@@ -314,6 +309,27 @@ impl Cache {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// Mark a cached envelope as read (sets `is_read = 1`).
+    ///
+    /// Used by the "mark as read when opened" path: we flip the local
+    /// cache immediately so the UI reflects the change without waiting
+    /// for the network round-trip to the IMAP server. If the row isn't
+    /// cached yet (message was never listed), this is a no-op.
+    pub fn mark_envelope_read(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+    ) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "UPDATE messages SET is_read = 1
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64],
+        )?;
+        Ok(())
     }
 
     // ── Message bodies ──────────────────────────────────────────
@@ -362,10 +378,8 @@ impl Cache {
         // Addresses are stored as JSON arrays — see the v1 → v2 migration
         // note. `unwrap_or_else` fallbacks are defensive; serde_json on a
         // Vec<String> can only fail if allocation fails.
-        let to_json =
-            serde_json::to_string(&email.to).unwrap_or_else(|_| "[]".into());
-        let cc_json =
-            serde_json::to_string(&email.cc).unwrap_or_else(|_| "[]".into());
+        let to_json = serde_json::to_string(&email.to).unwrap_or_else(|_| "[]".into());
+        let cc_json = serde_json::to_string(&email.cc).unwrap_or_else(|_| "[]".into());
 
         tx.execute(
             "INSERT INTO message_bodies
@@ -431,10 +445,7 @@ impl Cache {
                 params![account_id, folder, uid as i64],
                 |r| {
                     let ts: i64 = r.get(2)?;
-                    let date = Utc
-                        .timestamp_opt(ts, 0)
-                        .single()
-                        .unwrap_or_else(Utc::now);
+                    let date = Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now);
                     let to_json: String = r.get(8)?;
                     let cc_json: String = r.get(9)?;
                     Ok(Email {
@@ -479,8 +490,7 @@ impl Cache {
                     Ok(SyncState {
                         uidvalidity: uv.map(|v| v as u32),
                         highest_uid_seen: hi.map(|v| v as u32),
-                        last_synced_at: ts
-                            .and_then(|t| Utc.timestamp_opt(t, 0).single()),
+                        last_synced_at: ts.and_then(|t| Utc.timestamp_opt(t, 0).single()),
                     })
                 },
             )
@@ -756,9 +766,6 @@ mod tests {
         assert_eq!(got.uidvalidity, Some(1234));
         assert_eq!(got.highest_uid_seen, Some(99));
         // Timestamps round-trip to whole seconds.
-        assert_eq!(
-            got.last_synced_at.unwrap().timestamp(),
-            now.timestamp()
-        );
+        assert_eq!(got.last_synced_at.unwrap().timestamp(), now.timestamp());
     }
 }

@@ -164,9 +164,8 @@ pub fn run_migrations(conn: &mut Connection) -> Result<(), CacheError> {
             .transaction()
             .map_err(|e| CacheError::Migration(format!("begin tx: {e}")))?;
 
-        tx.execute_batch(sql).map_err(|e| {
-            CacheError::Migration(format!("migration v{} → v{}: {e}", i, i + 1))
-        })?;
+        tx.execute_batch(sql)
+            .map_err(|e| CacheError::Migration(format!("migration v{} → v{}: {e}", i, i + 1)))?;
 
         tx.execute(
             "UPDATE schema_version SET version = ?1 WHERE id = 1",

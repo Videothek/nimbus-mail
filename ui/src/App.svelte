@@ -17,6 +17,7 @@
   import MailView from './lib/MailView.svelte'
   import AccountSetup from './lib/AccountSetup.svelte'
   import AccountSettings from './lib/AccountSettings.svelte'
+  import Compose, { type ComposeInitial } from './lib/Compose.svelte'
 
   // ── View state ──────────────────────────────────────────────
   // Which view is currently shown. Starts as 'loading' until we
@@ -29,10 +30,16 @@
   // switching comes later) and the currently selected message UID.
   // Kept at the App level so MailList and MailView stay in sync.
   let activeAccountId = $state<string | null>(null)
+  let activeAccountEmail = $state<string>('')
+  // Compose modal: `null` = closed. When open, carries a (possibly empty)
+  // initial prefill for reply / reply-all / forward.
+  let composeInitial = $state<ComposeInitial | null>(null)
   // Default to INBOX — the Sidebar replaces this as soon as the user
   // picks a folder, or could switch it automatically if INBOX is absent.
   let selectedFolder = $state<string>('INBOX')
   let selectedUid = $state<number | null>(null)
+  // Bumped to force child lists to re-fetch (manual refresh, mark-as-read).
+  let refreshToken = $state(0)
 
   // ── Check for existing accounts on startup ──────────────────
   // This runs once when the component mounts. It calls get_accounts
@@ -43,9 +50,10 @@
 
   async function checkAccounts() {
     try {
-      const accounts = await invoke<Array<{ id: string }>>('get_accounts')
+      const accounts = await invoke<Array<{ id: string; email: string }>>('get_accounts')
       if (accounts.length > 0) {
         activeAccountId = accounts[0].id
+        activeAccountEmail = accounts[0].email
         currentView = 'inbox'
       } else {
         currentView = 'setup'
@@ -88,6 +96,81 @@
     selectedFolder = name
     selectedUid = null
   }
+
+  // Triggered by the sidebar's refresh button.
+  function refreshAll() {
+    refreshToken++
+  }
+
+  // MailView fires this after it successfully marks a message \Seen on
+  // the server. Bumping the token makes MailList + Sidebar re-fetch so
+  // the bold "unread" styling and the folder badge update immediately.
+  function onMessageRead(_uid: number) {
+    refreshToken++
+  }
+
+  // Open the Compose modal. Called with no arg for a blank new message,
+  // or with a prefill for reply/reply-all/forward.
+  function openCompose(initial: ComposeInitial = {}) {
+    composeInitial = initial
+  }
+
+  function closeCompose() {
+    composeInitial = null
+  }
+
+  // Build a quoted reply body — RFC 3676 style "> " prefix on each line.
+  function quoteBody(from: string, date: string, body: string | null): string {
+    const quoted = (body ?? '')
+      .split('\n')
+      .map((l) => `> ${l}`)
+      .join('\n')
+    return `\n\nOn ${new Date(date).toLocaleString()}, ${from} wrote:\n${quoted}`
+  }
+
+  function replySubject(s: string): string {
+    return /^re:/i.test(s) ? s : `Re: ${s}`
+  }
+
+  function forwardSubject(s: string): string {
+    return /^fwd?:/i.test(s) ? s : `Fwd: ${s}`
+  }
+
+  type OpenMail = {
+    from: string
+    to: string[]
+    cc: string[]
+    subject: string
+    body_text: string | null
+    date: string
+  }
+
+  function onReply(mail: OpenMail) {
+    openCompose({
+      to: mail.from,
+      subject: replySubject(mail.subject),
+      body: quoteBody(mail.from, mail.date, mail.body_text),
+    })
+  }
+
+  function onReplyAll(mail: OpenMail) {
+    const others = [...mail.to, ...mail.cc].filter(
+      (a) => a && a.toLowerCase() !== activeAccountEmail.toLowerCase(),
+    )
+    openCompose({
+      to: mail.from,
+      cc: others.join(', '),
+      subject: replySubject(mail.subject),
+      body: quoteBody(mail.from, mail.date, mail.body_text),
+    })
+  }
+
+  function onForward(mail: OpenMail) {
+    openCompose({
+      subject: forwardSubject(mail.subject),
+      body: `\n\n---------- Forwarded message ----------\nFrom: ${mail.from}\nDate: ${new Date(mail.date).toLocaleString()}\nSubject: ${mail.subject}\n\n${mail.body_text ?? ''}`,
+    })
+  }
 </script>
 
 <!-- Loading state: shown briefly while we check for accounts -->
@@ -110,16 +193,36 @@
     <Sidebar
       accountId={activeAccountId}
       selectedFolder={selectedFolder}
+      refreshToken={refreshToken}
       onselectfolder={selectFolder}
       onsettings={goToSettings}
+      onrefresh={refreshAll}
+      oncompose={() => openCompose()}
     />
     <MailList
       accountId={activeAccountId}
       folder={selectedFolder}
       selectedUid={selectedUid}
+      refreshToken={refreshToken}
       onselect={selectMessage}
     />
-    <MailView accountId={activeAccountId} folder={selectedFolder} uid={selectedUid} />
+    <MailView
+      accountId={activeAccountId}
+      folder={selectedFolder}
+      uid={selectedUid}
+      onread={onMessageRead}
+      onreply={onReply}
+      onreplyall={onReplyAll}
+      onforward={onForward}
+    />
+    {#if composeInitial !== null}
+      <Compose
+        accountId={activeAccountId}
+        fromAddress={activeAccountEmail}
+        initial={composeInitial}
+        onclose={closeCompose}
+      />
+    {/if}
   </div>
 {:else}
   <div class="h-full flex items-center justify-center bg-surface-50 dark:bg-surface-900">

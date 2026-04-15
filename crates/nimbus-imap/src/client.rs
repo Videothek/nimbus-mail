@@ -231,9 +231,7 @@ impl ImapClient {
                     .map_err(|e| NimbusError::Protocol(format!("UID FETCH failed: {e}")))?
                     .try_collect()
                     .await
-                    .map_err(|e| {
-                        NimbusError::Protocol(format!("Failed to read UID FETCH: {e}"))
-                    })?
+                    .map_err(|e| NimbusError::Protocol(format!("Failed to read UID FETCH: {e}")))?
             }
             None => {
                 // Newest `limit` by sequence number. Higher seq = newer.
@@ -471,6 +469,36 @@ impl ImapClient {
             is_starred,
             has_attachments,
         })
+    }
+
+    /// Mark a message as read by setting the `\Seen` flag on the server.
+    ///
+    /// Uses `UID STORE <uid> +FLAGS (\Seen)` — idempotent, so calling it on
+    /// an already-read message is a no-op. We SELECT (not EXAMINE) here
+    /// because EXAMINE opens the folder read-only and rejects STORE.
+    pub async fn mark_as_read(&mut self, folder: &str, uid: u32) -> Result<(), NimbusError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        // Read-write SELECT so the server accepts the STORE.
+        session.select(folder).await.map_err(|e| {
+            NimbusError::Protocol(format!("Failed to select folder '{folder}': {e}"))
+        })?;
+
+        // uid_store returns a stream of updated flag sets — we don't need them,
+        // just drain so the command completes.
+        let _updates: Vec<_> = session
+            .uid_store(uid.to_string(), "+FLAGS (\\Seen)")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID STORE failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read UID STORE: {e}")))?;
+
+        info!("Marked UID {uid} as \\Seen in '{folder}'");
+        Ok(())
     }
 
     /// Log out from the IMAP server and close the connection cleanly.

@@ -32,8 +32,20 @@
     accountId: string
     folder?: string
     uid: number | null
+    onread?: (uid: number) => void
+    onreply?: (mail: Email) => void
+    onreplyall?: (mail: Email) => void
+    onforward?: (mail: Email) => void
   }
-  let { accountId, folder = 'INBOX', uid }: Props = $props()
+  let {
+    accountId,
+    folder = 'INBOX',
+    uid,
+    onread,
+    onreply,
+    onreplyall,
+    onforward,
+  }: Props = $props()
 
   let email = $state<Email | null>(null)
   let loading = $state(false)
@@ -92,6 +104,19 @@
       loading = false
       refreshing = false
     }
+
+    // Mark as read — fire-and-forget. The MailList picked up an optimistic
+    // cache update from the backend, and onread() lets the parent refresh
+    // the envelope list so the unread styling clears immediately.
+    if (email && !email.is_read && id === accountId && f === folder && u === uid) {
+      try {
+        await invoke('mark_as_read', { accountId: id, folder: f, uid: u })
+        if (email) email.is_read = true
+        onread?.(u)
+      } catch (e: any) {
+        console.warn('mark_as_read failed:', e)
+      }
+    }
   }
 
   function formatFullDate(iso: string): string {
@@ -137,9 +162,9 @@
 
     <!-- Action bar -->
     <div class="flex items-center gap-2 px-6 py-2 border-b border-surface-200 dark:border-surface-700 text-sm">
-      <button class="btn btn-sm preset-outlined-surface-500">Reply</button>
-      <button class="btn btn-sm preset-outlined-surface-500">Reply All</button>
-      <button class="btn btn-sm preset-outlined-surface-500">Forward</button>
+      <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onreply?.(email)}>Reply</button>
+      <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onreplyall?.(email)}>Reply All</button>
+      <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onforward?.(email)}>Forward</button>
       <div class="flex-1"></div>
       <button class="btn btn-sm preset-outlined-surface-500">Archive</button>
       <button class="btn btn-sm preset-outlined-surface-500">Delete</button>

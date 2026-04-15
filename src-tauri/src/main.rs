@@ -7,8 +7,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use nimbus_core::NimbusError;
-use nimbus_core::models::{Account, Email, EmailEnvelope, Folder};
+use nimbus_core::models::{Account, Email, EmailEnvelope, Folder, OutgoingEmail};
 use nimbus_imap::ImapClient;
+use nimbus_smtp::SmtpClient;
 use nimbus_store::cache::SyncState;
 use nimbus_store::{Cache, account_store, credentials};
 use tauri::State;
@@ -251,6 +252,55 @@ async fn fetch_message_inner(
     Ok(email)
 }
 
+/// Mark a message as read on the server and in the local cache.
+///
+/// Cache first so the UI sees the change immediately; then the network
+/// call propagates the `\Seen` flag to the IMAP server. If the server
+/// call fails, we surface the error — but the cache is already updated,
+/// which is an acceptable divergence (the next sync will reconcile it).
+#[tauri::command]
+async fn mark_as_read(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    // Optimistic cache update — instant UI feedback.
+    if let Err(e) = cache.mark_envelope_read(&account_id, &folder, uid) {
+        tracing::warn!("cache.mark_envelope_read failed: {e}");
+    }
+
+    let account = load_account(&account_id)?;
+    let mut client = connect_imap(&account).await?;
+    let result = client.mark_as_read(&folder, uid).await;
+    let _ = client.logout().await;
+    result
+}
+
+// ── SMTP commands ───────────────────────────────────────────────
+
+/// Send an email via the account's configured SMTP server.
+///
+/// The frontend builds an `OutgoingEmail` (recipients, subject, body,
+/// attachments) and sends it here. We look up the account to get the
+/// SMTP host/port, retrieve the password from the keychain, and connect.
+/// The `from` field on `email` is authoritative — the UI sets it from
+/// the active account so Compose-from-alias can be added later without
+/// backend changes.
+#[tauri::command]
+async fn send_email(account_id: String, email: OutgoingEmail) -> Result<(), NimbusError> {
+    let account = load_account(&account_id)?;
+    let password = credentials::get_imap_password(&account.id)?;
+    let client = SmtpClient::connect(
+        &account.smtp_host,
+        account.smtp_port,
+        &account.email,
+        &password,
+    )
+    .await?;
+    client.send(&email).await
+}
+
 // ── Folder commands ─────────────────────────────────────────────
 
 /// List the account's mailboxes live from the server and write-through
@@ -337,6 +387,8 @@ fn main() {
             fetch_envelopes,
             fetch_message,
             fetch_folders,
+            mark_as_read,
+            send_email,
             get_cached_envelopes,
             get_cached_message,
             get_cached_folders,
