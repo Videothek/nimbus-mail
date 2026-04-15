@@ -7,7 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use nimbus_core::NimbusError;
-use nimbus_core::models::{Account, Email, EmailEnvelope};
+use nimbus_core::models::{Account, Email, EmailEnvelope, Folder};
 use nimbus_imap::ImapClient;
 use nimbus_store::cache::SyncState;
 use nimbus_store::{Cache, account_store, credentials};
@@ -251,6 +251,37 @@ async fn fetch_message_inner(
     Ok(email)
 }
 
+// ── Folder commands ─────────────────────────────────────────────
+
+/// List the account's mailboxes live from the server and write-through
+/// into the cache. Called by the Sidebar's refresh path after the
+/// cache-first render.
+#[tauri::command]
+async fn fetch_folders(
+    account_id: String,
+    cache: State<'_, Cache>,
+) -> Result<Vec<Folder>, NimbusError> {
+    let account = load_account(&account_id)?;
+    let mut client = connect_imap(&account).await?;
+    let folders = client.list_folders().await?;
+    let _ = client.logout().await;
+
+    // Write-through — cache failures are non-fatal; the live list is
+    // still returned so the UI can render something useful.
+    if let Err(e) = cache.upsert_folders(&account_id, &folders) {
+        tracing::warn!("cache.upsert_folders failed: {e}");
+    }
+    Ok(folders)
+}
+
+#[tauri::command]
+fn get_cached_folders(
+    account_id: String,
+    cache: State<'_, Cache>,
+) -> Result<Vec<Folder>, NimbusError> {
+    cache.get_folders(&account_id).map_err(Into::into)
+}
+
 // ── Cache-first read commands ───────────────────────────────────
 //
 // These return whatever's in the local cache instantly so the UI has
@@ -305,8 +336,10 @@ fn main() {
             test_connection,
             fetch_envelopes,
             fetch_message,
+            fetch_folders,
             get_cached_envelopes,
             get_cached_message,
+            get_cached_folders,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nimbus");

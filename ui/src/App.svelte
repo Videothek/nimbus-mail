@@ -29,6 +29,9 @@
   // switching comes later) and the currently selected message UID.
   // Kept at the App level so MailList and MailView stay in sync.
   let activeAccountId = $state<string | null>(null)
+  // Default to INBOX — the Sidebar replaces this as soon as the user
+  // picks a folder, or could switch it automatically if INBOX is absent.
+  let selectedFolder = $state<string>('INBOX')
   let selectedUid = $state<number | null>(null)
 
   // ── Check for existing accounts on startup ──────────────────
@@ -77,6 +80,14 @@
   function selectMessage(uid: number) {
     selectedUid = uid
   }
+
+  // Changing the folder resets the open message — the UID that was
+  // selected doesn't exist in the new folder, so showing it would be
+  // stale at best.
+  function selectFolder(name: string) {
+    selectedFolder = name
+    selectedUid = null
+  }
 </script>
 
 <!-- Loading state: shown briefly while we check for accounts -->
@@ -96,13 +107,19 @@
 <!-- Main inbox: the 3-panel mail client layout -->
 {:else if activeAccountId}
   <div class="h-full flex">
-    <Sidebar onsettings={goToSettings} />
+    <Sidebar
+      accountId={activeAccountId}
+      selectedFolder={selectedFolder}
+      onselectfolder={selectFolder}
+      onsettings={goToSettings}
+    />
     <MailList
       accountId={activeAccountId}
+      folder={selectedFolder}
       selectedUid={selectedUid}
       onselect={selectMessage}
     />
-    <MailView accountId={activeAccountId} uid={selectedUid} />
+    <MailView accountId={activeAccountId} folder={selectedFolder} uid={selectedUid} />
   </div>
 {:else}
   <div class="h-full flex items-center justify-center bg-surface-50 dark:bg-surface-900">
