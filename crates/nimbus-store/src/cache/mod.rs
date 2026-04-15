@@ -16,13 +16,15 @@
 //! - **Passwords**: always in the OS keychain (`credentials.rs`). Never
 //!   the DB, never disk.
 //!
-//! # Write-through pattern
+//! # Read strategy
 //!
-//! For now the Tauri commands still fetch from the IMAP server on every
-//! call and call into the cache to *write* what they got. A follow-up PR
-//! will flip this: reads hit the cache first and the server refresh runs
-//! in the background. Keeping the two changes separate makes it easy to
-//! back out if the UI path has bugs.
+//! The UI loads from the cache first (instant, offline-safe) and then
+//! kicks off a network refresh which write-throughs back to the cache.
+//! The Tauri layer owns this dance — there are separate `get_cached_*`
+//! commands for the cache path and `fetch_*` commands for the network
+//! path. Keeping them distinct makes the strategy explicit in the UI
+//! and lets future views (search, notifications) pick whichever they
+//! need.
 //!
 //! # Thread-safety
 //!
@@ -37,7 +39,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, TimeZone, Utc};
 use nimbus_core::NimbusError;
-use nimbus_core::models::{EmailEnvelope, Folder};
+use nimbus_core::models::{Email, EmailEnvelope, Folder};
 use rusqlite::{OptionalExtension, params};
 use thiserror::Error;
 use tracing::{debug, info};
@@ -262,69 +264,139 @@ impl Cache {
 
     // ── Message bodies ──────────────────────────────────────────
 
-    /// Upsert a cached message body. Run in the same transaction-by-default
-    /// SQLite mode as everything else; the `messages` row must already exist
-    /// (foreign key) so callers should upsert the envelope first.
-    #[allow(clippy::too_many_arguments)] // one positional per column is clearer than a wrapper struct for a single call site
-    pub fn upsert_body(
-        &self,
-        account_id: &str,
-        folder: &str,
-        uid: u32,
-        body_text: Option<&str>,
-        body_html: Option<&str>,
-        has_attachments: bool,
-        raw_size: Option<usize>,
-    ) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+    /// Upsert a cached message body alongside its envelope.
+    ///
+    /// Takes an `Email` since that's the shape the IMAP client returns — we
+    /// split it into an envelope row (via `upsert_envelopes_for_account`)
+    /// and a body row here, in a single transaction so partial rows never
+    /// survive a failed write.
+    pub fn upsert_message(&self, email: &Email) -> Result<(), CacheError> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
         let now = Utc::now().timestamp();
-        conn.execute(
+
+        // Envelope row — mirrors upsert_envelopes_for_account but inside
+        // the same transaction as the body so the two can't drift.
+        tx.execute(
+            "INSERT INTO messages
+                (account_id, folder, uid, from_addr, subject, internal_date,
+                 is_read, is_starred, cached_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT (account_id, folder, uid) DO UPDATE SET
+                from_addr     = excluded.from_addr,
+                subject       = excluded.subject,
+                internal_date = excluded.internal_date,
+                is_read       = excluded.is_read,
+                is_starred    = excluded.is_starred,
+                cached_at     = excluded.cached_at",
+            params![
+                email.account_id,
+                email.folder,
+                // `id` from IMAP is formatted as "folder:uid" in the
+                // fetch path — we don't rely on it here, the UID is
+                // re-parsed by the caller.
+                uid_from_email_id(&email.id) as i64,
+                email.from,
+                email.subject,
+                email.date.timestamp(),
+                email.is_read as i64,
+                email.is_starred as i64,
+                now,
+            ],
+        )?;
+
+        // Addresses are stored as JSON arrays — see the v1 → v2 migration
+        // note. `unwrap_or_else` fallbacks are defensive; serde_json on a
+        // Vec<String> can only fail if allocation fails.
+        let to_json =
+            serde_json::to_string(&email.to).unwrap_or_else(|_| "[]".into());
+        let cc_json =
+            serde_json::to_string(&email.cc).unwrap_or_else(|_| "[]".into());
+
+        tx.execute(
             "INSERT INTO message_bodies
                 (account_id, folder, uid, body_text, body_html,
-                 has_attachments, raw_size, cached_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 has_attachments, raw_size, cached_at, to_addrs, cc_addrs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                 body_text       = excluded.body_text,
                 body_html       = excluded.body_html,
                 has_attachments = excluded.has_attachments,
                 raw_size        = excluded.raw_size,
-                cached_at       = excluded.cached_at",
+                cached_at       = excluded.cached_at,
+                to_addrs        = excluded.to_addrs,
+                cc_addrs        = excluded.cc_addrs",
             params![
-                account_id,
-                folder,
-                uid as i64,
-                body_text,
-                body_html,
-                has_attachments as i64,
-                raw_size.map(|n| n as i64),
+                email.account_id,
+                email.folder,
+                uid_from_email_id(&email.id) as i64,
+                email.body_text,
+                email.body_html,
+                email.has_attachments as i64,
+                None::<i64>,
                 now,
+                to_json,
+                cc_json,
             ],
         )?;
+        tx.commit()?;
+        debug!(
+            "Cached message {}:{}:{} (text={}, html={}, atts={})",
+            email.account_id,
+            email.folder,
+            uid_from_email_id(&email.id),
+            email.body_text.is_some(),
+            email.body_html.is_some(),
+            email.has_attachments,
+        );
         Ok(())
     }
 
-    /// Look up a cached body by `(account_id, folder, uid)`.
+    /// Look up a fully-hydrated cached message.
     ///
-    /// Returns `None` if we haven't fetched this message's body yet — the
-    /// caller then falls back to the network.
-    pub fn get_body(
+    /// Joins `messages` and `message_bodies`; returns `None` if we haven't
+    /// fetched the body yet (envelope-only is not enough to render MailView,
+    /// so the caller should treat envelope-only as "not cached" and go to
+    /// the network).
+    pub fn get_message(
         &self,
         account_id: &str,
         folder: &str,
         uid: u32,
-    ) -> Result<Option<CachedBody>, CacheError> {
+    ) -> Result<Option<Email>, CacheError> {
         let conn = self.pool.get()?;
         let row = conn
             .query_row(
-                "SELECT body_text, body_html, has_attachments
-                 FROM message_bodies
-                 WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+                "SELECT m.from_addr, m.subject, m.internal_date,
+                        m.is_read, m.is_starred,
+                        b.body_text, b.body_html, b.has_attachments,
+                        b.to_addrs, b.cc_addrs
+                 FROM messages m
+                 INNER JOIN message_bodies b USING (account_id, folder, uid)
+                 WHERE m.account_id = ?1 AND m.folder = ?2 AND m.uid = ?3",
                 params![account_id, folder, uid as i64],
                 |r| {
-                    Ok(CachedBody {
-                        body_text: r.get(0)?,
-                        body_html: r.get(1)?,
-                        has_attachments: r.get::<_, i64>(2)? != 0,
+                    let ts: i64 = r.get(2)?;
+                    let date = Utc
+                        .timestamp_opt(ts, 0)
+                        .single()
+                        .unwrap_or_else(Utc::now);
+                    let to_json: String = r.get(8)?;
+                    let cc_json: String = r.get(9)?;
+                    Ok(Email {
+                        id: format!("{folder}:{uid}"),
+                        account_id: account_id.to_string(),
+                        folder: folder.to_string(),
+                        from: r.get(0)?,
+                        to: serde_json::from_str(&to_json).unwrap_or_default(),
+                        cc: serde_json::from_str(&cc_json).unwrap_or_default(),
+                        subject: r.get(1)?,
+                        body_text: r.get(5)?,
+                        body_html: r.get(6)?,
+                        date,
+                        is_read: r.get::<_, i64>(3)? != 0,
+                        is_starred: r.get::<_, i64>(4)? != 0,
+                        has_attachments: r.get::<_, i64>(7)? != 0,
                     })
                 },
             )
@@ -389,14 +461,19 @@ impl Cache {
     }
 }
 
-/// A cached message body — the fields MailView needs to render without a
-/// network round-trip. `is_read` / `is_starred` come from the `messages`
-/// envelope row, not this one.
-#[derive(Debug, Clone)]
-pub struct CachedBody {
-    pub body_text: Option<String>,
-    pub body_html: Option<String>,
-    pub has_attachments: bool,
+/// Parse the IMAP UID out of an `Email.id` produced by the IMAP client.
+///
+/// `nimbus_imap` formats ids as `"{folder}:{uid}"` — folder names can
+/// themselves contain `:` (rare but legal), so we split on the *last*
+/// colon. A malformed id yields 0 with a warn log; this can only happen
+/// if the upstream id format changes, in which case the cache row will
+/// collide on uid=0 and the warning makes it discoverable.
+fn uid_from_email_id(id: &str) -> u32 {
+    let tail = id.rsplit_once(':').map(|(_, u)| u).unwrap_or(id);
+    tail.parse().unwrap_or_else(|_| {
+        tracing::warn!("could not parse uid from email id '{id}', defaulting to 0");
+        0
+    })
 }
 
 fn default_cache_path() -> Result<PathBuf, NimbusError> {
@@ -481,41 +558,62 @@ mod tests {
         assert!(got[0].is_starred);
     }
 
+    fn make_email(uid: u32, folder: &str) -> Email {
+        Email {
+            id: format!("{folder}:{uid}"),
+            account_id: "acc".to_string(),
+            folder: folder.to_string(),
+            from: "alice@example.com".into(),
+            to: vec!["bob@example.com".into(), "carol@example.com".into()],
+            cc: vec!["dave@example.com".into()],
+            subject: format!("Hello {uid}"),
+            body_text: Some("plain body".into()),
+            body_html: Some("<p>html body</p>".into()),
+            date: Utc::now(),
+            is_read: false,
+            is_starred: false,
+            has_attachments: true,
+        }
+    }
+
     #[test]
-    fn body_roundtrip() {
+    fn message_roundtrip() {
         let cache = open_test_cache();
-        let env = make_envelope(7, "INBOX", 0);
-        cache
-            .upsert_envelopes_for_account("acc", std::slice::from_ref(&env))
-            .unwrap();
+        assert!(cache.get_message("acc", "INBOX", 7).unwrap().is_none());
 
-        assert!(cache.get_body("acc", "INBOX", 7).unwrap().is_none());
+        let email = make_email(7, "INBOX");
+        cache.upsert_message(&email).unwrap();
 
-        cache
-            .upsert_body("acc", "INBOX", 7, Some("hello"), None, true, Some(1234))
-            .unwrap();
+        let got = cache.get_message("acc", "INBOX", 7).unwrap().unwrap();
+        assert_eq!(got.subject, "Hello 7");
+        assert_eq!(got.body_text.as_deref(), Some("plain body"));
+        assert_eq!(got.body_html.as_deref(), Some("<p>html body</p>"));
+        assert_eq!(got.to, vec!["bob@example.com", "carol@example.com"]);
+        assert_eq!(got.cc, vec!["dave@example.com"]);
+        assert!(got.has_attachments);
 
-        let b = cache.get_body("acc", "INBOX", 7).unwrap().unwrap();
-        assert_eq!(b.body_text.as_deref(), Some("hello"));
-        assert!(b.body_html.is_none());
-        assert!(b.has_attachments);
+        // Envelope side is also populated by upsert_message.
+        let envs = cache.get_envelopes("acc", "INBOX", 5).unwrap();
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].uid, 7);
     }
 
     #[test]
     fn wipe_account_clears_everything() {
         let cache = open_test_cache();
-        let env = make_envelope(1, "INBOX", 5);
-        cache
-            .upsert_envelopes_for_account("acc", std::slice::from_ref(&env))
-            .unwrap();
-        cache
-            .upsert_body("acc", "INBOX", 1, Some("body"), None, false, None)
-            .unwrap();
+        cache.upsert_message(&make_email(1, "INBOX")).unwrap();
 
         cache.wipe_account("acc").unwrap();
 
         assert!(cache.get_envelopes("acc", "INBOX", 5).unwrap().is_empty());
-        assert!(cache.get_body("acc", "INBOX", 1).unwrap().is_none());
+        assert!(cache.get_message("acc", "INBOX", 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn uid_from_email_id_handles_colons_in_folder() {
+        assert_eq!(uid_from_email_id("INBOX:42"), 42);
+        assert_eq!(uid_from_email_id("Foo:Bar:99"), 99);
+        assert_eq!(uid_from_email_id("garbage"), 0);
     }
 
     #[test]

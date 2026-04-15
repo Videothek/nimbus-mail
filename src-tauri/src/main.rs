@@ -188,34 +188,45 @@ async fn fetch_message_inner(
     let email = client.fetch_message(folder, uid, account_id).await?;
     let _ = client.logout().await;
 
-    // Cache the body alongside an envelope row — the envelope side of the
-    // cache may not have seen this UID yet (user clicked a message we
-    // didn't preload), so we upsert both.
-    let envelope = EmailEnvelope {
-        uid,
-        folder: folder.to_string(),
-        from: email.from.clone(),
-        subject: email.subject.clone(),
-        date: email.date,
-        is_read: email.is_read,
-        is_starred: email.is_starred,
-    };
-    if let Err(e) = cache.upsert_envelopes_for_account(account_id, &[envelope]) {
-        tracing::warn!("cache.upsert_envelopes (from message) failed: {e}");
-    }
-    if let Err(e) = cache.upsert_body(
-        account_id,
-        folder,
-        uid,
-        email.body_text.as_deref(),
-        email.body_html.as_deref(),
-        email.has_attachments,
-        None,
-    ) {
-        tracing::warn!("cache.upsert_body failed: {e}");
+    // Single transactional write-through: envelope + body together so the
+    // two can never drift on a partial failure.
+    if let Err(e) = cache.upsert_message(&email) {
+        tracing::warn!("cache.upsert_message failed: {e}");
     }
 
     Ok(email)
+}
+
+// ── Cache-first read commands ───────────────────────────────────
+//
+// These return whatever's in the local cache instantly so the UI has
+// something to show on launch. The frontend pairs each call with the
+// matching network `fetch_*` and replaces the view when fresh data
+// lands. Returning `Option`/empty `Vec` (rather than an error) keeps
+// the "cache miss is normal" path cheap.
+
+#[tauri::command]
+fn get_cached_envelopes(
+    account_id: String,
+    folder: String,
+    limit: u32,
+    cache: State<'_, Cache>,
+) -> Result<Vec<EmailEnvelope>, NimbusError> {
+    cache
+        .get_envelopes(&account_id, &folder, limit)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn get_cached_message(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    cache: State<'_, Cache>,
+) -> Result<Option<Email>, NimbusError> {
+    cache
+        .get_message(&account_id, &folder, uid)
+        .map_err(Into::into)
 }
 
 // ── App entry point ─────────────────────────────────────────────
@@ -240,6 +251,8 @@ fn main() {
             test_connection,
             fetch_envelopes,
             fetch_message,
+            get_cached_envelopes,
+            get_cached_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nimbus");

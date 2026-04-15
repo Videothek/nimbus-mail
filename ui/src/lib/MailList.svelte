@@ -34,8 +34,16 @@
   let { accountId, folder = 'INBOX', selectedUid, onselect }: Props = $props()
 
   // ── Fetch state ─────────────────────────────────────────────
+  //
+  // Two-phase load: first ask the cache (instant, offline-safe), then
+  // kick off the network refresh in parallel. `loading` covers the
+  // *initial* paint and is dropped as soon as either source returns.
+  // `refreshing` stays true while the network call is still in flight
+  // after the cache has rendered, so the UI can show a subtle hint
+  // without blanking the list.
   let envelopes = $state<EmailEnvelope[]>([])
   let loading = $state(true)
+  let refreshing = $state(false)
   let error = $state('')
 
   // Re-fetch whenever the account or folder changes.
@@ -45,18 +53,49 @@
 
   async function load(id: string, f: string) {
     loading = true
+    refreshing = false
     error = ''
+
+    // Cache first — usually instant, may return [] on cold start.
     try {
-      envelopes = await invoke<EmailEnvelope[]>('fetch_envelopes', {
+      const cached = await invoke<EmailEnvelope[]>('get_cached_envelopes', {
         accountId: id,
         folder: f,
         limit: 50,
       })
+      // Guard against a stale response landing after the user already
+      // navigated to a different folder/account.
+      if (id === accountId && f === folder) {
+        envelopes = cached
+        if (cached.length > 0) loading = false
+      }
     } catch (e: any) {
-      error = formatError(e) || 'Failed to load mail'
-      envelopes = []
+      // Cache miss is not an error — just ignore and wait for network.
+      console.warn('get_cached_envelopes failed:', e)
+    }
+
+    // Network refresh. Always runs, even when the cache hit, so users
+    // see new mail as soon as the server responds.
+    refreshing = envelopes.length > 0
+    try {
+      const fresh = await invoke<EmailEnvelope[]>('fetch_envelopes', {
+        accountId: id,
+        folder: f,
+        limit: 50,
+      })
+      if (id === accountId && f === folder) {
+        envelopes = fresh
+      }
+    } catch (e: any) {
+      // Only surface the network error when we have nothing to show.
+      if (envelopes.length === 0) {
+        error = formatError(e) || 'Failed to load mail'
+      } else {
+        console.warn('fetch_envelopes failed (showing cached):', e)
+      }
     } finally {
       loading = false
+      refreshing = false
     }
   }
 
@@ -74,12 +113,18 @@
 
 <div class="w-80 shrink-0 border-r border-surface-200 dark:border-surface-700 flex flex-col">
   <!-- Search bar -->
-  <div class="p-3 border-b border-surface-200 dark:border-surface-700">
+  <div class="p-3 border-b border-surface-200 dark:border-surface-700 relative">
     <input
       type="text"
       placeholder="Search mail..."
       class="input w-full px-3 py-2 text-sm rounded-md"
     />
+    {#if refreshing}
+      <!-- Subtle hint that cached data is being refreshed in the background. -->
+      <span class="absolute right-5 top-1/2 -translate-y-1/2 text-xs text-surface-500">
+        Refreshing…
+      </span>
+    {/if}
   </div>
 
   <!-- Email list -->

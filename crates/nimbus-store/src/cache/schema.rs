@@ -54,7 +54,9 @@ use crate::cache::CacheError;
 ///   and re-fetched. `highest_uid_seen` lets us do incremental syncs with
 ///   `UID FETCH highest+1:*`.
 const MIGRATIONS: &[&str] = &[
+    // ─────────────────────────────────────────────────────────────
     // v0 → v1: initial schema
+    // ─────────────────────────────────────────────────────────────
     r#"
     CREATE TABLE folders (
         account_id     TEXT NOT NULL,
@@ -107,6 +109,20 @@ const MIGRATIONS: &[&str] = &[
         last_synced_at    INTEGER,
         PRIMARY KEY (account_id, folder)
     );
+    "#,
+    // ─────────────────────────────────────────────────────────────
+    // v1 → v2: cache recipient headers so MailView can render from
+    // the cache alone (no network round-trip on reopen).
+    //
+    // Stored as JSON-encoded arrays. IMAP address lists can get
+    // genuinely weird (groups, nested comments, encoded words) so
+    // a text blob is safer than trying to model rows per address —
+    // and recipients are a display-only field for now, never
+    // queried on.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE message_bodies ADD COLUMN to_addrs TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE message_bodies ADD COLUMN cc_addrs TEXT NOT NULL DEFAULT '[]';
     "#,
 ];
 
