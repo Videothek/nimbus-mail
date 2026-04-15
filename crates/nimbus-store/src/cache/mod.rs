@@ -180,6 +180,40 @@ impl Cache {
         Ok(())
     }
 
+    /// Read the cached folder list for an account.
+    ///
+    /// Returns folders in the order they were inserted — the server's
+    /// native order, which is usually alphabetical or provider-specific.
+    /// Attributes are stored as a JSON array string and parsed back into
+    /// a `Vec<String>` here so callers see the same shape as the live
+    /// `list_folders` response.
+    pub fn get_folders(&self, account_id: &str) -> Result<Vec<Folder>, CacheError> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT name, delimiter, attributes, unread_count
+             FROM folders
+             WHERE account_id = ?1
+             ORDER BY name",
+        )?;
+        let rows = stmt.query_map(params![account_id], |r| {
+            let attrs_json: String = r.get(2)?;
+            let attributes: Vec<String> =
+                serde_json::from_str(&attrs_json).unwrap_or_default();
+            let unread: Option<i64> = r.get(3)?;
+            Ok(Folder {
+                name: r.get(0)?,
+                delimiter: r.get(1)?,
+                attributes,
+                unread_count: unread.map(|v| v as u32),
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     // ── Envelopes ───────────────────────────────────────────────
 
     /// Upsert a batch of envelopes, tagging each with the given `account_id`.
@@ -627,6 +661,50 @@ mod tests {
 
         assert!(cache.get_envelopes("acc", "INBOX", 5).unwrap().is_empty());
         assert!(cache.get_message("acc", "INBOX", 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn folders_roundtrip() {
+        let cache = open_test_cache();
+        let folders = vec![
+            Folder {
+                name: "INBOX".into(),
+                delimiter: Some("/".into()),
+                attributes: vec!["\\HasNoChildren".into()],
+                unread_count: Some(3),
+            },
+            Folder {
+                name: "Sent".into(),
+                delimiter: Some("/".into()),
+                attributes: vec!["\\Sent".into(), "\\HasNoChildren".into()],
+                unread_count: None,
+            },
+        ];
+        cache.upsert_folders("acc", &folders).unwrap();
+
+        let got = cache.get_folders("acc").unwrap();
+        assert_eq!(got.len(), 2);
+        // Ordered alphabetically: INBOX, Sent.
+        assert_eq!(got[0].name, "INBOX");
+        assert_eq!(got[0].unread_count, Some(3));
+        assert_eq!(got[1].name, "Sent");
+        assert_eq!(got[1].attributes, vec!["\\Sent", "\\HasNoChildren"]);
+
+        // Replacing the list wipes the previous rows.
+        cache
+            .upsert_folders(
+                "acc",
+                &[Folder {
+                    name: "Archive".into(),
+                    delimiter: None,
+                    attributes: vec![],
+                    unread_count: None,
+                }],
+            )
+            .unwrap();
+        let got = cache.get_folders("acc").unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "Archive");
     }
 
     #[test]
