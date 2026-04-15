@@ -37,6 +37,7 @@
 
   let email = $state<Email | null>(null)
   let loading = $state(false)
+  let refreshing = $state(false)
   let error = $state('')
 
   $effect(() => {
@@ -49,18 +50,47 @@
 
   async function load(id: string, f: string, u: number) {
     loading = true
+    refreshing = false
     error = ''
     email = null
+
+    // Cache first — lets the reading pane paint instantly when the user
+    // re-opens a previously read message (the common case).
     try {
-      email = await invoke<Email>('fetch_message', {
+      const cached = await invoke<Email | null>('get_cached_message', {
         accountId: id,
         folder: f,
         uid: u,
       })
+      if (id === accountId && f === folder && u === uid && cached) {
+        email = cached
+        loading = false
+      }
     } catch (e: any) {
-      error = formatError(e) || 'Failed to load message'
+      console.warn('get_cached_message failed:', e)
+    }
+
+    // Network refresh: pulls fresh flags / body in case the message
+    // changed on the server (marked read elsewhere, updated draft, etc.).
+    refreshing = email != null
+    try {
+      const fresh = await invoke<Email>('fetch_message', {
+        accountId: id,
+        folder: f,
+        uid: u,
+      })
+      if (id === accountId && f === folder && u === uid) {
+        email = fresh
+      }
+    } catch (e: any) {
+      if (email == null) {
+        error = formatError(e) || 'Failed to load message'
+      } else {
+        console.warn('fetch_message failed (showing cached):', e)
+      }
     } finally {
       loading = false
+      refreshing = false
     }
   }
 
@@ -83,7 +113,12 @@
     <div class="p-6 border-b border-surface-200 dark:border-surface-700">
       <div class="flex items-start justify-between mb-2 gap-4">
         <h2 class="text-xl font-semibold">{email.subject || '(no subject)'}</h2>
-        <span class="text-sm text-surface-500 shrink-0">{formatFullDate(email.date)}</span>
+        <div class="flex items-center gap-3 shrink-0">
+          {#if refreshing}
+            <span class="text-xs text-surface-500">Refreshing…</span>
+          {/if}
+          <span class="text-sm text-surface-500">{formatFullDate(email.date)}</span>
+        </div>
       </div>
       <div class="flex items-center gap-2 text-sm text-surface-600 dark:text-surface-400">
         <span class="font-medium">{email.from || '(unknown sender)'}</span>
