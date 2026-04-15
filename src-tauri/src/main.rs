@@ -134,30 +134,71 @@ async fn fetch_envelopes_inner(
 ) -> Result<Vec<EmailEnvelope>, NimbusError> {
     let account = load_account(account_id)?;
     let mut client = connect_imap(&account).await?;
-    let envelopes = client.fetch_envelopes(folder, limit).await?;
+
+    // Consult the cache so we know whether to do an incremental or full sync.
+    // An error reading sync state is not fatal — we just fall back to full.
+    let prior = cache.get_sync_state(account_id, folder).ok().flatten();
+    let since_uid = prior.as_ref().and_then(|s| s.highest_uid_seen);
+
+    let mut batch = client.fetch_envelopes(folder, limit, since_uid).await?;
+
+    // UIDVALIDITY check. If the server has rotated it, every cached UID
+    // for this folder now points at a different (or deleted) message —
+    // wipe the folder and redo the fetch in full mode so the cache
+    // reflects reality.
+    let uidvalidity_changed = matches!(
+        (prior.as_ref().and_then(|s| s.uidvalidity), batch.uidvalidity),
+        (Some(old), Some(new)) if old != new,
+    );
+    if uidvalidity_changed {
+        tracing::warn!(
+            "UIDVALIDITY changed for '{account_id}'/'{folder}' \
+             (was {:?}, now {:?}) — wiping folder cache",
+            prior.as_ref().and_then(|s| s.uidvalidity),
+            batch.uidvalidity,
+        );
+        if let Err(e) = cache.wipe_folder(account_id, folder) {
+            tracing::warn!("cache.wipe_folder failed: {e}");
+        }
+        // Redo the fetch with no `since_uid` so we get the newest `limit`
+        // messages under the new UID space.
+        batch = client.fetch_envelopes(folder, limit, None).await?;
+    }
+
     let _ = client.logout().await;
 
-    // Write-through. If the cache write fails we still return the live
-    // data — the cache is an optimisation, not a correctness requirement,
-    // so it should never block a successful response.
-    if let Err(e) = cache.upsert_envelopes_for_account(account_id, &envelopes) {
+    // Write-through. Cache failures are logged but don't block the return:
+    // the cache is an optimisation, not a correctness requirement.
+    if let Err(e) = cache.upsert_envelopes_for_account(account_id, &batch.envelopes) {
         tracing::warn!("cache.upsert_envelopes failed: {e}");
     }
-    // Track the highest UID we just saw so a future incremental sync can
-    // start from there. `uidvalidity` is still unknown (IMAP client does
-    // not yet expose it); leave it None until #4 Part B.
-    if let Some(highest) = envelopes.iter().map(|e| e.uid).max() {
-        let state = SyncState {
-            uidvalidity: None,
-            highest_uid_seen: Some(highest),
-            last_synced_at: Some(chrono::Utc::now()),
-        };
-        if let Err(e) = cache.set_sync_state(account_id, folder, &state) {
-            tracing::warn!("cache.set_sync_state failed: {e}");
-        }
+
+    // Update sync bookmarks. `highest_uid_seen` is max(prior, newly-fetched)
+    // so an empty incremental response doesn't accidentally rewind it.
+    let new_highest = batch
+        .envelopes
+        .iter()
+        .map(|e| e.uid)
+        .max()
+        .into_iter()
+        .chain(prior.as_ref().and_then(|s| s.highest_uid_seen))
+        .max();
+    let state = SyncState {
+        uidvalidity: batch.uidvalidity,
+        highest_uid_seen: new_highest,
+        last_synced_at: Some(chrono::Utc::now()),
+    };
+    if let Err(e) = cache.set_sync_state(account_id, folder, &state) {
+        tracing::warn!("cache.set_sync_state failed: {e}");
     }
 
-    Ok(envelopes)
+    // Return the newest `limit` from the cache, not just what the server
+    // sent back — an incremental sync only ships new messages, but the
+    // UI expects a full list. Cache read is cheap (indexed by
+    // `(account_id, folder, internal_date DESC)`).
+    cache
+        .get_envelopes(account_id, folder, limit)
+        .map_err(Into::into)
 }
 
 /// Fetch a full message (headers + body) by folder + UID.

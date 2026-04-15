@@ -5,4 +5,4 @@
 
 mod client;
 
-pub use client::ImapClient;
+pub use client::{EnvelopeBatch, ImapClient};

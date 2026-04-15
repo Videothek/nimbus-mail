@@ -25,6 +25,18 @@ pub struct ImapClient {
     session: Option<Session<TlsStream<TcpStream>>>,
 }
 
+/// Result of a sync fetch — envelopes plus the folder's `UIDVALIDITY`.
+///
+/// Callers store the `uidvalidity` alongside the envelopes. On the next
+/// sync they compare the server's value against the stored one; if it
+/// changed, the cached UIDs point at different messages (or no messages)
+/// and the folder's local cache must be wiped and rebuilt.
+#[derive(Debug, Clone)]
+pub struct EnvelopeBatch {
+    pub uidvalidity: Option<u32>,
+    pub envelopes: Vec<EmailEnvelope>,
+}
+
 impl ImapClient {
     /// Connect to an IMAP server over TLS and log in.
     ///
@@ -147,8 +159,11 @@ impl ImapClient {
     /// In IMAP you must SELECT (or EXAMINE) a folder before you can fetch messages
     /// from it. EXAMINE is like SELECT but opens the mailbox read-only, so marking
     /// messages as seen, etc. won't happen as a side effect. Returns the number
-    /// of messages in the folder (the `exists` count from the server).
-    async fn select_folder(&mut self, folder: &str) -> Result<u32, NimbusError> {
+    /// of messages (`exists`) and the folder's `UIDVALIDITY` — a server-assigned
+    /// counter that changes whenever the folder is recreated or its UID space
+    /// resets. Callers compare this against a cached copy to detect when their
+    /// cached UIDs are no longer valid.
+    async fn select_folder(&mut self, folder: &str) -> Result<(u32, Option<u32>), NimbusError> {
         let session = self
             .session
             .as_mut()
@@ -158,50 +173,84 @@ impl ImapClient {
             NimbusError::Protocol(format!("Failed to select folder '{folder}': {e}"))
         })?;
 
-        info!("Selected '{folder}' ({} messages)", mailbox.exists);
-        Ok(mailbox.exists)
+        info!(
+            "Selected '{folder}' ({} messages, uidvalidity={:?})",
+            mailbox.exists, mailbox.uid_validity
+        );
+        Ok((mailbox.exists, mailbox.uid_validity))
     }
 
-    /// Fetch lightweight envelope data for the newest `limit` messages in a folder.
+    /// Fetch envelopes for the mail list.
     ///
-    /// This is what populates the mail list view — it's deliberately cheap:
-    /// no message bodies, just the headers + flags. For a 10,000-message inbox
-    /// we only pull the newest 50 or so at a time.
+    /// `since_uid` toggles the strategy:
+    ///
+    /// - `None` → full mode: pull the newest `limit` messages by sequence number.
+    ///   Used on a cold cache or after a UIDVALIDITY reset.
+    /// - `Some(u)` → incremental mode: pull everything with UID `> u` via
+    ///   `UID FETCH (u+1):*`. Cheap because only genuinely new messages come
+    ///   back; the cache already has everything up to `u`.
+    ///
+    /// Returns the folder's `UIDVALIDITY` alongside the envelopes so the caller
+    /// can notice when the server has invalidated its cached UIDs.
     ///
     /// IMAP messages have two kinds of identifiers:
     /// - **sequence numbers**: 1..N in current session, change as messages are deleted
     /// - **UIDs**: stable across sessions — this is what we store and return
-    ///
-    /// We fetch by sequence number (easier to ask "the last 50") but expose the UID.
     pub async fn fetch_envelopes(
         &mut self,
         folder: &str,
         limit: u32,
-    ) -> Result<Vec<EmailEnvelope>, NimbusError> {
-        let total = self.select_folder(folder).await?;
+        since_uid: Option<u32>,
+    ) -> Result<EnvelopeBatch, NimbusError> {
+        let (total, uidvalidity) = self.select_folder(folder).await?;
         if total == 0 {
-            return Ok(Vec::new());
+            return Ok(EnvelopeBatch {
+                uidvalidity,
+                envelopes: Vec::new(),
+            });
         }
-
-        // Take the newest `limit` messages. IMAP sequence numbers start at 1
-        // and higher numbers = newer messages, so we want `start..=total`.
-        let start = total.saturating_sub(limit.saturating_sub(1)).max(1);
-        let range = format!("{start}:{total}");
 
         let session = self
             .session
             .as_mut()
             .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
 
-        // Ask for: UID, flags, internal date, and the envelope (which contains
-        // parsed From/To/Subject/Date already — the server does this work for us).
-        let fetches: Vec<_> = session
-            .fetch(&range, "(UID FLAGS INTERNALDATE ENVELOPE)")
-            .await
-            .map_err(|e| NimbusError::Protocol(format!("FETCH failed: {e}")))?
-            .try_collect()
-            .await
-            .map_err(|e| NimbusError::Protocol(format!("Failed to read FETCH response: {e}")))?;
+        // Two FETCH forms depending on mode. `uid_fetch` uses UIDs directly
+        // (survives server-side deletions), while `fetch` uses sequence numbers
+        // — the only way to say "newest N" without knowing UIDs in advance.
+        let fetches: Vec<_> = match since_uid {
+            Some(hi) => {
+                // `hi+1:*` — everything strictly newer than the last UID we saw.
+                // `*` means "the largest UID in the folder", so this always
+                // terminates even when there's nothing new (returns empty).
+                let range = format!("{}:*", hi.saturating_add(1));
+                debug!("Incremental UID FETCH {folder} range={range}");
+                session
+                    .uid_fetch(range, "(UID FLAGS INTERNALDATE ENVELOPE)")
+                    .await
+                    .map_err(|e| NimbusError::Protocol(format!("UID FETCH failed: {e}")))?
+                    .try_collect()
+                    .await
+                    .map_err(|e| {
+                        NimbusError::Protocol(format!("Failed to read UID FETCH: {e}"))
+                    })?
+            }
+            None => {
+                // Newest `limit` by sequence number. Higher seq = newer.
+                let start = total.saturating_sub(limit.saturating_sub(1)).max(1);
+                let range = format!("{start}:{total}");
+                debug!("Full FETCH {folder} range={range}");
+                session
+                    .fetch(&range, "(UID FLAGS INTERNALDATE ENVELOPE)")
+                    .await
+                    .map_err(|e| NimbusError::Protocol(format!("FETCH failed: {e}")))?
+                    .try_collect()
+                    .await
+                    .map_err(|e| {
+                        NimbusError::Protocol(format!("Failed to read FETCH response: {e}"))
+                    })?
+            }
+        };
 
         let mut envelopes: Vec<EmailEnvelope> = fetches
             .iter()
@@ -265,8 +314,19 @@ impl ImapClient {
         // Server returns oldest-first within our range; reverse so newest is first
         envelopes.reverse();
 
-        info!("Fetched {} envelopes from '{folder}'", envelopes.len());
-        Ok(envelopes)
+        info!(
+            "Fetched {} envelopes from '{folder}' ({})",
+            envelopes.len(),
+            if since_uid.is_some() {
+                "incremental"
+            } else {
+                "full"
+            }
+        );
+        Ok(EnvelopeBatch {
+            uidvalidity,
+            envelopes,
+        })
     }
 
     /// Fetch a single full message (headers + body) by its UID.
@@ -283,7 +343,7 @@ impl ImapClient {
         uid: u32,
         account_id: &str,
     ) -> Result<Email, NimbusError> {
-        self.select_folder(folder).await?;
+        let _ = self.select_folder(folder).await?;
 
         let session = self
             .session
