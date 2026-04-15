@@ -63,15 +63,28 @@ fn update_account(account: Account) -> Result<(), NimbusError> {
     account_store::update_account(account)
 }
 
-/// Stub: "test" a connection to the given server.
+/// Validate IMAP credentials by actually logging in.
 ///
-/// Real IMAP/SMTP connection testing will come when we wire this up to
-/// the new `ImapClient::connect` — for now this just lets the setup UI
-/// render a success message.
+/// The setup wizard calls this before it asks the store to persist the
+/// account — an early TCP/TLS/LOGIN round-trip surfaces wrong hostnames,
+/// wrong ports, and bad passwords as a structured `NimbusError` with a
+/// specific variant (`Network`, `Auth`, `Protocol`) so the UI can phrase
+/// the failure clearly instead of saving a dead account and confusing
+/// the user on first fetch.
+///
+/// The session is immediately torn down — this is a probe, not a real
+/// fetch; nothing is cached.
 #[tauri::command]
-fn test_connection(host: String, port: u16) -> Result<String, NimbusError> {
-    tracing::info!("Test connection to {host}:{port} (stub — always succeeds)");
-    Ok(format!("Connection to {host}:{port} OK (stub)"))
+async fn test_connection(
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+) -> Result<String, NimbusError> {
+    tracing::info!("Testing IMAP connection to {host}:{port} as {username}");
+    let client = ImapClient::connect(&host, port, &username, &password).await?;
+    let _ = client.logout().await;
+    Ok(format!("IMAP login to {host}:{port} succeeded"))
 }
 
 // ── IMAP commands ───────────────────────────────────────────────
