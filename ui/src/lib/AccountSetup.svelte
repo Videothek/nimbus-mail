@@ -16,6 +16,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { formatError } from './errors'
 
   // ── Props ───────────────────────────────────────────────────
   // Called when account setup completes successfully
@@ -83,6 +84,18 @@
     saving = true
 
     try {
+      // Probe the IMAP server with the entered credentials *before*
+      // persisting anything. This turns "saved a bad account and
+      // everything breaks silently on first fetch" into a clear,
+      // immediate error the user can act on (wrong host, wrong port,
+      // TLS failure, bad password — all surface here).
+      await invoke('test_connection', {
+        host: imapHost.trim(),
+        port: imapPort,
+        username: email.trim(),
+        password,
+      })
+
       // Generate a simple unique ID for this account.
       // crypto.randomUUID() is available in all modern browsers
       // (and Tauri's webview).
@@ -108,7 +121,7 @@
       // Success! Tell the parent component to switch to inbox
       oncomplete()
     } catch (e: any) {
-      error = typeof e === 'string' ? e : e?.message ?? 'Failed to save account'
+      error = formatError(e) || 'Failed to save account'
     } finally {
       saving = false
     }
