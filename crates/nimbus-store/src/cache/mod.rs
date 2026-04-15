@@ -123,6 +123,26 @@ impl Cache {
         Ok(())
     }
 
+    /// Clear all cached rows for a single folder — used when the server's
+    /// `UIDVALIDITY` for that folder has changed, meaning every UID we had
+    /// cached now refers to a different message (or none at all).
+    ///
+    /// `ON DELETE CASCADE` handles the bodies; we explicitly drop the
+    /// `folder_sync_state` row too so the next sync starts from scratch.
+    pub fn wipe_folder(&self, account_id: &str, folder: &str) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "DELETE FROM messages WHERE account_id = ?1 AND folder = ?2",
+            params![account_id, folder],
+        )?;
+        conn.execute(
+            "DELETE FROM folder_sync_state WHERE account_id = ?1 AND folder = ?2",
+            params![account_id, folder],
+        )?;
+        info!("Wiped cache for '{account_id}' / '{folder}' (UIDVALIDITY reset)");
+        Ok(())
+    }
+
     // ── Folders ─────────────────────────────────────────────────
 
     /// Replace the cached folder list for an account.
@@ -607,6 +627,34 @@ mod tests {
 
         assert!(cache.get_envelopes("acc", "INBOX", 5).unwrap().is_empty());
         assert!(cache.get_message("acc", "INBOX", 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn wipe_folder_is_scoped() {
+        let cache = open_test_cache();
+        cache.upsert_message(&make_email(1, "INBOX")).unwrap();
+        cache.upsert_message(&make_email(2, "Sent")).unwrap();
+        cache
+            .set_sync_state(
+                "acc",
+                "INBOX",
+                &SyncState {
+                    uidvalidity: Some(1),
+                    highest_uid_seen: Some(1),
+                    last_synced_at: Some(Utc::now()),
+                },
+            )
+            .unwrap();
+
+        cache.wipe_folder("acc", "INBOX").unwrap();
+
+        // INBOX is gone…
+        assert!(cache.get_envelopes("acc", "INBOX", 5).unwrap().is_empty());
+        assert!(cache.get_message("acc", "INBOX", 1).unwrap().is_none());
+        assert!(cache.get_sync_state("acc", "INBOX").unwrap().is_none());
+        // …but Sent is untouched.
+        assert_eq!(cache.get_envelopes("acc", "Sent", 5).unwrap().len(), 1);
+        assert!(cache.get_message("acc", "Sent", 2).unwrap().is_some());
     }
 
     #[test]
