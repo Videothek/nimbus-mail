@@ -34,9 +34,9 @@ pub fn store_imap_password(account_id: &str, password: &str) -> Result<(), Nimbu
 
 /// Retrieve the IMAP password for an account.
 pub fn get_imap_password(account_id: &str) -> Result<String, NimbusError> {
-    entry(account_id)?
-        .get_password()
-        .map_err(|e| NimbusError::Auth(format!("no password found for account '{account_id}': {e}")))
+    entry(account_id)?.get_password().map_err(|e| {
+        NimbusError::Auth(format!("no password found for account '{account_id}': {e}"))
+    })
 }
 
 /// Remove the IMAP password for an account. Silently succeeds if the entry

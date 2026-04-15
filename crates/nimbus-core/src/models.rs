@@ -91,7 +91,7 @@ pub struct OutgoingEmail {
     /// HTML body
     pub body_html: Option<String>,
     /// File attachments
-    #[serde(skip)]
+    #[serde(default)]
     pub attachments: Vec<Attachment>,
 }
 
@@ -99,7 +99,11 @@ pub struct OutgoingEmail {
 ///
 /// The raw bytes are held in memory. For large files, consider
 /// streaming from disk in the future.
-#[derive(Debug, Clone)]
+///
+/// `data` is serialised as a JSON array of bytes — the Svelte frontend
+/// reads the picked file with `FileReader.readAsArrayBuffer` and sends
+/// `Array.from(new Uint8Array(buffer))`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Attachment {
     /// Display filename (e.g. "report.pdf")
     pub filename: String,

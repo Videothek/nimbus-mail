@@ -23,10 +23,22 @@
   interface Props {
     accountId: string
     selectedFolder: string
+    /** Bumped by the parent to force a network re-fetch (manual refresh). */
+    refreshToken?: number
     onselectfolder: (name: string) => void
     onsettings: () => void
+    onrefresh?: () => void
+    oncompose?: () => void
   }
-  let { accountId, selectedFolder, onselectfolder, onsettings }: Props = $props()
+  let {
+    accountId,
+    selectedFolder,
+    refreshToken = 0,
+    onselectfolder,
+    onsettings,
+    onrefresh,
+    oncompose,
+  }: Props = $props()
 
   let folders = $state<Folder[]>([])
   let loading = $state(true)
@@ -42,7 +54,10 @@
     { name: 'Nextcloud Files', icon: '\u{1F4C1}' },// 📁
   ]
 
+  // Re-fetch whenever accountId or refreshToken changes.
   $effect(() => {
+    // Touch refreshToken so Svelte re-runs this effect when it's bumped.
+    refreshToken
     void load(accountId)
   })
 
@@ -116,19 +131,30 @@
 
   <!-- Compose button -->
   <div class="p-3">
-    <button class="btn preset-filled-primary-500 w-full">
+    <button class="btn preset-filled-primary-500 w-full" onclick={() => oncompose?.()}>
       Compose
     </button>
   </div>
 
   <!-- Mail folders -->
   <nav class="flex-1 overflow-y-auto px-2">
-    <p class="px-2 py-1 text-xs font-semibold text-surface-500 uppercase tracking-wider flex items-center justify-between">
+    <div class="px-2 py-1 text-xs font-semibold text-surface-500 uppercase tracking-wider flex items-center justify-between">
       <span>Folders</span>
-      {#if refreshing}
-        <span class="text-[10px] font-normal normal-case tracking-normal text-surface-500">Refreshing…</span>
-      {/if}
-    </p>
+      <div class="flex items-center gap-2">
+        {#if refreshing}
+          <span class="text-[10px] font-normal normal-case tracking-normal text-surface-500">Refreshing…</span>
+        {/if}
+        <button
+          class="text-surface-500 hover:text-primary-500 disabled:opacity-50 normal-case tracking-normal"
+          title="Refresh"
+          aria-label="Refresh"
+          disabled={refreshing}
+          onclick={() => onrefresh?.()}
+        >
+          &#x21bb;
+        </button>
+      </div>
+    </div>
 
     {#if loading}
       <p class="px-3 py-2 text-xs text-surface-500">Loading folders…</p>

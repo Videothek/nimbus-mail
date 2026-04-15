@@ -29,9 +29,17 @@
     accountId: string
     folder?: string
     selectedUid: number | null
+    /** Bumped by the parent to force a network re-fetch (manual refresh). */
+    refreshToken?: number
     onselect: (uid: number) => void
   }
-  let { accountId, folder = 'INBOX', selectedUid, onselect }: Props = $props()
+  let {
+    accountId,
+    folder = 'INBOX',
+    selectedUid,
+    refreshToken = 0,
+    onselect,
+  }: Props = $props()
 
   // ── Fetch state ─────────────────────────────────────────────
   //
@@ -46,8 +54,10 @@
   let refreshing = $state(false)
   let error = $state('')
 
-  // Re-fetch whenever the account or folder changes.
+  // Re-fetch whenever the account, folder, or refreshToken changes.
   $effect(() => {
+    // Touch refreshToken so Svelte re-runs this effect when it's bumped.
+    refreshToken
     void load(accountId, folder)
   })
 
