@@ -11,18 +11,17 @@
    */
 
   import { onDestroy } from 'svelte'
-  import createEditor from 'svelte-tiptap'
-  import EditorContent from 'svelte-tiptap/EditorContent.svelte'
+  import { createEditor, EditorContent } from 'svelte-tiptap'
   import StarterKit from '@tiptap/starter-kit'
   import Underline from '@tiptap/extension-underline'
   import Link from '@tiptap/extension-link'
   import Image from '@tiptap/extension-image'
   import TextAlign from '@tiptap/extension-text-align'
   import Placeholder from '@tiptap/extension-placeholder'
-  import TextStyle from '@tiptap/extension-text-style'
+  import { TextStyle } from '@tiptap/extension-text-style'
   import Color from '@tiptap/extension-color'
   import Highlight from '@tiptap/extension-highlight'
-  import Table from '@tiptap/extension-table'
+  import { Table } from '@tiptap/extension-table'
   import TableRow from '@tiptap/extension-table-row'
   import TableCell from '@tiptap/extension-table-cell'
   import TableHeader from '@tiptap/extension-table-header'
@@ -41,11 +40,10 @@
     onchange,
   }: Props = $props()
 
+  // svelte-ignore state_referenced_locally
   const editor = createEditor({
     extensions: [
       StarterKit.configure({
-        // Horizontal rule is from StarterKit already, but we keep the
-        // default config.
         heading: { levels: [1, 2, 3] },
       }),
       Underline,
@@ -55,6 +53,7 @@
       }),
       Image.configure({ inline: true }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
+      // svelte-ignore state_referenced_locally
       Placeholder.configure({ placeholder }),
       TextStyle,
       Color,
@@ -64,6 +63,7 @@
       TableCell,
       TableHeader,
     ],
+    // svelte-ignore state_referenced_locally
     content,
     onUpdate: ({ editor: e }) => {
       onchange?.(e.getHTML())
@@ -121,10 +121,15 @@
   }
 
   // Reactive "is active" helpers for styling toolbar buttons.
+  const ACTIVE_CLS = 'bg-surface-300 dark:bg-surface-600'
+
   function active(name: string, attrs?: Record<string, unknown>): string {
-    return $editor?.isActive(name, attrs)
-      ? 'bg-surface-300 dark:bg-surface-600'
-      : ''
+    return $editor?.isActive(name, attrs) ? ACTIVE_CLS : ''
+  }
+
+  /** Check active state via an attribute map (e.g. `{ textAlign: 'left' }`). */
+  function activeAttrs(attrs: Record<string, unknown>): string {
+    return $editor?.isActive(attrs) ? ACTIVE_CLS : ''
   }
 </script>
 
@@ -252,13 +257,13 @@
     <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
 
     <!-- Alignment -->
-    <button class="tb {active({ textAlign: 'left' })}" title="Align left" onclick={() => $editor?.chain().focus().setTextAlign('left').run()}>
+    <button class="tb {activeAttrs({ textAlign: 'left' })}" title="Align left" onclick={() => $editor?.chain().focus().setTextAlign('left').run()}>
       &#x2261;L
     </button>
-    <button class="tb {active({ textAlign: 'center' })}" title="Align center" onclick={() => $editor?.chain().focus().setTextAlign('center').run()}>
+    <button class="tb {activeAttrs({ textAlign: 'center' })}" title="Align center" onclick={() => $editor?.chain().focus().setTextAlign('center').run()}>
       &#x2261;C
     </button>
-    <button class="tb {active({ textAlign: 'right' })}" title="Align right" onclick={() => $editor?.chain().focus().setTextAlign('right').run()}>
+    <button class="tb {activeAttrs({ textAlign: 'right' })}" title="Align right" onclick={() => $editor?.chain().focus().setTextAlign('right').run()}>
       &#x2261;R
     </button>
 
