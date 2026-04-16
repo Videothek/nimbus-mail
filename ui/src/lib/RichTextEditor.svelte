@@ -76,48 +76,77 @@
 
   // ── Toolbar helpers ─────────────────────────────────────────
 
-  /** Prompt for a URL and insert/update a link. */
+  // ── Toolbar helpers ─────────────────────────────────────────
+  // Each helper grabs the editor from the store at call time (not
+  // capture time) so it's always the live instance.
+
+  function cmd() {
+    return $editor!.chain().focus()
+  }
+
+  function toggleHeading(level: 1 | 2 | 3) {
+    cmd().toggleHeading({ level }).run()
+  }
+
+  function doUndo() { cmd().undo().run() }
+  function doRedo() { cmd().redo().run() }
+
   function setLink() {
     const prev = $editor?.getAttributes('link')?.href ?? ''
     const url = window.prompt('URL', prev)
     if (url === null) return
     if (url === '') {
-      $editor?.chain().focus().extendMarkRange('link').unsetLink().run()
+      cmd().extendMarkRange('link').unsetLink().run()
     } else {
-      $editor
-        ?.chain()
-        .focus()
-        .extendMarkRange('link')
-        .setLink({ href: url })
-        .run()
+      cmd().extendMarkRange('link').setLink({ href: url }).run()
     }
   }
 
-  /** Prompt for an image URL and insert it. */
-  function addImage() {
+  /** Insert an image from a local file (embedded as data URL). */
+  function addImageFromFile() {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'image/*'
+    input.onchange = () => {
+      const file = input.files?.[0]
+      if (!file) return
+      const reader = new FileReader()
+      reader.onload = () => {
+        const src = reader.result as string
+        cmd().setImage({ src }).run()
+      }
+      reader.readAsDataURL(file)
+    }
+    input.click()
+  }
+
+  /** Insert an image from a URL. */
+  function addImageFromUrl() {
     const url = window.prompt('Image URL')
     if (url) {
-      $editor?.chain().focus().setImage({ src: url }).run()
+      cmd().setImage({ src: url }).run()
     }
   }
 
-  /** Insert a 3x3 table. */
-  function insertTable() {
-    $editor
-      ?.chain()
-      .focus()
-      .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
-      .run()
+  // ── Table grid picker state ────────────────────────────────
+  let showTablePicker = $state(false)
+  let tableHoverRows = $state(0)
+  let tableHoverCols = $state(0)
+  const TABLE_GRID = 8  // 8x8 picker like Outlook
+
+  function insertTable(rows: number, cols: number) {
+    cmd().insertTable({ rows, cols, withHeaderRow: true }).run()
+    showTablePicker = false
   }
 
   function setColor(e: Event) {
     const color = (e.target as HTMLInputElement).value
-    $editor?.chain().focus().setColor(color).run()
+    cmd().setColor(color).run()
   }
 
   function setHighlight(e: Event) {
     const color = (e.target as HTMLInputElement).value
-    $editor?.chain().focus().toggleHighlight({ color }).run()
+    cmd().toggleHighlight({ color }).run()
   }
 
   // Reactive "is active" helpers for styling toolbar buttons.
@@ -127,7 +156,6 @@
     return $editor?.isActive(name, attrs) ? ACTIVE_CLS : ''
   }
 
-  /** Check active state via an attribute map (e.g. `{ textAlign: 'left' }`). */
   function activeAttrs(attrs: Record<string, unknown>): string {
     return $editor?.isActive(attrs) ? ACTIVE_CLS : ''
   }
@@ -234,13 +262,13 @@
     <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
 
     <!-- Headings -->
-    <button class="tb {active('heading', { level: 1 })}" title="Heading 1" onclick={() => $editor?.chain().focus().toggleHeading({ level: 1 }).run()}>
+    <button class="tb {active('heading', { level: 1 })}" title="Heading 1" onclick={() => toggleHeading(1)}>
       H1
     </button>
-    <button class="tb {active('heading', { level: 2 })}" title="Heading 2" onclick={() => $editor?.chain().focus().toggleHeading({ level: 2 }).run()}>
+    <button class="tb {active('heading', { level: 2 })}" title="Heading 2" onclick={() => toggleHeading(2)}>
       H2
     </button>
-    <button class="tb {active('heading', { level: 3 })}" title="Heading 3" onclick={() => $editor?.chain().focus().toggleHeading({ level: 3 }).run()}>
+    <button class="tb {active('heading', { level: 3 })}" title="Heading 3" onclick={() => toggleHeading(3)}>
       H3
     </button>
 
@@ -285,26 +313,66 @@
     <button class="tb {active('link')}" title="Insert link" onclick={setLink}>
       Link
     </button>
-    <button class="tb" title="Insert image" onclick={addImage}>
-      Image
-    </button>
-    <button class="tb" title="Insert table" onclick={insertTable}>
-      Table
-    </button>
-    <button class="tb" title="Horizontal rule" onclick={() => $editor?.chain().focus().setHorizontalRule().run()}>
+
+    <!-- Image: dropdown with File / URL options -->
+    <div class="relative inline-block">
+      <button class="tb" title="Insert image" onclick={() => addImageFromFile()}>
+        Image
+      </button>
+      <button class="tb text-[10px]" title="Insert image from URL" onclick={() => addImageFromUrl()}>
+        URL
+      </button>
+    </div>
+
+    <!-- Table: Outlook-style grid picker -->
+    <div class="relative inline-block">
+      <button class="tb" title="Insert table" onclick={() => (showTablePicker = !showTablePicker)}>
+        Table
+      </button>
+      {#if showTablePicker}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="absolute left-0 top-full mt-1 z-50 p-2 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-md shadow-lg"
+          onmouseleave={() => { tableHoverRows = 0; tableHoverCols = 0 }}
+        >
+          <div class="text-xs text-surface-500 mb-1 text-center">
+            {tableHoverRows > 0 ? `${tableHoverRows} × ${tableHoverCols}` : 'Pick size'}
+          </div>
+          <div class="grid gap-0.5" style="grid-template-columns: repeat({TABLE_GRID}, 1fr)">
+            {#each { length: TABLE_GRID } as _, r}
+              {#each { length: TABLE_GRID } as _, c}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class="w-4 h-4 border rounded-sm cursor-pointer transition-colors
+                    {r < tableHoverRows && c < tableHoverCols
+                      ? 'bg-primary-500/40 border-primary-500'
+                      : 'bg-surface-100 dark:bg-surface-700 border-surface-300 dark:border-surface-600'}"
+                  onmouseenter={() => { tableHoverRows = r + 1; tableHoverCols = c + 1 }}
+                  onclick={() => insertTable(r + 1, c + 1)}
+                  role="button"
+                  tabindex="-1"
+                ></div>
+              {/each}
+            {/each}
+          </div>
+        </div>
+      {/if}
+    </div>
+
+    <button class="tb" title="Horizontal rule" onclick={() => cmd().setHorizontalRule().run()}>
       &#x2015;
     </button>
-    <button class="tb {active('blockquote')}" title="Blockquote" onclick={() => $editor?.chain().focus().toggleBlockquote().run()}>
+    <button class="tb {active('blockquote')}" title="Blockquote" onclick={() => cmd().toggleBlockquote().run()}>
       &#x201C;
     </button>
 
     <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
 
     <!-- Undo / Redo -->
-    <button class="tb" title="Undo" onclick={() => $editor?.chain().focus().undo().run()}>
+    <button class="tb" title="Undo (Ctrl+Z)" onclick={() => doUndo()}>
       &#x21A9;
     </button>
-    <button class="tb" title="Redo" onclick={() => $editor?.chain().focus().redo().run()}>
+    <button class="tb" title="Redo (Ctrl+Y)" onclick={() => doRedo()}>
       &#x21AA;
     </button>
   </div>
