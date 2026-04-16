@@ -18,6 +18,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import RichTextEditor from './RichTextEditor.svelte'
 
   interface Attachment {
     filename: string
@@ -63,8 +64,33 @@
   // svelte-ignore state_referenced_locally
   let body = $state(initial?.body ?? saved?.body ?? '')
   let attachments = $state<Attachment[]>([])
+  // The editor content as HTML — kept in sync via the RichTextEditor's
+  // onchange callback. The initial body (from reply/forward/draft) is
+  // plain text, so we convert newlines to <br> for the WYSIWYG view.
+  // svelte-ignore state_referenced_locally
+  let bodyHtml = $state(textToHtml(body))
   // svelte-ignore state_referenced_locally
   let showCcBcc = $state(!!cc || !!bcc)
+
+  /** Naively convert plain text (with newlines) into minimal HTML. */
+  function textToHtml(text: string): string {
+    if (!text) return ''
+    // If it already looks like HTML (from a draft/forward), return as-is.
+    if (/<[a-z][\s\S]*>/i.test(text)) return text
+    // Escape & < > so they render literally, then convert line breaks.
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+  }
+
+  /** Strip HTML tags to produce a plain-text fallback for `body_text`. */
+  function htmlToText(html: string): string {
+    const tmp = document.createElement('div')
+    tmp.innerHTML = html
+    return tmp.textContent ?? tmp.innerText ?? ''
+  }
 
   let sending = $state(false)
   let error = $state('')
@@ -72,7 +98,7 @@
 
   // Autosave draft whenever the user edits a field.
   $effect(() => {
-    const draft = { to, cc, bcc, subject, body }
+    const draft = { to, cc, bcc, subject, body: bodyHtml }
     try {
       localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
     } catch {
@@ -149,8 +175,8 @@
           bcc: splitAddrs(bcc),
           reply_to: null,
           subject,
-          body_text: body,
-          body_html: null,
+          body_text: htmlToText(bodyHtml),
+          body_html: bodyHtml || null,
           attachments,
         },
       })
@@ -201,12 +227,10 @@
         <input id="compose-subject" class="input flex-1 px-3 py-2 text-sm rounded-md" bind:value={subject} />
       </div>
 
-      <textarea
-        class="input w-full px-3 py-2 text-sm rounded-md font-mono"
-        rows="14"
-        bind:value={body}
-        placeholder="Write your message…"
-      ></textarea>
+      <RichTextEditor
+        content={bodyHtml}
+        onchange={(html) => { bodyHtml = html }}
+      />
 
       {#if attachments.length > 0}
         <div class="flex flex-wrap gap-2">
