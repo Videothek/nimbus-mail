@@ -5,6 +5,11 @@
 //! than those. The settings below are the standard high-throughput
 //! desktop-app recipe:
 //!
+//! - **`PRAGMA key`** — SQLCipher's unlock pragma. MUST be the first
+//!   statement on every connection, before any query touches the DB.
+//!   The key is a 32-byte raw binary value, passed as `x'<hex>'` so
+//!   SQLCipher skips PBKDF2 derivation (we already have CSPRNG bytes).
+//!
 //! - **WAL (Write-Ahead Logging)** — readers never block writers and vice
 //!   versa. Without WAL, every write takes an exclusive lock on the whole
 //!   DB, which would freeze the UI while the sync thread writes envelopes.
@@ -38,14 +43,30 @@ use crate::cache::CacheError;
 
 pub type SqlitePool = Pool<SqliteConnectionManager>;
 
-/// Apply the scaling-oriented PRAGMAs to a freshly opened connection.
+/// Apply `PRAGMA key` first (SQLCipher unlock), then the scaling-oriented
+/// PRAGMAs. r2d2 calls this on every newly opened pooled connection via
+/// `.with_init(...)`, so each connection is fully unlocked and configured
+/// before it leaves the pool.
 ///
-/// r2d2 calls this for every new pooled connection via `.with_init(...)`,
-/// so every connection in the pool starts with the same settings.
-fn apply_pragmas(conn: &mut Connection) -> rusqlite::Result<()> {
-    // WAL is persistent on the file — setting it on any connection applies
-    // to the whole DB. Still, setting it per-connection is harmless and
-    // makes the intent explicit.
+/// `key_hex` MUST be a 64-character lowercase hex string; see `key.rs`.
+/// We validate the length here because a malformed literal would otherwise
+/// be silently treated by SQLCipher as a passphrase and derive a different
+/// (wrong) key, locking us out of our own DB.
+fn apply_pragmas(conn: &mut Connection, key_hex: &str) -> rusqlite::Result<()> {
+    if key_hex.len() != 64 || !key_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "DB master key must be 64 hex chars".into(),
+        ));
+    }
+    // `PRAGMA key` does not accept bound parameters — it has to be a
+    // literal. The key_hex check above keeps this free of SQL injection.
+    conn.execute_batch(&format!("PRAGMA key = \"x'{key_hex}'\";"))?;
+
+    // Touch the DB so SQLCipher actually tries to decrypt a page. Without
+    // a real read, a wrong key doesn't surface until the first real query
+    // — and we'd rather the error happen here, inside open_pool.
+    let _: i64 = conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
+
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -54,13 +75,17 @@ fn apply_pragmas(conn: &mut Connection) -> rusqlite::Result<()> {
 }
 
 /// Open (or create) the cache database at `path` and return a ready-to-use pool.
-pub fn open_pool(path: &Path) -> Result<SqlitePool, CacheError> {
+///
+/// The `key_hex` is the 64-char hex master key (see `key::get_or_create_master_key`).
+/// Every connection the pool hands out will already be unlocked.
+pub fn open_pool(path: &Path, key_hex: String) -> Result<SqlitePool, CacheError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| CacheError::Open(format!("create cache dir: {e}")))?;
     }
 
-    let manager = SqliteConnectionManager::file(path).with_init(apply_pragmas);
+    let manager = SqliteConnectionManager::file(path)
+        .with_init(move |c| apply_pragmas(c, &key_hex));
 
     // Small pool — a desktop app rarely benefits from more than a handful
     // of connections. The cost of a connection is ~100KB of SQLite state.
@@ -87,9 +112,12 @@ pub(crate) fn open_memory_pool() -> Result<SqlitePool, CacheError> {
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_CREATE
         | OpenFlags::SQLITE_OPEN_URI;
+    // Fixed all-zero test key — tests never touch the real keychain,
+    // and the on-disk risk is nil since it's a memory DB.
+    let key_hex = "0".repeat(64);
     let manager = SqliteConnectionManager::file(uri)
         .with_flags(flags)
-        .with_init(apply_pragmas);
+        .with_init(move |c| apply_pragmas(c, &key_hex));
     Pool::builder()
         .max_size(4)
         .build(manager)

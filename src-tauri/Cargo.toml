@@ -19,6 +19,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
 tauri = { version = "2", features = [] }
+# Opens a URL in the system default browser. Used by the Nextcloud
+# Login Flow v2 command to bounce the user out to their NC login page.
+open = { workspace = true }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

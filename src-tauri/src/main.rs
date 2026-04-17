@@ -7,11 +7,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use nimbus_core::NimbusError;
-use nimbus_core::models::{Account, Email, EmailEnvelope, Folder, OutgoingEmail};
+use nimbus_core::models::{
+    Account, Email, EmailEnvelope, Folder, NextcloudAccount, OutgoingEmail,
+};
 use nimbus_imap::ImapClient;
+use nimbus_nextcloud::{LoginFlowInit, LoginFlowResult, fetch_capabilities, poll_login, start_login};
 use nimbus_smtp::SmtpClient;
 use nimbus_store::cache::SyncState;
-use nimbus_store::{Cache, account_store, credentials};
+use nimbus_store::{Cache, account_store, credentials, nextcloud_store};
 use tauri::State;
 
 // ── Tauri commands ──────────────────────────────────────────────
@@ -86,6 +89,108 @@ async fn test_connection(
     let client = ImapClient::connect(&host, port, &username, &password).await?;
     let _ = client.logout().await;
     Ok(format!("IMAP login to {host}:{port} succeeded"))
+}
+
+// ── Nextcloud ───────────────────────────────────────────────────
+//
+// Nextcloud connections are independent of mail accounts: one user can
+// have many mail accounts but a single Nextcloud that backs Talk,
+// attachments, calendar and contacts. So these commands live on their
+// own command family and their own JSON store.
+//
+// Auth is via Login Flow v2: the UI opens a browser URL, the user
+// authorises, and the UI polls `poll_nextcloud_login` until the server
+// returns the app password. Nothing in the app ever sees the real
+// password — app passwords are revocable from the NC security page.
+
+/// Begin Login Flow v2 — returns the URL to open in the browser plus a
+/// polling handle the UI should use to drive `poll_nextcloud_login`.
+#[tauri::command]
+async fn start_nextcloud_login(server_url: String) -> Result<LoginFlowInit, NimbusError> {
+    start_login(&server_url).await
+}
+
+/// Poll once for Login Flow v2 completion.
+///
+/// On success, this stores the app password in the OS keychain, queries
+/// the server's capabilities, and persists a `NextcloudAccount` record.
+/// The UI then just needs to refresh its `get_nextcloud_accounts` view.
+///
+/// Return shape matches Login Flow v2's own contract so the UI can
+/// distinguish "not yet" (`Ok(None)`) from real errors.
+#[tauri::command]
+async fn poll_nextcloud_login(
+    poll_endpoint: String,
+    poll_token: String,
+) -> Result<Option<NextcloudAccount>, NimbusError> {
+    let Some(LoginFlowResult {
+        server,
+        login_name,
+        app_password,
+    }) = poll_login(&poll_endpoint, &poll_token).await?
+    else {
+        return Ok(None);
+    };
+
+    // Stable id derived from server + user so reconnecting updates
+    // in place rather than duplicating. Escapes are unnecessary here —
+    // `#` can't appear in a hostname or a reasonable NC login name.
+    let id = format!("{server}#{login_name}");
+
+    // Store the app password before persisting the account record: if
+    // password storage fails the user gets a fresh error with no dead
+    // account record left behind.
+    credentials::store_nextcloud_password(&id, &app_password)?;
+
+    // Best-effort capability snapshot. A working login with a broken
+    // capabilities endpoint shouldn't block saving the account — we
+    // can always refetch later.
+    let capabilities = match fetch_capabilities(&server, &login_name, &app_password).await {
+        Ok(c) => Some(c),
+        Err(e) => {
+            tracing::warn!("capabilities fetch failed, saving without: {e}");
+            None
+        }
+    };
+
+    let account = NextcloudAccount {
+        id,
+        server_url: server,
+        username: login_name,
+        display_name: None,
+        capabilities,
+    };
+    nextcloud_store::upsert_account(account.clone())?;
+    Ok(Some(account))
+}
+
+/// List all saved Nextcloud connections.
+#[tauri::command]
+fn get_nextcloud_accounts() -> Result<Vec<NextcloudAccount>, NimbusError> {
+    nextcloud_store::load_accounts()
+}
+
+/// Remove a Nextcloud connection and its stored app password.
+///
+/// Does **not** attempt to revoke the app password on the server —
+/// that would require the password itself and we want removal to be
+/// local-only, fast, and offline-safe. Users who want to fully revoke
+/// can delete the app password from their NC security settings.
+#[tauri::command]
+fn remove_nextcloud_account(id: String) -> Result<(), NimbusError> {
+    credentials::delete_nextcloud_password(&id)?;
+    nextcloud_store::remove_account(&id)
+}
+
+/// Open an arbitrary URL in the system's default browser.
+///
+/// Used by the Nextcloud login flow to hand the user off to their NC
+/// server's login page, which happens outside our webview so the
+/// browser can handle any SSO / IdP redirects the user's NC is wired
+/// up with (Keycloak, OIDC, SAML, etc.).
+#[tauri::command]
+fn open_url(url: String) -> Result<(), NimbusError> {
+    open::that(&url).map_err(|e| NimbusError::Other(format!("failed to open '{url}': {e}")))
 }
 
 // ── IMAP commands ───────────────────────────────────────────────
@@ -392,6 +497,11 @@ fn main() {
             get_cached_envelopes,
             get_cached_message,
             get_cached_folders,
+            start_nextcloud_login,
+            poll_nextcloud_login,
+            get_nextcloud_accounts,
+            remove_nextcloud_account,
+            open_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nimbus");

@@ -32,6 +32,7 @@
 //! connection, does its work, and returns it. The pool is internally
 //! synchronised so `Cache` is cheap to `clone()` and share across tasks.
 
+pub mod key;
 pub mod pool;
 pub mod schema;
 
@@ -42,7 +43,7 @@ use nimbus_core::NimbusError;
 use nimbus_core::models::{Email, EmailEnvelope, Folder};
 use rusqlite::{OptionalExtension, params};
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::cache::pool::SqlitePool;
 
@@ -89,16 +90,41 @@ pub struct Cache {
 impl Cache {
     /// Open the app's default cache location:
     /// `<config-dir>/nimbus-mail/cache.db`, and run any pending migrations.
+    ///
+    /// The DB is encrypted via SQLCipher; the master key is fetched from
+    /// (or freshly generated in) the OS keychain. See `key.rs`.
     pub fn open_default() -> Result<Self, NimbusError> {
         let path = default_cache_path()?;
-        Self::open(&path).map_err(Into::into)
+        let key_hex = key::get_or_create_master_key()?;
+        Self::open_with_key(&path, key_hex).map_err(Into::into)
     }
 
-    /// Open a cache at an explicit path (used by tests and for future
-    /// multi-profile support).
-    pub fn open(path: &Path) -> Result<Self, CacheError> {
-        info!("Opening mail cache at {}", path.display());
-        let pool = pool::open_pool(path)?;
+    /// Open a cache at an explicit path with a caller-supplied key.
+    ///
+    /// Used by the default opener above and by future multi-profile
+    /// support. The key must be a 64-char lowercase hex string.
+    ///
+    /// Handles the pre-encryption → encryption upgrade: if a legacy
+    /// unencrypted `cache.db` is found on disk, opening it with a key
+    /// will fail at the first decrypt; we detect that, wipe the file,
+    /// and recreate from scratch. The user loses their cache but
+    /// re-sync fills it back in on next launch.
+    pub fn open_with_key(path: &Path, key_hex: String) -> Result<Self, CacheError> {
+        info!("Opening encrypted mail cache at {}", path.display());
+        let pool = match pool::open_pool(path, key_hex.clone()) {
+            Ok(p) => p,
+            Err(e) if is_wrong_key_error(&e) && path.exists() => {
+                warn!(
+                    "Existing cache at {} could not be unlocked (likely an \
+                     unencrypted cache from a pre-encryption build). Wiping \
+                     and recreating — mail will re-sync on next launch.",
+                    path.display()
+                );
+                wipe_cache_files(path)?;
+                pool::open_pool(path, key_hex)?
+            }
+            Err(e) => return Err(e),
+        };
         // Run migrations on a freshly checked-out connection so the pool
         // is available for use right after this call returns.
         let mut conn = pool.get()?;
@@ -544,6 +570,39 @@ fn default_cache_path() -> Result<PathBuf, NimbusError> {
     let dir = dirs::config_dir()
         .ok_or_else(|| NimbusError::Storage("cannot determine config directory".into()))?;
     Ok(dir.join("nimbus-mail").join("cache.db"))
+}
+
+/// Does this pool-open error look like "wrong key / not a SQLCipher DB"?
+///
+/// r2d2 wraps the underlying rusqlite error once, and we re-wrap into
+/// `CacheError::Open` with the message, so the sentinel strings bubble
+/// up in the final `.to_string()`. SQLCipher returns either
+/// `SQLITE_NOTADB` ("file is not a database") or `SQLITE_CORRUPT`
+/// ("file is encrypted or is not a database") when the key is wrong.
+fn is_wrong_key_error(err: &CacheError) -> bool {
+    let msg = err.to_string();
+    msg.contains("file is not a database") || msg.contains("file is encrypted")
+}
+
+/// Delete the cache DB plus its WAL sidecar files (`-wal`, `-shm`).
+///
+/// Leaving the sidecars behind would let SQLite partially replay the
+/// old unencrypted WAL against the new encrypted file on next open.
+fn wipe_cache_files(path: &Path) -> Result<(), CacheError> {
+    for suffix in ["", "-wal", "-shm"] {
+        let p = if suffix.is_empty() {
+            path.to_path_buf()
+        } else {
+            let mut s = path.as_os_str().to_owned();
+            s.push(suffix);
+            PathBuf::from(s)
+        };
+        if p.exists() {
+            std::fs::remove_file(&p)
+                .map_err(|e| CacheError::Open(format!("remove {}: {e}", p.display())))?;
+        }
+    }
+    Ok(())
 }
 
 // ── Tests ───────────────────────────────────────────────────────

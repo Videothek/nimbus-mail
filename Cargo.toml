@@ -38,13 +38,25 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 # OS keychain access (Credential Manager / Keychain / Secret Service)
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
-# SQLite for the local mail cache. `bundled` ships the SQLite C library
-# with the binary so users don't need a system SQLite installed.
+# SQLite for the local mail cache. `bundled-sqlcipher-vendored-openssl`
+# ships SQLCipher (a fork of SQLite that adds AES-256 transparent
+# at-rest encryption) along with a vendored OpenSSL, so users don't
+# need a system SQLite or OpenSSL installed. Every connection has to
+# run `PRAGMA key = '...'` before issuing queries — see pool.rs.
 # `chrono` enables conversion between SQL timestamps and DateTime<Utc>.
-rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl", "chrono"] }
 # Connection pool — readers don't block each other, writers serialize cleanly.
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
+# Cryptographically secure random bytes for generating the DB master key.
+getrandom = "0.2"
+# Cross-platform "open this URL in the user's default browser" — used
+# by the Nextcloud Login Flow v2 command to bounce the user out to
+# their NC login page.
+open = "5"
+# Hex encoding for the keychain-stored master key and the SQLCipher
+# `PRAGMA key = "x'<hex>'"` literal syntax.
+hex = "0.4"
 # IMAP
 async-imap = "0.10"
 async-native-tls = "0.5"

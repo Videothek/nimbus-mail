@@ -113,6 +113,56 @@ pub struct Attachment {
     pub data: Vec<u8>,
 }
 
+/// A persistent Nextcloud connection.
+///
+/// One `NextcloudAccount` can be shared across multiple mail accounts —
+/// users often have several email identities but a single Nextcloud
+/// instance that backs attachments, Talk rooms, contacts and calendars.
+/// That's why this lives as its own top-level record (separate from
+/// `Account`) and is not keyed by email.
+///
+/// The `app_password` itself is **never** stored here — it lives in the
+/// OS keychain under service `nimbus-mail-nextcloud` keyed by `id`.
+/// `capabilities` is cached at connect time so the UI can show which
+/// Nextcloud apps are available without a round-trip on every render.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NextcloudAccount {
+    /// Stable UUID; used as the keychain account key for the app password.
+    pub id: String,
+    /// Base URL of the Nextcloud server, e.g. `https://cloud.example.com`.
+    /// Stored without trailing slash.
+    pub server_url: String,
+    /// Nextcloud login name returned by Login Flow v2. Often differs from
+    /// the user's email — it's whatever NC uses to identify the user.
+    pub username: String,
+    /// Optional pretty name shown in the UI — pulled from
+    /// `/ocs/v2.php/cloud/user` after login when available.
+    pub display_name: Option<String>,
+    /// What the server supports, snapshotted at connect time.
+    pub capabilities: Option<NextcloudCapabilities>,
+}
+
+/// Boolean flags for which Nextcloud apps the connected server offers.
+///
+/// Nextcloud's capabilities endpoint returns a deep, provider-specific
+/// JSON tree; we reduce it to the handful of bits the UI actually
+/// branches on. Refetched (via `fetch_capabilities`) when the user
+/// explicitly asks to refresh the connection.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NextcloudCapabilities {
+    /// Nextcloud server version (e.g. "28.0.4"). Useful for feature gates.
+    pub version: Option<String>,
+    /// Nextcloud Talk (spreed) is installed and enabled.
+    pub talk: bool,
+    /// Files app — attachments, file sharing. Effectively always true on
+    /// a working NC install, but we still check to be defensive.
+    pub files: bool,
+    /// CalDAV calendar endpoint is available.
+    pub caldav: bool,
+    /// CardDAV contact endpoint is available.
+    pub carddav: bool,
+}
+
 /// Represents a contact from CardDAV / Nextcloud.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Contact {
