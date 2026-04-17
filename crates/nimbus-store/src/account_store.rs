@@ -142,6 +142,7 @@ mod tests {
             smtp_host: "smtp.example.com".into(),
             smtp_port: 587,
             use_jmap: false,
+            jmap_url: None,
         }
     }
 

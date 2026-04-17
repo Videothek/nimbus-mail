@@ -84,8 +84,8 @@ pub fn open_pool(path: &Path, key_hex: String) -> Result<SqlitePool, CacheError>
             .map_err(|e| CacheError::Open(format!("create cache dir: {e}")))?;
     }
 
-    let manager = SqliteConnectionManager::file(path)
-        .with_init(move |c| apply_pragmas(c, &key_hex));
+    let manager =
+        SqliteConnectionManager::file(path).with_init(move |c| apply_pragmas(c, &key_hex));
 
     // Small pool — a desktop app rarely benefits from more than a handful
     // of connections. The cost of a connection is ~100KB of SQLite state.
