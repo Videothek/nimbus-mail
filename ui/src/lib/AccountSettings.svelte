@@ -8,6 +8,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import NextcloudSettings from './NextcloudSettings.svelte'
 
   // ── Types ───────────────────────────────────────────────────
   // Mirrors the Rust `Account` struct from nimbus-core
@@ -127,5 +128,10 @@
         </button>
       </div>
     {/if}
+
+    <!-- Nextcloud section (always shown, independent of mail accounts) -->
+    <div class="mt-10 pt-6 border-t border-surface-200 dark:border-surface-700">
+      <NextcloudSettings />
+    </div>
   </div>
 </div>

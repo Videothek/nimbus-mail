@@ -18,8 +18,19 @@ use tracing::{debug, info};
 /// Shown to the user in Credential Manager / Keychain Access as the "service".
 const IMAP_SERVICE: &str = "nimbus-mail-imap";
 
+/// Keychain service name for Nextcloud app passwords.
+/// Separate from IMAP so revoking one can't touch the other — removing
+/// a mail account should not log the user out of their Nextcloud, and
+/// vice versa.
+const NEXTCLOUD_SERVICE: &str = "nimbus-mail-nextcloud";
+
 fn entry(account_id: &str) -> Result<Entry, NimbusError> {
     Entry::new(IMAP_SERVICE, account_id)
+        .map_err(|e| NimbusError::Storage(format!("keychain entry init failed: {e}")))
+}
+
+fn nc_entry(account_id: &str) -> Result<Entry, NimbusError> {
+    Entry::new(NEXTCLOUD_SERVICE, account_id)
         .map_err(|e| NimbusError::Storage(format!("keychain entry init failed: {e}")))
 }
 
@@ -54,6 +65,48 @@ pub fn delete_imap_password(account_id: &str) -> Result<(), NimbusError> {
         }
         Err(e) => Err(NimbusError::Storage(format!(
             "failed to delete password: {e}"
+        ))),
+    }
+}
+
+// ── Nextcloud app password ──────────────────────────────────────
+//
+// Symmetric API to the IMAP functions above. Kept as separate
+// functions (rather than a generic one parameterised by service) so
+// the call sites read clearly — you can see at a glance which kind
+// of secret a caller is reaching for.
+
+/// Store (or overwrite) the Nextcloud app password for a connection.
+pub fn store_nextcloud_password(nc_id: &str, app_password: &str) -> Result<(), NimbusError> {
+    nc_entry(nc_id)?
+        .set_password(app_password)
+        .map_err(|e| NimbusError::Storage(format!("failed to store NC password: {e}")))?;
+    info!("Stored Nextcloud app password for connection '{nc_id}'");
+    Ok(())
+}
+
+/// Retrieve the Nextcloud app password for a connection.
+pub fn get_nextcloud_password(nc_id: &str) -> Result<String, NimbusError> {
+    nc_entry(nc_id)?.get_password().map_err(|e| {
+        NimbusError::Auth(format!(
+            "no Nextcloud password found for connection '{nc_id}': {e}"
+        ))
+    })
+}
+
+/// Remove the Nextcloud app password for a connection; no-op if missing.
+pub fn delete_nextcloud_password(nc_id: &str) -> Result<(), NimbusError> {
+    match nc_entry(nc_id)?.delete_credential() {
+        Ok(()) => {
+            info!("Deleted Nextcloud password for connection '{nc_id}'");
+            Ok(())
+        }
+        Err(keyring::Error::NoEntry) => {
+            debug!("No NC password to delete for '{nc_id}' (ok)");
+            Ok(())
+        }
+        Err(e) => Err(NimbusError::Storage(format!(
+            "failed to delete NC password: {e}"
         ))),
     }
 }

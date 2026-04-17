@@ -6,5 +6,6 @@
 pub mod account_store;
 pub mod cache;
 pub mod credentials;
+pub mod nextcloud_store;
 
 pub use cache::Cache;
