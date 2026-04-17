@@ -6,9 +6,10 @@ SMTP, JMAP) with first-class support for Nextcloud Talk, Files, Contacts, and
 Calendar, so mail lives alongside the rest of your collaboration stack instead
 of in a silo.
 
-> ⚠️ **Project status:** early development. The IMAP fetch path and account
-> setup flow work end-to-end, but the app is not yet feature-complete or
-> suitable as a daily driver. See [Roadmap](#roadmap) below.
+> ⚠️ **Project status:** early development. Mail (IMAP / SMTP) works
+> end-to-end with an encrypted local cache, and Nextcloud server
+> authentication is in place — but the app is not yet feature-complete
+> or suitable as a daily driver. See [Roadmap](#roadmap) below.
 
 ## Key differentiators
 
@@ -22,8 +23,9 @@ of in a silo.
 - **Native performance** — a Rust core with a Tauri shell, not a packaged
   Electron app.
 - **Security-first** — TLS everywhere, passwords stored in the OS keychain
-  (Credential Manager / Keychain / Secret Service), no plaintext secrets
-  on disk.
+  (Credential Manager / Keychain / Secret Service), and the local mail
+  cache is encrypted at rest with **SQLCipher** (AES-256) using a master
+  key that also lives in the keychain. No plaintext secrets on disk.
 
 ## Tech stack
 
@@ -82,6 +84,16 @@ commands; all logic lives in the Rust core.
   [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/)
   for your OS (WebView2 on Windows, WebKitGTK on Linux, etc.)
 - **`cargo tauri` CLI** — `cargo install tauri-cli`
+- **Windows only: Strawberry Perl** — the encrypted cache pulls in
+  SQLCipher with a vendored OpenSSL, and OpenSSL's build scripts need
+  a full Perl install that Git Bash's bundled Perl can't provide:
+  ```powershell
+  winget install StrawberryPerl.StrawberryPerl
+  ```
+  Then make sure Strawberry Perl is on `PATH` before Git's Perl (in
+  Git Bash: `export PATH="/c/Strawberry/perl/bin:/c/Strawberry/c/bin:$PATH"`).
+  **End users don't need Perl or OpenSSL** — both are static-linked
+  into the shipped binary.
 
 ### Install and run
 
@@ -95,7 +107,8 @@ cargo tauri dev
 
 On first launch you'll see the account setup wizard. Enter your IMAP / SMTP
 server details and password; the password is stored in your OS keychain, not
-on disk.
+on disk. Nextcloud servers are connected separately from the Settings
+screen via a browser-based login — see [Nextcloud](#nextcloud) below.
 
 ### Build a release
 
@@ -112,6 +125,26 @@ cargo test --workspace     # Run all Rust tests
 cargo clippy --workspace   # Lint
 cd ui && npm run check     # Svelte / TypeScript type-check
 ```
+
+## Nextcloud
+
+Nextcloud connections are managed independently of mail accounts — one
+Nextcloud server can back any number of IMAP/SMTP identities. From the
+Account Settings screen, enter your server URL and click *Connect*:
+
+1. Nimbus opens your system browser at your Nextcloud login page.
+2. You authorise Nimbus there — any IdP / SSO in front of Nextcloud
+   (Keycloak, Authelia, Entra ID, …) works, because the login happens
+   in the browser, not inside Nimbus.
+3. Nextcloud generates a **revocable app password** and hands it back;
+   Nimbus stores it in the OS keychain. You can revoke Nimbus at any
+   time from Nextcloud → Personal settings → Security without changing
+   your real password.
+
+Once connected, Nimbus queries `/ocs/v2.php/cloud/capabilities` and
+shows which Nextcloud apps are available (Talk, Files, Calendar,
+Contacts). The feature-specific integrations that consume these
+capabilities are tracked in the [Roadmap](#roadmap).
 
 ## Architecture principles
 
@@ -135,19 +168,19 @@ Current state at a glance:
 - IMAP: connect, list folders ([#1](https://github.com/Videothek/nimbus-mail/issues/1))
 - IMAP: fetch envelopes + full messages with MIME parsing ([#2](https://github.com/Videothek/nimbus-mail/issues/2))
 - SMTP: send messages ([#3](https://github.com/Videothek/nimbus-mail/issues/3))
-- Account setup wizard + keychain-backed credentials
-- Mail list + reading pane wired to live IMAP data
+- Local storage: cache emails and account data offline, encrypted at
+  rest via SQLCipher ([#4](https://github.com/Videothek/nimbus-mail/issues/4))
+- Tauri command surface: Rust ↔ Svelte bridge ([#5](https://github.com/Videothek/nimbus-mail/issues/5))
+- Account setup wizard with real IMAP probe + keychain-backed credentials ([#6](https://github.com/Videothek/nimbus-mail/issues/6))
+- UI: inbox view wired to live IMAP data ([#7](https://github.com/Videothek/nimbus-mail/issues/7))
+- UI: compose and send with rich-text editor ([#8](https://github.com/Videothek/nimbus-mail/issues/8))
+- Nextcloud: browser-based login (Login Flow v2) + capability detection ([#9](https://github.com/Videothek/nimbus-mail/issues/9))
 
 **Next up**
-- Local storage: cache emails and account data offline ([#4](https://github.com/Videothek/nimbus-mail/issues/4))
-- Tauri command surface: round out the Rust ↔ Svelte bridge ([#5](https://github.com/Videothek/nimbus-mail/issues/5))
-- UI: inbox view refinements ([#7](https://github.com/Videothek/nimbus-mail/issues/7))
-- UI: compose and send ([#8](https://github.com/Videothek/nimbus-mail/issues/8))
-
-**Later**
-- Nextcloud authentication ([#9](https://github.com/Videothek/nimbus-mail/issues/9))
 - CardDAV contacts ([#10](https://github.com/Videothek/nimbus-mail/issues/10)) and CalDAV calendars ([#11](https://github.com/Videothek/nimbus-mail/issues/11))
 - Nextcloud Files ([#12](https://github.com/Videothek/nimbus-mail/issues/12)) and Talk ([#13](https://github.com/Videothek/nimbus-mail/issues/13)) integration
+
+**Later**
 - JMAP support ([#14](https://github.com/Videothek/nimbus-mail/issues/14))
 - Full-text search ([#15](https://github.com/Videothek/nimbus-mail/issues/15))
 - System tray + notifications ([#16](https://github.com/Videothek/nimbus-mail/issues/16))
