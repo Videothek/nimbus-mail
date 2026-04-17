@@ -72,6 +72,46 @@ nimbus-mail/
 
 ## Build & Run
 
+### Windows build prerequisite: Strawberry Perl
+
+The local mail cache is encrypted at rest via **SQLCipher**, which is
+built through `rusqlite`'s `bundled-sqlcipher-vendored-openssl` feature.
+That feature compiles OpenSSL from source as part of `cargo build`, and
+OpenSSL's build scripts require a full Perl install.
+
+The Perl that ships with Git Bash is a stripped-down MSYS2 Perl that
+fails to find its own standard modules (`Locale::Maketext::Simple`),
+so we need **Strawberry Perl**:
+
+```powershell
+# One-time install (powershell)
+winget install StrawberryPerl.StrawberryPerl
+```
+
+Then make sure Strawberry Perl is found *before* Git's Perl. In Git Bash:
+
+```bash
+export PATH="/c/Strawberry/perl/bin:/c/Strawberry/c/bin:$PATH"
+```
+
+Add that to your `~/.bashrc` so every shell picks it up automatically.
+
+**End users do not need Perl or OpenSSL installed.** The `vendored-openssl`
+feature statically links the compiled OpenSSL into the final `.exe`, so
+the shipped binary is self-contained. Perl is a build-time tool only.
+
+### CI
+
+GitHub Actions should install Strawberry Perl before `cargo tauri build`:
+
+```yaml
+- name: Install Strawberry Perl (Windows)
+  if: runner.os == 'Windows'
+  run: choco install strawberryperl -y
+```
+
+### Commands
+
 ```bash
 # Install frontend dependencies
 cd ui && npm install
@@ -79,7 +119,7 @@ cd ui && npm install
 # Run in development mode (starts both Vite dev server and Tauri)
 cargo tauri dev
 
-# Build for production
+# Build for production — produces a self-contained installer/exe
 cargo tauri build
 
 # Run Rust tests
