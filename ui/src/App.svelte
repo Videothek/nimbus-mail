@@ -18,12 +18,19 @@
   import AccountSetup from './lib/AccountSetup.svelte'
   import AccountSettings from './lib/AccountSettings.svelte'
   import Compose, { type ComposeInitial } from './lib/Compose.svelte'
+  import ContactsView from './lib/ContactsView.svelte'
 
   // ── View state ──────────────────────────────────────────────
   // Which view is currently shown. Starts as 'loading' until we
   // check whether any accounts exist.
-  type View = 'loading' | 'setup' | 'inbox' | 'settings'
+  type View = 'loading' | 'setup' | 'inbox' | 'settings' | 'contacts'
   let currentView = $state<View>('loading')
+
+  // Which integration tab is active in the sidebar. Lives next to
+  // `currentView` because the inbox shell and the integration views
+  // share the same sidebar, and the sidebar needs to show the active
+  // tab even when we're not in the mail-list view anymore.
+  let activeIntegration = $state<string | null>(null)
 
   // ── Inbox state ─────────────────────────────────────────────
   // The active account (first configured one for now — multi-account
@@ -68,6 +75,7 @@
   // ── Navigation handlers ─────────────────────────────────────
   function goToInbox() {
     currentView = 'inbox'
+    activeIntegration = null
   }
 
   function goToSetup() {
@@ -76,6 +84,15 @@
 
   function goToSettings() {
     currentView = 'settings'
+  }
+
+  // Sidebar "Integrations" click. Only Contacts routes somewhere
+  // today; the other entries fall through until their feature lands.
+  function onSelectIntegration(name: string) {
+    if (name === 'Contacts') {
+      activeIntegration = name
+      currentView = 'contacts'
+    }
   }
 
   async function onSetupComplete() {
@@ -187,6 +204,28 @@
 {:else if currentView === 'settings'}
   <AccountSettings onclose={goToInbox} onaddaccount={goToSetup} />
 
+<!-- Contacts view: sidebar stays put so the user can jump back to mail. -->
+{:else if currentView === 'contacts' && activeAccountId}
+  <div class="h-full flex">
+    <Sidebar
+      accountId={activeAccountId}
+      selectedFolder={selectedFolder}
+      refreshToken={refreshToken}
+      activeIntegration={activeIntegration}
+      onselectfolder={(f) => {
+        selectFolder(f)
+        goToInbox()
+      }}
+      onsettings={goToSettings}
+      onrefresh={refreshAll}
+      oncompose={() => openCompose()}
+      onselectintegration={onSelectIntegration}
+    />
+    <div class="flex-1">
+      <ContactsView onclose={goToInbox} />
+    </div>
+  </div>
+
 <!-- Main inbox: the 3-panel mail client layout -->
 {:else if activeAccountId}
   <div class="h-full flex">
@@ -194,10 +233,12 @@
       accountId={activeAccountId}
       selectedFolder={selectedFolder}
       refreshToken={refreshToken}
+      activeIntegration={activeIntegration}
       onselectfolder={selectFolder}
       onsettings={goToSettings}
       onrefresh={refreshAll}
       oncompose={() => openCompose()}
+      onselectintegration={onSelectIntegration}
     />
     <MailList
       accountId={activeAccountId}

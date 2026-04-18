@@ -37,7 +37,7 @@ pub mod key;
 pub mod pool;
 pub mod schema;
 
-pub use contacts::{AddressbookSyncState, ContactRow};
+pub use contacts::{AddressbookSyncState, ContactRow, ContactServerHandle};
 
 use std::path::{Path, PathBuf};
 

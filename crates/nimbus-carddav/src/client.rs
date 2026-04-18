@@ -69,6 +69,71 @@ pub async fn report(
         .map_err(|e| NimbusError::Network(format!("REPORT {url}: {e}")))
 }
 
+/// PUT a vCard to its addressbook URL.
+///
+/// `if_match` is the current etag for an update (servers reject the
+/// PUT with 412 if the resource has moved on under us — basic
+/// optimistic concurrency). For a fresh create, pass `None`; the
+/// server treats it as "create only if absent" when paired with
+/// `If-None-Match: *` instead, which we also do via `if_none_match`.
+pub async fn put_vcard(
+    http: &Client,
+    url: &str,
+    username: &str,
+    app_password: &str,
+    body: &str,
+    if_match: Option<&str>,
+    if_none_match_star: bool,
+) -> Result<Response, NimbusError> {
+    let mut req = http
+        .put(url)
+        .basic_auth(username, Some(app_password))
+        .header("Content-Type", "text/vcard; charset=utf-8")
+        .body(body.to_string());
+    if let Some(etag) = if_match {
+        // Etags travel quoted on the wire — wrap if the caller didn't.
+        let v = if etag.starts_with('"') {
+            etag.to_string()
+        } else {
+            format!("\"{etag}\"")
+        };
+        req = req.header("If-Match", v);
+    }
+    if if_none_match_star {
+        req = req.header("If-None-Match", "*");
+    }
+    req.send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("PUT {url}: {e}")))
+}
+
+/// DELETE a CardDAV resource at `url`.
+///
+/// `if_match` is recommended (and Nextcloud requires it) so we don't
+/// blow away a contact someone else just edited.
+pub async fn delete_resource(
+    http: &Client,
+    url: &str,
+    username: &str,
+    app_password: &str,
+    if_match: Option<&str>,
+) -> Result<Response, NimbusError> {
+    let mut req = http
+        .delete(url)
+        .basic_auth(username, Some(app_password));
+    if let Some(etag) = if_match {
+        let v = if etag.starts_with('"') {
+            etag.to_string()
+        } else {
+            format!("\"{etag}\"")
+        };
+        req = req.header("If-Match", v);
+    }
+    req.send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("DELETE {url}: {e}")))
+}
+
 /// Strip a trailing `/` from a server URL — same helper as in
 /// `nimbus-nextcloud::client`. Duplicated rather than depended upon to
 /// keep this crate from pulling in the whole NC integration.

@@ -39,8 +39,6 @@
 //!
 //! # What this crate does NOT do
 //!
-//! - **Write** — create / update / delete on the server. Read-only first;
-//!   two-way sync is a separate issue.
 //! - **Storage** — `RawContact` and `SyncDelta` are pure data; the caller
 //!   (the Tauri command in `src-tauri`) decides where to put them. This
 //!   keeps the crate testable without dragging the SQLite layer in.
@@ -48,13 +46,24 @@
 //!   stable (`/remote.php/dav/addressbooks/users/<user>/`) so we go
 //!   straight to it. A general DAV client would do the well-known
 //!   redirect dance.
+//!
+//! # Two-way sync
+//!
+//! `write.rs` implements PUT (create/update) and DELETE with
+//! `If-Match` / `If-None-Match: *` preconditions for optimistic
+//! concurrency — the server, not us, decides when a conflict
+//! happened. Generated vCards round-trip through the parser, so a
+//! contact created here is byte-equivalent (after re-parse) to one
+//! synced from elsewhere.
 
 pub mod client;
 pub mod discovery;
 pub mod sync;
 pub mod vcard;
+pub mod write;
 mod xml_util;
 
 pub use discovery::{Addressbook, list_addressbooks};
 pub use sync::{RawContact, SyncDelta, sync_addressbook};
-pub use vcard::parse_vcard;
+pub use vcard::{ParsedVcard, build_vcard, parse_vcard};
+pub use write::{WriteOutcome, create_contact, delete_contact, update_contact};
