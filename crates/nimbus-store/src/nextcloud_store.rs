@@ -22,9 +22,7 @@ use tracing::{debug, info};
 fn file_path() -> Result<PathBuf, NimbusError> {
     let data_dir = dirs::config_dir()
         .ok_or_else(|| NimbusError::Storage("cannot determine config directory".into()))?;
-    Ok(data_dir
-        .join("nimbus-mail")
-        .join("nextcloud_accounts.json"))
+    Ok(data_dir.join("nimbus-mail").join("nextcloud_accounts.json"))
 }
 
 /// Load all saved Nextcloud connections. Empty list on first run.

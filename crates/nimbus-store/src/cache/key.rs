@@ -81,9 +81,9 @@ pub fn get_or_create_master_key() -> Result<String, NimbusError> {
         Err(keyring::Error::NoEntry) => {
             info!("No DB master key in keychain — generating a new one");
             let hex_key = generate_hex_key()?;
-            entry.set_password(&hex_key).map_err(|e| {
-                NimbusError::Storage(format!("failed to store master key: {e}"))
-            })?;
+            entry
+                .set_password(&hex_key)
+                .map_err(|e| NimbusError::Storage(format!("failed to store master key: {e}")))?;
             Ok(hex_key)
         }
         Err(e) => Err(NimbusError::Storage(format!(
@@ -94,7 +94,6 @@ pub fn get_or_create_master_key() -> Result<String, NimbusError> {
 
 fn generate_hex_key() -> Result<String, NimbusError> {
     let mut buf = [0u8; KEY_LEN];
-    getrandom(&mut buf)
-        .map_err(|e| NimbusError::Storage(format!("RNG failed: {e}")))?;
+    getrandom(&mut buf).map_err(|e| NimbusError::Storage(format!("RNG failed: {e}")))?;
     Ok(hex::encode(buf))
 }

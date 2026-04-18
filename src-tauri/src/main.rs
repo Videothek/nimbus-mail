@@ -7,11 +7,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use nimbus_core::NimbusError;
-use nimbus_core::models::{
-    Account, Email, EmailEnvelope, Folder, NextcloudAccount, OutgoingEmail,
-};
+use nimbus_core::models::{Account, Email, EmailEnvelope, Folder, NextcloudAccount, OutgoingEmail};
 use nimbus_imap::ImapClient;
-use nimbus_nextcloud::{LoginFlowInit, LoginFlowResult, fetch_capabilities, poll_login, start_login};
+use nimbus_jmap::JmapClient;
+use nimbus_nextcloud::{
+    LoginFlowInit, LoginFlowResult, fetch_capabilities, poll_login, start_login,
+};
 use nimbus_smtp::SmtpClient;
 use nimbus_store::cache::SyncState;
 use nimbus_store::{Cache, account_store, credentials, nextcloud_store};
@@ -226,6 +227,23 @@ async fn connect_imap(account: &Account) -> Result<ImapClient, NimbusError> {
     .await
 }
 
+/// Connect to an account's JMAP server using the stored password.
+async fn connect_jmap(account: &Account) -> Result<JmapClient, NimbusError> {
+    let jmap_url = account.jmap_url.as_deref().ok_or_else(|| {
+        NimbusError::Other(format!(
+            "Account '{}' has use_jmap=true but no jmap_url configured",
+            account.id
+        ))
+    })?;
+    let password = credentials::get_imap_password(&account.id)?;
+    JmapClient::connect(jmap_url, &account.email, &password).await
+}
+
+/// Returns `true` if this account should use JMAP instead of IMAP.
+fn uses_jmap(account: &Account) -> bool {
+    account.use_jmap && account.jmap_url.is_some()
+}
+
 /// Fetch the newest `limit` envelopes from `folder` for the given account.
 ///
 /// Async because the IMAP client is async (tokio task spawned by Tauri).
@@ -252,6 +270,21 @@ async fn fetch_envelopes_inner(
     cache: &Cache,
 ) -> Result<Vec<EmailEnvelope>, NimbusError> {
     let account = load_account(account_id)?;
+
+    // ── JMAP path ──────────────────────────────────────────────
+    // JMAP handles pagination server-side (no UIDVALIDITY, no incremental
+    // sync bookmarks). We fetch, cache, and return.
+    if uses_jmap(&account) {
+        let client = connect_jmap(&account).await?;
+        let envelopes = client.fetch_envelopes(folder, limit, None).await?;
+
+        if let Err(e) = cache.upsert_envelopes_for_account(account_id, &envelopes) {
+            tracing::warn!("cache.upsert_envelopes (JMAP) failed: {e}");
+        }
+        return Ok(envelopes);
+    }
+
+    // ── IMAP path (unchanged) ──────────────────────────────────
     let mut client = connect_imap(&account).await?;
 
     // Consult the cache so we know whether to do an incremental or full sync.
@@ -344,9 +377,16 @@ async fn fetch_message_inner(
     cache: &Cache,
 ) -> Result<Email, NimbusError> {
     let account = load_account(account_id)?;
-    let mut client = connect_imap(&account).await?;
-    let email = client.fetch_message(folder, uid, account_id).await?;
-    let _ = client.logout().await;
+
+    let email = if uses_jmap(&account) {
+        let client = connect_jmap(&account).await?;
+        client.fetch_message(folder, uid, account_id).await?
+    } else {
+        let mut client = connect_imap(&account).await?;
+        let email = client.fetch_message(folder, uid, account_id).await?;
+        let _ = client.logout().await;
+        email
+    };
 
     // Single transactional write-through: envelope + body together so the
     // two can never drift on a partial failure.
@@ -376,6 +416,11 @@ async fn mark_as_read(
     }
 
     let account = load_account(&account_id)?;
+    if uses_jmap(&account) {
+        let client = connect_jmap(&account).await?;
+        return client.mark_as_read(&folder, uid).await;
+    }
+
     let mut client = connect_imap(&account).await?;
     let result = client.mark_as_read(&folder, uid).await;
     let _ = client.logout().await;
@@ -395,6 +440,14 @@ async fn mark_as_read(
 #[tauri::command]
 async fn send_email(account_id: String, email: OutgoingEmail) -> Result<(), NimbusError> {
     let account = load_account(&account_id)?;
+
+    // JMAP handles sending server-side via EmailSubmission — no separate
+    // SMTP connection needed.
+    if uses_jmap(&account) {
+        let client = connect_jmap(&account).await?;
+        return client.send_email(&email).await;
+    }
+
     let password = credentials::get_imap_password(&account.id)?;
     let client = SmtpClient::connect(
         &account.smtp_host,
@@ -417,9 +470,16 @@ async fn fetch_folders(
     cache: State<'_, Cache>,
 ) -> Result<Vec<Folder>, NimbusError> {
     let account = load_account(&account_id)?;
-    let mut client = connect_imap(&account).await?;
-    let folders = client.list_folders().await?;
-    let _ = client.logout().await;
+
+    let folders = if uses_jmap(&account) {
+        let client = connect_jmap(&account).await?;
+        client.list_folders().await?
+    } else {
+        let mut client = connect_imap(&account).await?;
+        let folders = client.list_folders().await?;
+        let _ = client.logout().await;
+        folders
+    };
 
     // Write-through — cache failures are non-fatal; the live list is
     // still returned so the UI can render something useful.
@@ -469,6 +529,59 @@ fn get_cached_message(
         .map_err(Into::into)
 }
 
+// ── JMAP commands ──────────────────────────────────────────────────
+
+/// Test a JMAP connection by performing session discovery.
+///
+/// Similar to `test_connection` for IMAP — the setup wizard uses this
+/// to verify JMAP credentials before saving the account.
+#[tauri::command]
+async fn test_jmap_connection(
+    jmap_url: String,
+    username: String,
+    password: String,
+) -> Result<String, NimbusError> {
+    tracing::info!("Testing JMAP connection to {jmap_url} as {username}");
+    JmapClient::test(&jmap_url, &username, &password).await
+}
+
+/// Probe whether a server supports JMAP by trying `.well-known/jmap`.
+///
+/// Returns the JMAP base URL if discovered, or `None` if the server
+/// doesn't support JMAP. This is a best-effort probe — it's fine to
+/// fall back to IMAP if this fails.
+#[tauri::command]
+async fn detect_jmap(host: String) -> Result<Option<String>, NimbusError> {
+    // Try HTTPS first (standard), then HTTP as fallback.
+    for scheme in &["https", "http"] {
+        let url = format!("{scheme}://{host}/.well-known/jmap");
+        tracing::debug!("Probing JMAP at {url}");
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .map_err(|e| NimbusError::Network(format!("HTTP client error: {e}")))?;
+
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() || resp.status().as_u16() == 401 => {
+                // 200 = JMAP available (open session endpoint).
+                // 401 = JMAP available but needs auth (common for production servers).
+                let base = format!("{scheme}://{host}");
+                tracing::info!("JMAP detected at {base}");
+                return Ok(Some(base));
+            }
+            Ok(resp) => {
+                tracing::debug!("JMAP probe got HTTP {} — not available", resp.status());
+            }
+            Err(e) => {
+                tracing::debug!("JMAP probe failed: {e}");
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 // ── App entry point ─────────────────────────────────────────────
 
 fn main() {
@@ -497,6 +610,8 @@ fn main() {
             get_cached_envelopes,
             get_cached_message,
             get_cached_folders,
+            test_jmap_connection,
+            detect_jmap,
             start_nextcloud_login,
             poll_nextcloud_login,
             get_nextcloud_accounts,

@@ -13,7 +13,14 @@ pub struct Account {
     pub imap_port: u16,
     pub smtp_host: String,
     pub smtp_port: u16,
+    /// Whether to prefer JMAP over IMAP when available.
+    #[serde(default)]
     pub use_jmap: bool,
+    /// Base URL of the JMAP server (e.g. `https://mail.example.com`).
+    /// Only used when `use_jmap` is true. Discovered automatically
+    /// during account setup if the server supports `.well-known/jmap`.
+    #[serde(default)]
+    pub jmap_url: Option<String>,
 }
 
 /// Lightweight email metadata for list views.

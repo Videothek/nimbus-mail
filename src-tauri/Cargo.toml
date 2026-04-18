@@ -13,6 +13,7 @@ nimbus-carddav.workspace = true
 nimbus-nextcloud.workspace = true
 nimbus-store.workspace = true
 tokio.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
