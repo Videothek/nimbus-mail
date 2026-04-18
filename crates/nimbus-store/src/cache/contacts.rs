@@ -210,10 +210,7 @@ impl Cache {
     /// addressbook into 30+ MB of IPC traffic. `photo_mime` is kept
     /// as a presence flag; the UI uses `get_contact_photo` to fetch
     /// the bytes on demand for whichever rows it actually paints.
-    pub fn list_contacts(
-        &self,
-        nc_account_id: Option<&str>,
-    ) -> Result<Vec<Contact>, CacheError> {
+    pub fn list_contacts(&self, nc_account_id: Option<&str>) -> Result<Vec<Contact>, CacheError> {
         let conn = self.pool.get()?;
         let mut stmt;
         let rows = match nc_account_id {
@@ -274,11 +271,7 @@ impl Cache {
     /// so a phone-only contact is just noise here. Caps results at
     /// `limit` so a typo that matches half the address book doesn't
     /// tank the UI.
-    pub fn search_contacts(
-        &self,
-        query: &str,
-        limit: u32,
-    ) -> Result<Vec<Contact>, CacheError> {
+    pub fn search_contacts(&self, query: &str, limit: u32) -> Result<Vec<Contact>, CacheError> {
         let conn = self.pool.get()?;
         let needle = format!("%{}%", query.replace('%', r"\%").replace('_', r"\_"));
         // emails_json is the stringified JSON array. "[]" is the
@@ -409,10 +402,7 @@ impl Cache {
     /// Remove one contact by its app-side id.
     pub fn delete_contact_by_id(&self, contact_id: &str) -> Result<(), CacheError> {
         let conn = self.pool.get()?;
-        conn.execute(
-            "DELETE FROM contacts WHERE id = ?1",
-            params![contact_id],
-        )?;
+        conn.execute("DELETE FROM contacts WHERE id = ?1", params![contact_id])?;
         Ok(())
     }
 
@@ -504,7 +494,15 @@ mod tests {
             row("u2", "Bob Marley", "bob@reggae.com"),
         ];
         cache
-            .apply_contact_delta("nc1", "contacts", Some("Contacts"), &upserts, &[], Some("tok-1"), Some("c1"))
+            .apply_contact_delta(
+                "nc1",
+                "contacts",
+                Some("Contacts"),
+                &upserts,
+                &[],
+                Some("tok-1"),
+                Some("c1"),
+            )
             .unwrap();
 
         // Hit by name

@@ -19,6 +19,11 @@
   import AccountSettings from './lib/AccountSettings.svelte'
   import Compose, { type ComposeInitial } from './lib/Compose.svelte'
   import ContactsView from './lib/ContactsView.svelte'
+  import SearchBar, {
+    type SearchScope,
+    type SearchFilters,
+  } from './lib/SearchBar.svelte'
+  import SearchResults from './lib/SearchResults.svelte'
 
   // ── View state ──────────────────────────────────────────────
   // Which view is currently shown. Starts as 'loading' until we
@@ -47,6 +52,37 @@
   let selectedUid = $state<number | null>(null)
   // Bumped to force child lists to re-fetch (manual refresh, mark-as-read).
   let refreshToken = $state(0)
+
+  // ── Search state ────────────────────────────────────────────
+  // `searchQuery` drives the mail-list column: non-empty query OR
+  // any active filter swaps MailList out for SearchResults.
+  let searchQuery = $state('')
+  let searchScope = $state<SearchScope>({})
+  let searchFilters = $state<SearchFilters>({})
+  // Derived: are we in "search mode"?
+  const searchActive = $derived(
+    searchQuery.trim().length > 0 ||
+      !!searchFilters.unreadOnly ||
+      !!searchFilters.flaggedOnly ||
+      !!searchFilters.hasAttachment,
+  )
+
+  function onSearch(q: string, scope: SearchScope, filters: SearchFilters) {
+    searchQuery = q
+    searchScope = scope
+    searchFilters = filters
+  }
+
+  // When a search hit is picked, follow its folder — the hit may
+  // live in a different folder than the one currently selected
+  // (e.g. "All folders" scope). Syncing the folder makes the
+  // subsequent MailView fetch + sidebar highlight coherent.
+  function onSelectSearchHit(uid: number, folder: string) {
+    if (folder !== selectedFolder) {
+      selectedFolder = folder
+    }
+    selectedUid = uid
+  }
 
   // ── Check for existing accounts on startup ──────────────────
   // This runs once when the component mounts. It calls get_accounts
@@ -240,13 +276,36 @@
       oncompose={() => openCompose()}
       onselectintegration={onSelectIntegration}
     />
-    <MailList
-      accountId={activeAccountId}
-      folder={selectedFolder}
-      selectedUid={selectedUid}
-      refreshToken={refreshToken}
-      onselect={selectMessage}
-    />
+    <!-- Mail-list column: SearchBar on top, then either MailList
+         or SearchResults depending on whether the user is searching. -->
+    <div class="flex flex-col w-80 shrink-0 border-r border-surface-200 dark:border-surface-700">
+      <SearchBar
+        accountId={activeAccountId}
+        currentFolder={selectedFolder}
+        onsearch={onSearch}
+      />
+      <div class="flex-1 min-h-0 flex">
+        {#if searchActive}
+          <SearchResults
+            accountId={activeAccountId}
+            currentFolder={selectedFolder}
+            query={searchQuery}
+            scope={searchScope}
+            filters={searchFilters}
+            selectedUid={selectedUid}
+            onselect={onSelectSearchHit}
+          />
+        {:else}
+          <MailList
+            accountId={activeAccountId}
+            folder={selectedFolder}
+            selectedUid={selectedUid}
+            refreshToken={refreshToken}
+            onselect={selectMessage}
+          />
+        {/if}
+      </div>
+    </div>
     <MailView
       accountId={activeAccountId}
       folder={selectedFolder}

@@ -51,8 +51,7 @@ pub async fn create_contact(
     let http = build()?;
     let href = build_href(addressbook_url, uid);
 
-    let resp =
-        put_vcard(&http, &href, username, app_password, vcard, None, true).await?;
+    let resp = put_vcard(&http, &href, username, app_password, vcard, None, true).await?;
     let status = resp.status();
     if status == StatusCode::PRECONDITION_FAILED {
         return Err(NimbusError::Nextcloud(format!(
@@ -123,8 +122,7 @@ pub async fn delete_contact(
     if_match_etag: &str,
 ) -> Result<(), NimbusError> {
     let http = build()?;
-    let resp =
-        delete_resource(&http, href, username, app_password, Some(if_match_etag)).await?;
+    let resp = delete_resource(&http, href, username, app_password, Some(if_match_etag)).await?;
     let status = resp.status();
     if status == StatusCode::PRECONDITION_FAILED {
         return Err(NimbusError::Nextcloud(

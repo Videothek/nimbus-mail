@@ -121,21 +121,12 @@
   }
 </script>
 
-<div class="w-80 shrink-0 border-r border-surface-200 dark:border-surface-700 flex flex-col">
-  <!-- Search bar -->
-  <div class="p-3 border-b border-surface-200 dark:border-surface-700 relative">
-    <input
-      type="text"
-      placeholder="Search mail..."
-      class="input w-full px-3 py-2 text-sm rounded-md"
-    />
-    {#if refreshing}
-      <!-- Subtle hint that cached data is being refreshed in the background. -->
-      <span class="absolute right-5 top-1/2 -translate-y-1/2 text-xs text-surface-500">
-        Refreshing…
-      </span>
-    {/if}
-  </div>
+<div class="flex-1 flex flex-col min-w-0">
+  {#if refreshing}
+    <div class="px-3 py-1 text-[11px] text-surface-500 border-b border-surface-100 dark:border-surface-800">
+      Refreshing…
+    </div>
+  {/if}
 
   <!-- Email list -->
   <div class="flex-1 overflow-y-auto">

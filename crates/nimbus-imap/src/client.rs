@@ -501,6 +501,114 @@ impl ImapClient {
         Ok(())
     }
 
+    /// Server-side search fallback for messages that aren't cached locally.
+    ///
+    /// Runs `UID SEARCH` on the given folder with a criterion built from
+    /// the user's query, then fetches envelopes for up to `limit` hits.
+    /// Used when the FTS5 cache misses (e.g. the user is looking for an
+    /// old message that was never opened on this machine).
+    ///
+    /// IMAP SEARCH is server-implementation-dependent and can be slow —
+    /// this is the "last resort" path. The frontend calls it only after
+    /// the local cache search returns fewer results than expected, or on
+    /// explicit user action ("search server too").
+    pub async fn search_envelopes(
+        &mut self,
+        folder: &str,
+        criterion: &str,
+        limit: u32,
+    ) -> Result<Vec<EmailEnvelope>, NimbusError> {
+        let (_total, _uidvalidity) = self.select_folder(folder).await?;
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        debug!("UID SEARCH in '{folder}' with criterion: {criterion}");
+        let uids: Vec<u32> = session
+            .uid_search(criterion)
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID SEARCH failed: {e}")))?
+            .into_iter()
+            .collect();
+
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Newest-first: SEARCH returns in UID ascending order, but the
+        // mail list shows newest first. Sort desc, then cap to limit.
+        let mut uids = uids;
+        uids.sort_unstable_by(|a, b| b.cmp(a));
+        uids.truncate(limit as usize);
+
+        // Build a UID set like `42,17,9` — async-imap accepts this form.
+        let set = uids
+            .iter()
+            .map(|u| u.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let fetches: Vec<_> = session
+            .uid_fetch(set, "(UID FLAGS INTERNALDATE ENVELOPE)")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID FETCH after SEARCH failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read SEARCH FETCH: {e}")))?;
+
+        let mut envelopes: Vec<EmailEnvelope> = fetches
+            .iter()
+            .filter_map(|fetch| {
+                let uid = fetch.uid?;
+                let envelope = fetch.envelope()?;
+
+                let subject = envelope
+                    .subject
+                    .as_ref()
+                    .map(|s| decode_header(s))
+                    .unwrap_or_default();
+                let from = envelope
+                    .from
+                    .as_ref()
+                    .and_then(|addrs| addrs.first())
+                    .map(format_address)
+                    .unwrap_or_default();
+                let date = envelope
+                    .date
+                    .as_ref()
+                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                    .and_then(parse_rfc2822)
+                    .or_else(|| fetch.internal_date().map(|dt| dt.with_timezone(&Utc)))
+                    .unwrap_or_else(Utc::now);
+
+                let mut is_read = false;
+                let mut is_starred = false;
+                for flag in fetch.flags() {
+                    match flag {
+                        async_imap::types::Flag::Seen => is_read = true,
+                        async_imap::types::Flag::Flagged => is_starred = true,
+                        _ => {}
+                    }
+                }
+
+                Some(EmailEnvelope {
+                    uid,
+                    folder: folder.to_string(),
+                    from,
+                    subject,
+                    date,
+                    is_read,
+                    is_starred,
+                })
+            })
+            .collect();
+        envelopes.sort_unstable_by(|a, b| b.date.cmp(&a.date));
+
+        info!("SEARCH '{folder}' '{criterion}' → {} hits", envelopes.len());
+        Ok(envelopes)
+    }
+
     /// Log out from the IMAP server and close the connection cleanly.
     ///
     /// Always call this when you're done — it sends the LOGOUT command

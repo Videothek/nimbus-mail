@@ -180,6 +180,164 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (nextcloud_account_id, addressbook)
     );
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v3 → v4: full-text search index for emails (Issue #15).
+    //
+    // FTS5 virtual table acting as a *contentless external-content*
+    // index over `messages` joined with `message_bodies`. We use the
+    // `content=''` (contentless) form and write index rows explicitly
+    // via triggers so the indexed columns can come from two tables.
+    //
+    // Tokenizer:
+    //   - `unicode61`  — Unicode-aware word splitter, handles UTF-8
+    //     correctly for international names and subjects.
+    //   - `remove_diacritics 2` — matches "müller" when searching
+    //     "muller" (Outlook behaves this way).
+    //   - `porter` over unicode61 — stems English word endings so
+    //     "invoices" matches "invoice". For non-English mail this
+    //     is a no-op, which is fine.
+    //
+    // `rowid` is a synthetic row index — we keep an inverse lookup
+    // via (account_id, folder, uid) stored on the row so we can map
+    // FTS hits back to real messages.
+    //
+    // Triggers keep the index in lockstep with `messages` /
+    // `message_bodies` so the app never has to remember to re-index.
+    // Because FTS5 rows reference message data we guard deletes too.
+    //
+    // `search_meta` holds the lookup triple for each rowid — FTS5's
+    // own rowid is the join key. We use INTEGER PRIMARY KEY so that
+    // INSERT returns a stable autoincrementing rowid we can feed to
+    // the FTS5 index.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    CREATE TABLE search_meta (
+        rowid        INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id   TEXT NOT NULL,
+        folder       TEXT NOT NULL,
+        uid          INTEGER NOT NULL,
+        UNIQUE (account_id, folder, uid)
+    );
+
+    CREATE VIRTUAL TABLE search_index USING fts5(
+        subject,
+        from_addr,
+        to_addrs,
+        cc_addrs,
+        body,
+        tokenize = 'porter unicode61 remove_diacritics 2'
+    );
+
+    -- Keep search_meta row in sync with messages lifecycle.
+    CREATE TRIGGER search_meta_insert
+    AFTER INSERT ON messages
+    BEGIN
+        INSERT OR IGNORE INTO search_meta (account_id, folder, uid)
+        VALUES (NEW.account_id, NEW.folder, NEW.uid);
+    END;
+
+    CREATE TRIGGER search_meta_delete
+    AFTER DELETE ON messages
+    BEGIN
+        DELETE FROM search_index
+        WHERE rowid = (
+            SELECT rowid FROM search_meta
+            WHERE account_id = OLD.account_id
+              AND folder = OLD.folder
+              AND uid = OLD.uid
+        );
+        DELETE FROM search_meta
+        WHERE account_id = OLD.account_id
+          AND folder = OLD.folder
+          AND uid = OLD.uid;
+    END;
+
+    -- Index the envelope fields as soon as the message row lands.
+    -- Body columns are empty until a message_bodies row joins.
+    CREATE TRIGGER search_index_envelope_insert
+    AFTER INSERT ON messages
+    BEGIN
+        INSERT INTO search_index (rowid, subject, from_addr, to_addrs, cc_addrs, body)
+        VALUES (
+            (SELECT rowid FROM search_meta
+             WHERE account_id = NEW.account_id
+               AND folder = NEW.folder
+               AND uid = NEW.uid),
+            NEW.subject, NEW.from_addr, '', '', ''
+        );
+    END;
+
+    CREATE TRIGGER search_index_envelope_update
+    AFTER UPDATE OF subject, from_addr ON messages
+    BEGIN
+        UPDATE search_index
+        SET subject = NEW.subject,
+            from_addr = NEW.from_addr
+        WHERE rowid = (
+            SELECT rowid FROM search_meta
+            WHERE account_id = NEW.account_id
+              AND folder = NEW.folder
+              AND uid = NEW.uid
+        );
+    END;
+
+    -- When the body lands (or gets refreshed) splice in the heavy
+    -- columns. We intentionally concat plain text only; HTML would
+    -- pollute the index with tag noise and Outlook's search also
+    -- ignores markup.
+    CREATE TRIGGER search_index_body_upsert
+    AFTER INSERT ON message_bodies
+    BEGIN
+        UPDATE search_index
+        SET to_addrs = NEW.to_addrs,
+            cc_addrs = NEW.cc_addrs,
+            body     = COALESCE(NEW.body_text, '')
+        WHERE rowid = (
+            SELECT rowid FROM search_meta
+            WHERE account_id = NEW.account_id
+              AND folder = NEW.folder
+              AND uid = NEW.uid
+        );
+    END;
+
+    CREATE TRIGGER search_index_body_update
+    AFTER UPDATE ON message_bodies
+    BEGIN
+        UPDATE search_index
+        SET to_addrs = NEW.to_addrs,
+            cc_addrs = NEW.cc_addrs,
+            body     = COALESCE(NEW.body_text, '')
+        WHERE rowid = (
+            SELECT rowid FROM search_meta
+            WHERE account_id = NEW.account_id
+              AND folder = NEW.folder
+              AND uid = NEW.uid
+        );
+    END;
+
+    -- Backfill: index everything already cached from earlier versions.
+    -- New installs start empty so this is a no-op.
+    INSERT INTO search_meta (account_id, folder, uid)
+    SELECT account_id, folder, uid FROM messages;
+
+    INSERT INTO search_index (rowid, subject, from_addr, to_addrs, cc_addrs, body)
+    SELECT
+        sm.rowid,
+        m.subject,
+        m.from_addr,
+        COALESCE(b.to_addrs, ''),
+        COALESCE(b.cc_addrs, ''),
+        COALESCE(b.body_text, '')
+    FROM search_meta sm
+    INNER JOIN messages m
+        ON m.account_id = sm.account_id
+        AND m.folder = sm.folder
+        AND m.uid = sm.uid
+    LEFT JOIN message_bodies b
+        ON b.account_id = sm.account_id
+        AND b.folder = sm.folder
+        AND b.uid = sm.uid;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

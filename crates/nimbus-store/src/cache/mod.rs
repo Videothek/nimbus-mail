@@ -36,8 +36,10 @@ pub mod contacts;
 pub mod key;
 pub mod pool;
 pub mod schema;
+pub mod search;
 
 pub use contacts::{AddressbookSyncState, ContactRow, ContactServerHandle};
+pub use search::{SearchFilters, SearchHit, SearchScope};
 
 use std::path::{Path, PathBuf};
 

@@ -118,9 +118,7 @@ pub async fn delete_resource(
     app_password: &str,
     if_match: Option<&str>,
 ) -> Result<Response, NimbusError> {
-    let mut req = http
-        .delete(url)
-        .basic_auth(username, Some(app_password));
+    let mut req = http.delete(url).basic_auth(username, Some(app_password));
     if let Some(etag) = if_match {
         let v = if etag.starts_with('"') {
             etag.to_string()

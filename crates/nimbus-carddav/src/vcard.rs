@@ -334,10 +334,7 @@ mod tests {
         let parsed = parse_vcard(&raw).expect("re-parse");
         assert_eq!(parsed.uid, "abc-123");
         assert_eq!(parsed.display_name, "Alice Example");
-        assert_eq!(
-            parsed.emails,
-            vec!["alice@example.com", "alice@work.com"]
-        );
+        assert_eq!(parsed.emails, vec!["alice@example.com", "alice@work.com"]);
         assert_eq!(parsed.phones, vec!["+1 555 0100"]);
         assert_eq!(parsed.organization.as_deref(), Some("Example Corp"));
     }
