@@ -32,9 +32,12 @@
 //! connection, does its work, and returns it. The pool is internally
 //! synchronised so `Cache` is cheap to `clone()` and share across tasks.
 
+pub mod contacts;
 pub mod key;
 pub mod pool;
 pub mod schema;
+
+pub use contacts::{AddressbookSyncState, ContactRow};
 
 use std::path::{Path, PathBuf};
 

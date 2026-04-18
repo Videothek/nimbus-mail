@@ -6,16 +6,20 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use nimbus_carddav::{RawContact, list_addressbooks, sync_addressbook};
 use nimbus_core::NimbusError;
-use nimbus_core::models::{Account, Email, EmailEnvelope, Folder, NextcloudAccount, OutgoingEmail};
+use nimbus_core::models::{
+    Account, Contact, Email, EmailEnvelope, Folder, NextcloudAccount, OutgoingEmail,
+};
 use nimbus_imap::ImapClient;
 use nimbus_jmap::JmapClient;
 use nimbus_nextcloud::{
     LoginFlowInit, LoginFlowResult, fetch_capabilities, poll_login, start_login,
 };
 use nimbus_smtp::SmtpClient;
-use nimbus_store::cache::SyncState;
+use nimbus_store::cache::{ContactRow, SyncState};
 use nimbus_store::{Cache, account_store, credentials, nextcloud_store};
+use serde::Serialize;
 use tauri::State;
 
 // ── Tauri commands ──────────────────────────────────────────────
@@ -177,9 +181,15 @@ fn get_nextcloud_accounts() -> Result<Vec<NextcloudAccount>, NimbusError> {
 /// that would require the password itself and we want removal to be
 /// local-only, fast, and offline-safe. Users who want to fully revoke
 /// can delete the app password from their NC security settings.
+///
+/// Also drops cached contacts and CardDAV sync state for this account;
+/// a best-effort failure there is logged but doesn't block removal.
 #[tauri::command]
-fn remove_nextcloud_account(id: String) -> Result<(), NimbusError> {
+fn remove_nextcloud_account(id: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
     credentials::delete_nextcloud_password(&id)?;
+    if let Err(e) = cache.wipe_nextcloud_contacts(&id) {
+        tracing::warn!("failed to wipe contacts for NC account '{id}': {e}");
+    }
     nextcloud_store::remove_account(&id)
 }
 
@@ -192,6 +202,163 @@ fn remove_nextcloud_account(id: String) -> Result<(), NimbusError> {
 #[tauri::command]
 fn open_url(url: String) -> Result<(), NimbusError> {
     open::that(&url).map_err(|e| NimbusError::Other(format!("failed to open '{url}': {e}")))
+}
+
+// ── CardDAV contacts ────────────────────────────────────────────
+//
+// Contact sync is driven from a single entry point: the UI calls
+// `sync_nextcloud_contacts(nc_id)` (a "Sync now" button in settings,
+// or a background tick after login). That command walks the user's
+// addressbooks, runs one incremental sync per book via sync-collection
+// REPORT, and applies each delta to the local cache transactionally.
+//
+// The UI never sees hrefs, etags, or sync tokens — it reads fully
+// hydrated `Contact` records from the cache via `get_contacts` (list
+// view) and `search_contacts` (autocomplete).
+
+/// Summary returned to the UI after a contacts sync run.
+///
+/// Per-addressbook counts let the UI say something more useful than
+/// "done" — e.g. "Contacts: 12 new, 1 removed". `errors` carries the
+/// list of addressbooks that failed so the overall sync doesn't look
+/// green when one book silently fell over.
+#[derive(Debug, Clone, Serialize)]
+struct SyncContactsReport {
+    nc_account_id: String,
+    books_synced: u32,
+    upserted: u32,
+    deleted: u32,
+    errors: Vec<String>,
+}
+
+/// Pull the latest contacts from a Nextcloud account.
+///
+/// Two-step: list addressbooks (PROPFIND on the user's home), then
+/// run an incremental sync-collection REPORT against each. Each
+/// addressbook's delta is committed to the local cache in its own
+/// transaction, so a failure on book N+1 doesn't roll back book N.
+/// Per-book errors are logged and accumulated into the report rather
+/// than aborting the whole run.
+#[tauri::command]
+async fn sync_nextcloud_contacts(
+    nc_id: String,
+    cache: State<'_, Cache>,
+) -> Result<SyncContactsReport, NimbusError> {
+    let account = nextcloud_store::load_accounts()?
+        .into_iter()
+        .find(|a| a.id == nc_id)
+        .ok_or_else(|| NimbusError::Other(format!("no Nextcloud account with id '{nc_id}'")))?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    let books =
+        list_addressbooks(&account.server_url, &account.username, &app_password).await?;
+    tracing::info!(
+        "CardDAV: {} addressbook(s) to sync for {}",
+        books.len(),
+        nc_id
+    );
+
+    let mut report = SyncContactsReport {
+        nc_account_id: nc_id.clone(),
+        books_synced: 0,
+        upserted: 0,
+        deleted: 0,
+        errors: Vec::new(),
+    };
+
+    for book in books {
+        // Prior token (if any) makes the REPORT incremental; missing
+        // state means first sync and the CardDAV layer handles that.
+        let prev_token = cache
+            .get_addressbook_sync_state(&nc_id, &book.name)
+            .ok()
+            .flatten()
+            .and_then(|s| s.sync_token);
+
+        let delta = match sync_addressbook(
+            &account.server_url,
+            &book.path,
+            &account.username,
+            &app_password,
+            prev_token.as_deref(),
+        )
+        .await
+        {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("CardDAV sync failed for book '{}': {e}", book.name);
+                report.errors.push(format!("{}: {e}", book.name));
+                continue;
+            }
+        };
+
+        let upserts: Vec<ContactRow> =
+            delta.upserts.iter().map(raw_contact_to_row).collect();
+
+        if let Err(e) = cache.apply_contact_delta(
+            &nc_id,
+            &book.name,
+            book.display_name.as_deref(),
+            &upserts,
+            &delta.deleted_hrefs,
+            delta.new_sync_token.as_deref(),
+            book.ctag.as_deref(),
+        ) {
+            tracing::warn!("apply_contact_delta failed for '{}': {e}", book.name);
+            report.errors.push(format!("{}: {e}", book.name));
+            continue;
+        }
+
+        report.books_synced += 1;
+        report.upserted += upserts.len() as u32;
+        report.deleted += delta.deleted_hrefs.len() as u32;
+    }
+
+    Ok(report)
+}
+
+/// Cache-only list of contacts, optionally scoped to a single NC account.
+#[tauri::command]
+fn get_contacts(
+    nc_id: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<Vec<Contact>, NimbusError> {
+    cache
+        .list_contacts(nc_id.as_deref())
+        .map_err(Into::into)
+}
+
+/// Substring search over cached contacts — feeds the compose
+/// autocomplete dropdown. `limit` caps the row count so a stray
+/// single-character query can't return the whole address book.
+#[tauri::command]
+fn search_contacts(
+    query: String,
+    limit: u32,
+    cache: State<'_, Cache>,
+) -> Result<Vec<Contact>, NimbusError> {
+    cache
+        .search_contacts(&query, limit)
+        .map_err(Into::into)
+}
+
+/// Field-for-field copy between the CardDAV crate's `RawContact` and
+/// the store crate's `ContactRow`. Kept as a free function so neither
+/// crate has to depend on the other — the Tauri layer is the only
+/// place both are in scope.
+fn raw_contact_to_row(c: &RawContact) -> ContactRow {
+    ContactRow {
+        href: c.href.clone(),
+        etag: c.etag.clone(),
+        vcard_uid: c.vcard_uid.clone(),
+        display_name: c.display_name.clone(),
+        emails: c.emails.clone(),
+        phones: c.phones.clone(),
+        organization: c.organization.clone(),
+        photo_mime: c.photo_mime.clone(),
+        photo_data: c.photo_data.clone(),
+        vcard_raw: c.vcard_raw.clone(),
+    }
 }
 
 // ── IMAP commands ───────────────────────────────────────────────
@@ -617,6 +784,9 @@ fn main() {
             get_nextcloud_accounts,
             remove_nextcloud_account,
             open_url,
+            sync_nextcloud_contacts,
+            get_contacts,
+            search_contacts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nimbus");

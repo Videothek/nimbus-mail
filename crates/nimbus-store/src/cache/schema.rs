@@ -124,6 +124,62 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE message_bodies ADD COLUMN to_addrs TEXT NOT NULL DEFAULT '[]';
     ALTER TABLE message_bodies ADD COLUMN cc_addrs TEXT NOT NULL DEFAULT '[]';
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v2 → v3: CardDAV contacts cache.
+    //
+    // - `contacts`: one row per vCard. Keyed by app-side `id`
+    //   (`{nc_id}::{vcard_uid}`) so the UI has a single string handle,
+    //   plus the natural `(nextcloud_account_id, addressbook, vcard_uid)`
+    //   triple as a UNIQUE constraint to keep imports idempotent.
+    //   `vcard_raw` is kept so we can re-extract fields if the model
+    //   evolves without re-syncing every contact from the server.
+    //
+    // - `addressbook_sync_state`: per-collection bookmark for RFC 6578
+    //   sync-collection. `sync_token` is what the server gave us last;
+    //   we send it back to ask "what changed since". `ctag` is the
+    //   pre-RFC-6578 cheap-check for "did anything change at all" —
+    //   Nextcloud exposes both, we use ctag as the early-out and the
+    //   sync token to enumerate the actual delta.
+    //
+    // Indexes:
+    //   - display_name COLLATE NOCASE for the autocomplete LIKE scan
+    //   - (nc_id, addressbook) for the per-addressbook sync upserts
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    CREATE TABLE contacts (
+        id                    TEXT PRIMARY KEY,
+        nextcloud_account_id  TEXT NOT NULL,
+        addressbook           TEXT NOT NULL,
+        vcard_uid             TEXT NOT NULL,
+        href                  TEXT NOT NULL,
+        etag                  TEXT NOT NULL,
+        display_name          TEXT NOT NULL DEFAULT '',
+        emails_json           TEXT NOT NULL DEFAULT '[]',
+        phones_json           TEXT NOT NULL DEFAULT '[]',
+        organization          TEXT,
+        photo_mime            TEXT,
+        photo_data            BLOB,
+        vcard_raw             TEXT NOT NULL,
+        cached_at             INTEGER NOT NULL,
+        UNIQUE (nextcloud_account_id, addressbook, vcard_uid)
+    );
+
+    CREATE INDEX contacts_by_display_name
+        ON contacts (display_name COLLATE NOCASE);
+
+    CREATE INDEX contacts_by_addressbook
+        ON contacts (nextcloud_account_id, addressbook);
+
+    CREATE TABLE addressbook_sync_state (
+        nextcloud_account_id  TEXT NOT NULL,
+        addressbook           TEXT NOT NULL,
+        display_name          TEXT,
+        sync_token            TEXT,
+        ctag                  TEXT,
+        last_synced_at        INTEGER,
+        PRIMARY KEY (nextcloud_account_id, addressbook)
+    );
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

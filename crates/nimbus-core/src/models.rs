@@ -171,13 +171,32 @@ pub struct NextcloudCapabilities {
 }
 
 /// Represents a contact from CardDAV / Nextcloud.
+///
+/// `id` is a stable app-side UUID we generate the first time we see a
+/// vCard — handy as a single string the UI can use as a key. The
+/// CardDAV side is identified by the triple
+/// `(nextcloud_account_id, addressbook, vcard_uid)`; that triple lives
+/// only in the cache, the UI never deals with it.
+///
+/// `photo_data` is the decoded image bytes (vCard PHOTO is base64 in
+/// the wire format, we decode once on import). Kept on the contact row
+/// so the autocomplete dropdown can render thumbnails without a
+/// separate fetch — Outlook does this; we should too.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Contact {
     pub id: String,
+    /// Which Nextcloud account this contact came from. Lets the UI
+    /// group contacts by source if a user has more than one NC server.
+    pub nextcloud_account_id: String,
     pub display_name: String,
     pub email: Vec<String>,
     pub phone: Vec<String>,
     pub organization: Option<String>,
+    /// MIME type of `photo_data` (e.g. "image/jpeg"); `None` if no photo.
+    pub photo_mime: Option<String>,
+    /// Raw decoded photo bytes. Serialised as a JSON byte array so the
+    /// frontend can wrap it in a `Blob` URL for `<img src>`.
+    pub photo_data: Option<Vec<u8>>,
 }
 
 /// Represents a calendar event from CalDAV / Nextcloud.

@@ -37,10 +37,35 @@
     poll_endpoint: string
   }
 
+  // Returned by sync_nextcloud_contacts so the UI can show
+  // "12 new, 1 removed" instead of a bare "done".
+  interface SyncContactsReport {
+    nc_account_id: string
+    books_synced: number
+    upserted: number
+    deleted: number
+    errors: string[]
+  }
+  // Per-account sync view-model. Keyed by account id so rows
+  // render independently and one account's spinner doesn't block
+  // another's. `lastSyncedAt` is only set after a successful run.
+  interface ContactsState {
+    syncing: boolean
+    lastSyncedAt: number | null  // ms epoch
+    lastReport: SyncContactsReport | null
+    count: number                 // contacts cached locally
+    error: string
+  }
+
   // ── State ───────────────────────────────────────────────────
   let accounts = $state<NextcloudAccount[]>([])
   let loading = $state(true)
   let error = $state('')
+
+  // Per-account contacts state, keyed by NC account id. Lives
+  // outside `accounts` so resorting/refreshing the list doesn't
+  // wipe in-flight sync status.
+  let contactsState = $state<Record<string, ContactsState>>({})
 
   // Connect flow
   let serverInput = $state('')
@@ -58,11 +83,79 @@
     error = ''
     try {
       accounts = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
+      // Seed contacts state for any new accounts, and refresh the
+      // cached count for existing ones. Count failure is non-fatal —
+      // we just leave the old value.
+      for (const a of accounts) {
+        if (!contactsState[a.id]) {
+          contactsState[a.id] = {
+            syncing: false,
+            lastSyncedAt: null,
+            lastReport: null,
+            count: 0,
+            error: '',
+          }
+        }
+        try {
+          const rows = await invoke<unknown[]>('get_contacts', { ncId: a.id })
+          contactsState[a.id].count = rows.length
+        } catch (e) {
+          console.warn('get_contacts failed for', a.id, e)
+        }
+      }
     } catch (e) {
       error = formatError(e) || 'Failed to load Nextcloud connections'
     } finally {
       loading = false
     }
+  }
+
+  /**
+   * Trigger a fresh contacts sync for one NC account.
+   *
+   * The backend returns a `SyncContactsReport` with upsert/delete
+   * counts so we can show something concrete in the UI. Errors
+   * encountered on individual addressbooks are surfaced per-account
+   * but don't block other accounts.
+   */
+  async function syncContacts(acct: NextcloudAccount) {
+    const state = contactsState[acct.id]
+    if (!state || state.syncing) return
+    state.syncing = true
+    state.error = ''
+    try {
+      const report = await invoke<SyncContactsReport>('sync_nextcloud_contacts', {
+        ncId: acct.id,
+      })
+      state.lastReport = report
+      state.lastSyncedAt = Date.now()
+      if (report.errors.length > 0) {
+        state.error = report.errors.join('; ')
+      }
+      // Refresh the cached count — the sync report gives deltas, not
+      // an absolute total.
+      try {
+        const rows = await invoke<unknown[]>('get_contacts', { ncId: acct.id })
+        state.count = rows.length
+      } catch (e) {
+        console.warn('get_contacts refresh failed', e)
+      }
+    } catch (e) {
+      state.error = formatError(e) || 'Sync failed'
+    } finally {
+      state.syncing = false
+    }
+  }
+
+  function formatRelative(ts: number | null): string {
+    if (ts === null) return 'never'
+    const diffMs = Date.now() - ts
+    if (diffMs < 60_000) return 'just now'
+    const mins = Math.floor(diffMs / 60_000)
+    if (mins < 60) return `${mins}m ago`
+    const hours = Math.floor(mins / 60)
+    if (hours < 24) return `${hours}h ago`
+    return `${Math.floor(hours / 24)}d ago`
   }
 
   async function startConnect() {
@@ -172,38 +265,69 @@
     {#if accounts.length > 0}
       <div class="space-y-2">
         {#each accounts as acct (acct.id)}
-          <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg flex items-start justify-between">
-            <div class="flex-1">
-              <p class="font-semibold">{acct.display_name ?? acct.username}</p>
-              <p class="text-sm text-surface-500 break-all">{acct.server_url}</p>
-              {#if acct.capabilities}
-                <div class="flex flex-wrap gap-1.5 mt-2">
-                  {#if acct.capabilities.version}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-surface-200 dark:bg-surface-700">
-                      v{acct.capabilities.version}
-                    </span>
-                  {/if}
-                  {#if acct.capabilities.talk}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-600 dark:text-blue-300">Talk</span>
-                  {/if}
-                  {#if acct.capabilities.files}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-600 dark:text-green-300">Files</span>
-                  {/if}
-                  {#if acct.capabilities.caldav}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-600 dark:text-purple-300">Calendar</span>
-                  {/if}
-                  {#if acct.capabilities.carddav}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-600 dark:text-orange-300">Contacts</span>
+          {@const cs = contactsState[acct.id]}
+          <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg space-y-3">
+            <div class="flex items-start justify-between">
+              <div class="flex-1">
+                <p class="font-semibold">{acct.display_name ?? acct.username}</p>
+                <p class="text-sm text-surface-500 break-all">{acct.server_url}</p>
+                {#if acct.capabilities}
+                  <div class="flex flex-wrap gap-1.5 mt-2">
+                    {#if acct.capabilities.version}
+                      <span class="text-xs px-2 py-0.5 rounded-full bg-surface-200 dark:bg-surface-700">
+                        v{acct.capabilities.version}
+                      </span>
+                    {/if}
+                    {#if acct.capabilities.talk}
+                      <span class="text-xs px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-600 dark:text-blue-300">Talk</span>
+                    {/if}
+                    {#if acct.capabilities.files}
+                      <span class="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-600 dark:text-green-300">Files</span>
+                    {/if}
+                    {#if acct.capabilities.caldav}
+                      <span class="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-600 dark:text-purple-300">Calendar</span>
+                    {/if}
+                    {#if acct.capabilities.carddav}
+                      <span class="text-xs px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-600 dark:text-orange-300">Contacts</span>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+              <button
+                class="btn btn-sm preset-outlined-error-500"
+                onclick={() => removeAccount(acct)}
+              >
+                Disconnect
+              </button>
+            </div>
+
+            <!-- Contacts sync row -->
+            {#if acct.capabilities?.carddav !== false}
+              <div class="flex items-center justify-between pt-2 border-t border-surface-300/40 dark:border-surface-700/60">
+                <div class="text-sm">
+                  <p>
+                    <span class="font-medium">Contacts:</span>
+                    {cs?.count ?? 0} cached
+                  </p>
+                  <p class="text-xs text-surface-500">
+                    Last sync: {formatRelative(cs?.lastSyncedAt ?? null)}
+                    {#if cs?.lastReport && (cs.lastReport.upserted > 0 || cs.lastReport.deleted > 0)}
+                      · {cs.lastReport.upserted} updated, {cs.lastReport.deleted} removed
+                    {/if}
+                  </p>
+                  {#if cs?.error}
+                    <p class="text-xs text-red-500 mt-1">{cs.error}</p>
                   {/if}
                 </div>
-              {/if}
-            </div>
-            <button
-              class="btn btn-sm preset-outlined-error-500"
-              onclick={() => removeAccount(acct)}
-            >
-              Disconnect
-            </button>
+                <button
+                  class="btn btn-sm preset-outlined-primary-500"
+                  onclick={() => syncContacts(acct)}
+                  disabled={cs?.syncing}
+                >
+                  {cs?.syncing ? 'Syncing…' : 'Sync now'}
+                </button>
+              </div>
+            {/if}
           </div>
         {/each}
       </div>
