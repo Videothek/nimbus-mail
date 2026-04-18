@@ -97,10 +97,25 @@ pub async fn sync_addressbook(
         prev_sync_token
     );
     let resp = report(&http, addressbook_url, username, app_password, &body).await?;
-    if !resp.status().is_success() && resp.status().as_u16() != 207 {
+    let status = resp.status();
+    // 415 means the server refuses sync-collection on this collection
+    // (some Nextcloud system / app-generated addressbooks do). Treat
+    // as a no-op so one quirky book doesn't break the whole sync, and
+    // log so we can spot any new pseudo-books to filter at discovery.
+    if status.as_u16() == 415 {
+        tracing::warn!(
+            "sync-collection on {addressbook_url} returned 415 — skipping (likely a \
+             pseudo-addressbook that doesn't support sync-collection)"
+        );
+        return Ok(SyncDelta {
+            upserts: Vec::new(),
+            deleted_hrefs: Vec::new(),
+            new_sync_token: None,
+        });
+    }
+    if !status.is_success() && status.as_u16() != 207 {
         return Err(NimbusError::Nextcloud(format!(
-            "sync-collection returned HTTP {}",
-            resp.status()
+            "sync-collection returned HTTP {status}"
         )));
     }
     let xml = resp

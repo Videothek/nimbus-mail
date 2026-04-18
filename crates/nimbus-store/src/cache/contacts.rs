@@ -49,6 +49,20 @@ pub struct AddressbookSyncState {
     pub last_synced_at: Option<DateTime<Utc>>,
 }
 
+/// Server-side bookkeeping for one cached contact, returned from
+/// `get_contact_server_handle`. The Tauri layer needs these fields
+/// to do a PUT or DELETE — the user-facing `Contact` struct hides
+/// them deliberately since the UI shouldn't touch hrefs and etags.
+#[derive(Debug, Clone)]
+pub struct ContactServerHandle {
+    pub nextcloud_account_id: String,
+    pub addressbook: String,
+    pub vcard_uid: String,
+    pub href: String,
+    pub etag: String,
+    pub vcard_raw: String,
+}
+
 impl Cache {
     // ── Contacts ────────────────────────────────────────────────
 
@@ -186,9 +200,16 @@ impl Cache {
         Ok(row)
     }
 
-    /// All contacts, newest-cached first if no scope, optionally scoped
-    /// to a single Nextcloud account. The UI uses this for the contacts
-    /// list view.
+    /// All contacts, alphabetised, optionally scoped to a single
+    /// Nextcloud account. Powers the contacts list view.
+    ///
+    /// **Deliberately omits photo bytes** — `photo_data` is always
+    /// returned as `None`. Photos can be 50–500 KB each and Tauri
+    /// serialises them as JSON number arrays (3–4× bloat), so
+    /// shipping them in the list payload turns a 200-contact
+    /// addressbook into 30+ MB of IPC traffic. `photo_mime` is kept
+    /// as a presence flag; the UI uses `get_contact_photo` to fetch
+    /// the bytes on demand for whichever rows it actually paints.
     pub fn list_contacts(
         &self,
         nc_account_id: Option<&str>,
@@ -199,21 +220,21 @@ impl Cache {
             Some(nc) => {
                 stmt = conn.prepare(
                     "SELECT id, nextcloud_account_id, display_name, emails_json,
-                            phones_json, organization, photo_mime, photo_data
+                            phones_json, organization, photo_mime
                      FROM contacts
                      WHERE nextcloud_account_id = ?1
                      ORDER BY display_name COLLATE NOCASE",
                 )?;
-                stmt.query_map(params![nc], row_to_contact)?
+                stmt.query_map(params![nc], row_to_contact_no_photo)?
             }
             None => {
                 stmt = conn.prepare(
                     "SELECT id, nextcloud_account_id, display_name, emails_json,
-                            phones_json, organization, photo_mime, photo_data
+                            phones_json, organization, photo_mime
                      FROM contacts
                      ORDER BY display_name COLLATE NOCASE",
                 )?;
-                stmt.query_map([], row_to_contact)?
+                stmt.query_map([], row_to_contact_no_photo)?
             }
         };
         let mut out = Vec::new();
@@ -223,11 +244,36 @@ impl Cache {
         Ok(out)
     }
 
+    /// Fetch one contact's photo bytes by app-side id. Returns
+    /// `Ok(None)` when the contact has no photo (or doesn't exist),
+    /// so the UI can render its initial-letter placeholder without a
+    /// distinct error path.
+    pub fn get_contact_photo(
+        &self,
+        contact_id: &str,
+    ) -> Result<Option<(String, Vec<u8>)>, CacheError> {
+        let conn = self.pool.get()?;
+        let row: Option<(Option<String>, Option<Vec<u8>>)> = conn
+            .query_row(
+                "SELECT photo_mime, photo_data FROM contacts WHERE id = ?1",
+                params![contact_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.and_then(|(mime, bytes)| match (mime, bytes) {
+            (Some(m), Some(b)) if !b.is_empty() => Some((m, b)),
+            _ => None,
+        }))
+    }
+
     /// Substring search over name + email for autocomplete.
     ///
     /// Matches `display_name` OR any email containing `query` (case
-    /// insensitive). Caps results at `limit` so a typo that matches
-    /// half the address book doesn't tank the UI.
+    /// insensitive). Excludes rows with no email addresses — the
+    /// compose autocomplete needs *something* to fill into the field,
+    /// so a phone-only contact is just noise here. Caps results at
+    /// `limit` so a typo that matches half the address book doesn't
+    /// tank the UI.
     pub fn search_contacts(
         &self,
         query: &str,
@@ -235,16 +281,23 @@ impl Cache {
     ) -> Result<Vec<Contact>, CacheError> {
         let conn = self.pool.get()?;
         let needle = format!("%{}%", query.replace('%', r"\%").replace('_', r"\_"));
+        // emails_json is the stringified JSON array. "[]" is the
+        // canonical empty form (see apply_contact_delta), so excluding
+        // it filters phone/photo-only rows reliably.
+        //
+        // Same photo-omission story as `list_contacts` — autocomplete
+        // doesn't render avatars, so shipping bytes is pure waste.
         let mut stmt = conn.prepare(
             "SELECT id, nextcloud_account_id, display_name, emails_json,
-                    phones_json, organization, photo_mime, photo_data
+                    phones_json, organization, photo_mime
              FROM contacts
-             WHERE display_name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
-                OR emails_json  LIKE ?1 ESCAPE '\\' COLLATE NOCASE
+             WHERE emails_json != '[]'
+               AND (display_name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
+                    OR emails_json  LIKE ?1 ESCAPE '\\' COLLATE NOCASE)
              ORDER BY display_name COLLATE NOCASE
              LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![needle, limit as i64], row_to_contact)?;
+        let rows = stmt.query_map(params![needle, limit as i64], row_to_contact_no_photo)?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -264,6 +317,105 @@ impl Cache {
         Ok(n as u32)
     }
 
+    /// Look up the server-side handle (href + etag + addressbook + raw
+    /// vCard) for a single cached contact by its app-side id.
+    ///
+    /// Returns `Ok(None)` if the row isn't cached — the caller treats
+    /// that as "stale UI; trigger a refresh and try again".
+    pub fn get_contact_server_handle(
+        &self,
+        contact_id: &str,
+    ) -> Result<Option<ContactServerHandle>, CacheError> {
+        let conn = self.pool.get()?;
+        let row = conn
+            .query_row(
+                "SELECT nextcloud_account_id, addressbook, vcard_uid, href, etag, vcard_raw
+                 FROM contacts
+                 WHERE id = ?1",
+                params![contact_id],
+                |r| {
+                    Ok(ContactServerHandle {
+                        nextcloud_account_id: r.get(0)?,
+                        addressbook: r.get(1)?,
+                        vcard_uid: r.get(2)?,
+                        href: r.get(3)?,
+                        etag: r.get(4)?,
+                        vcard_raw: r.get(5)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Insert (or replace) a single contact row outside the
+    /// sync-collection delta path. Used by the create/update Tauri
+    /// commands after a successful PUT to Nextcloud — we already
+    /// have the new etag and don't want to wait for the next sync
+    /// to see our own write.
+    ///
+    /// Does not touch `addressbook_sync_state`; the next regular
+    /// sync will move the token forward and will simply find no
+    /// changes for the row we just wrote (or report it as our own
+    /// edit, also fine).
+    pub fn upsert_single_contact(
+        &self,
+        nc_account_id: &str,
+        addressbook: &str,
+        row: &ContactRow,
+    ) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        let id = format!("{nc_account_id}::{}", row.vcard_uid);
+        let emails = serde_json::to_string(&row.emails).unwrap_or_else(|_| "[]".into());
+        let phones = serde_json::to_string(&row.phones).unwrap_or_else(|_| "[]".into());
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO contacts
+                (id, nextcloud_account_id, addressbook, vcard_uid, href, etag,
+                 display_name, emails_json, phones_json, organization,
+                 photo_mime, photo_data, vcard_raw, cached_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT (nextcloud_account_id, addressbook, vcard_uid) DO UPDATE SET
+                href         = excluded.href,
+                etag         = excluded.etag,
+                display_name = excluded.display_name,
+                emails_json  = excluded.emails_json,
+                phones_json  = excluded.phones_json,
+                organization = excluded.organization,
+                photo_mime   = excluded.photo_mime,
+                photo_data   = excluded.photo_data,
+                vcard_raw    = excluded.vcard_raw,
+                cached_at    = excluded.cached_at",
+            params![
+                id,
+                nc_account_id,
+                addressbook,
+                row.vcard_uid,
+                row.href,
+                row.etag,
+                row.display_name,
+                emails,
+                phones,
+                row.organization,
+                row.photo_mime,
+                row.photo_data,
+                row.vcard_raw,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Remove one contact by its app-side id.
+    pub fn delete_contact_by_id(&self, contact_id: &str) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "DELETE FROM contacts WHERE id = ?1",
+            params![contact_id],
+        )?;
+        Ok(())
+    }
+
     /// Drop all contacts and sync state for a Nextcloud account —
     /// called when the user disconnects that account.
     pub fn wipe_nextcloud_contacts(&self, nc_account_id: &str) -> Result<(), CacheError> {
@@ -280,7 +432,12 @@ impl Cache {
     }
 }
 
-fn row_to_contact(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
+/// Map a row that excludes the `photo_data` column. `photo_mime` is
+/// kept (column index 6) so the UI knows whether a photo exists
+/// without having to ship the bytes; `photo_data` is forced to
+/// `None`. Pair with the SELECT lists in `list_contacts` and
+/// `search_contacts`.
+fn row_to_contact_no_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
     let emails_json: String = r.get(3)?;
     let phones_json: String = r.get(4)?;
     Ok(Contact {
@@ -291,7 +448,7 @@ fn row_to_contact(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
         phone: serde_json::from_str(&phones_json).unwrap_or_default(),
         organization: r.get(5)?,
         photo_mime: r.get(6)?,
-        photo_data: r.get(7)?,
+        photo_data: None,
     })
 }
 
@@ -321,6 +478,22 @@ mod tests {
             photo_data: None,
             vcard_raw: format!("BEGIN:VCARD\r\nUID:{uid}\r\nEND:VCARD\r\n"),
         }
+    }
+
+    #[test]
+    fn search_excludes_contacts_without_email() {
+        let cache = open_test_cache();
+        let phone_only = ContactRow {
+            emails: vec![],
+            phones: vec!["+1 555 1234".into()],
+            ..row("u9", "Phone Only", "")
+        };
+        cache
+            .apply_contact_delta("nc1", "contacts", None, &[phone_only], &[], None, None)
+            .unwrap();
+        // Substring of the display name still finds nothing because the
+        // row has no emails to autocomplete.
+        assert!(cache.search_contacts("phone", 10).unwrap().is_empty());
     }
 
     #[test]

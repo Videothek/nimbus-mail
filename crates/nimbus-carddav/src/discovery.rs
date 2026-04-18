@@ -101,8 +101,22 @@ fn parse_addressbook_list(xml: &str, server_url: &str) -> Result<Vec<Addressbook
             _ => {}
         }
     }
+
+    // Drop Nextcloud's app-generated pseudo-addressbooks. These show up
+    // in the home collection alongside real ones but aren't designed to
+    // be synced by external clients — `contactsinteraction--recent` in
+    // particular returns HTTP 415 to sync-collection REPORTs. The
+    // official NC clients filter them the same way.
+    books.retain(|b| !is_pseudo_addressbook(&b.name));
+
     tracing::info!("CardDAV: discovered {} addressbook(s)", books.len());
     Ok(books)
+}
+
+/// True for Nextcloud system / app-generated addressbooks that look
+/// like normal collections but aren't meant for client sync.
+fn is_pseudo_addressbook(name: &str) -> bool {
+    name.starts_with("z-app-generated") || name == "system"
 }
 
 /// Walk a single `<response>` and pull out the bits we need.
@@ -222,6 +236,38 @@ mod tests {
     </d:propstat>
   </d:response>
 </d:multistatus>"#;
+
+    #[test]
+    fn filters_app_generated_pseudo_addressbooks() {
+        // Same shape as SAMPLE plus a `z-app-generated--…--recent` book.
+        // Real on Nextcloud; rejects sync-collection with HTTP 415.
+        let xml = r#"<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/" xmlns:card="urn:ietf:params:xml:ns:carddav">
+  <d:response>
+    <d:href>/remote.php/dav/addressbooks/users/alice/contacts/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+        <d:displayname>Contacts</d:displayname>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/remote.php/dav/addressbooks/users/alice/z-app-generated--contactsinteraction--recent/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+        <d:displayname>Recently contacted</d:displayname>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>"#;
+        let books = parse_addressbook_list(xml, "https://cloud.example.com").unwrap();
+        assert_eq!(books.len(), 1);
+        assert_eq!(books[0].name, "contacts");
+    }
 
     #[test]
     fn parses_single_addressbook_and_skips_home() {

@@ -6,7 +6,11 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use nimbus_carddav::{RawContact, list_addressbooks, sync_addressbook};
+use nimbus_carddav::{
+    Addressbook, ParsedVcard, RawContact, build_vcard, create_contact as carddav_create_contact,
+    delete_contact as carddav_delete_contact, list_addressbooks, sync_addressbook,
+    update_contact as carddav_update_contact,
+};
 use nimbus_core::NimbusError;
 use nimbus_core::models::{
     Account, Contact, Email, EmailEnvelope, Folder, NextcloudAccount, OutgoingEmail,
@@ -17,9 +21,11 @@ use nimbus_nextcloud::{
     LoginFlowInit, LoginFlowResult, fetch_capabilities, poll_login, start_login,
 };
 use nimbus_smtp::SmtpClient;
-use nimbus_store::cache::{ContactRow, SyncState};
+use nimbus_store::cache::{ContactRow, ContactServerHandle, SyncState};
+use tauri::Manager;
+use tauri::UriSchemeContext;
 use nimbus_store::{Cache, account_store, credentials, nextcloud_store};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 // ── Tauri commands ──────────────────────────────────────────────
@@ -342,6 +348,27 @@ fn search_contacts(
         .map_err(Into::into)
 }
 
+/// Fetched separately from `get_contacts` because photo bytes are
+/// huge and Tauri serialises them as JSON number arrays — shipping
+/// every photo with the list payload made the contacts view feel
+/// laggy. The UI requests photos only for rows it actually paints.
+#[derive(Debug, Clone, Serialize)]
+struct ContactPhoto {
+    mime: String,
+    data: Vec<u8>,
+}
+
+#[tauri::command]
+fn get_contact_photo(
+    contact_id: String,
+    cache: State<'_, Cache>,
+) -> Result<Option<ContactPhoto>, NimbusError> {
+    Ok(cache
+        .get_contact_photo(&contact_id)
+        .map_err(NimbusError::from)?
+        .map(|(mime, data)| ContactPhoto { mime, data }))
+}
+
 /// Field-for-field copy between the CardDAV crate's `RawContact` and
 /// the store crate's `ContactRow`. Kept as a free function so neither
 /// crate has to depend on the other — the Tauri layer is the only
@@ -359,6 +386,239 @@ fn raw_contact_to_row(c: &RawContact) -> ContactRow {
         photo_data: c.photo_data.clone(),
         vcard_raw: c.vcard_raw.clone(),
     }
+}
+
+// ── CardDAV writes (create / update / delete) ───────────────────
+//
+// These three commands are the UI's entry points for editing
+// contacts. They each do the same three-step dance:
+//
+// 1. Build a vCard 4.0 body from the form input.
+// 2. PUT / DELETE against the CardDAV server with the right
+//    precondition (If-None-Match for create, If-Match for
+//    update/delete) so conflicting writes surface as a structured
+//    error rather than silently clobbering remote state.
+// 3. Write through to the local cache so the UI reflects the
+//    change immediately — we don't wait for the next sync tick.
+//
+// For update/delete we look up the server bookkeeping (href, etag,
+// addressbook) by contact id; the UI never has to carry those around.
+
+/// Editable fields for a contact, shared by create and update.
+#[derive(Debug, Clone, Deserialize)]
+struct ContactInput {
+    display_name: String,
+    emails: Vec<String>,
+    phones: Vec<String>,
+    organization: Option<String>,
+    photo_mime: Option<String>,
+    photo_data: Option<Vec<u8>>,
+}
+
+/// Create a new contact on Nextcloud and cache it locally.
+///
+/// `addressbook_url` is the absolute URL of the target book (the
+/// `path` field on `Addressbook`). The UI picks it up from the
+/// sync report or a dedicated listing command.
+///
+/// Generates a fresh UUID for the vCard's UID so callers don't
+/// have to, and returns the newly cached `Contact` so the UI can
+/// slot it straight into its list without re-fetching.
+#[tauri::command]
+async fn create_contact(
+    nc_id: String,
+    addressbook_url: String,
+    addressbook_name: String,
+    input: ContactInput,
+    cache: State<'_, Cache>,
+) -> Result<Contact, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    let uid = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+    let parsed = input_to_parsed(&uid, &input);
+    let vcard = build_vcard(&parsed);
+
+    let outcome = carddav_create_contact(
+        &account.server_url,
+        &addressbook_url,
+        &account.username,
+        &app_password,
+        &uid,
+        &vcard,
+    )
+    .await?;
+
+    let row = ContactRow {
+        href: outcome.href.clone(),
+        etag: outcome.etag.clone(),
+        vcard_uid: uid.clone(),
+        display_name: parsed.display_name.clone(),
+        emails: parsed.emails.clone(),
+        phones: parsed.phones.clone(),
+        organization: parsed.organization.clone(),
+        photo_mime: parsed.photo_mime.clone(),
+        photo_data: parsed.photo_data.clone(),
+        vcard_raw: vcard,
+    };
+    cache
+        .upsert_single_contact(&nc_id, &addressbook_name, &row)
+        .map_err(NimbusError::from)?;
+
+    Ok(row_to_contact(&nc_id, &row))
+}
+
+/// Replace an existing contact on the server with the form's new
+/// values. `If-Match` on the cached etag means a concurrent edit
+/// on another device surfaces as a 412 (mapped to a readable error)
+/// rather than silently overwriting.
+#[tauri::command]
+async fn update_contact(
+    contact_id: String,
+    input: ContactInput,
+    cache: State<'_, Cache>,
+) -> Result<Contact, NimbusError> {
+    let handle = load_contact_handle(&cache, &contact_id)?;
+    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+
+    let parsed = input_to_parsed(&handle.vcard_uid, &input);
+    let vcard = build_vcard(&parsed);
+
+    let outcome = carddav_update_contact(
+        &handle.href,
+        &account.username,
+        &app_password,
+        &handle.etag,
+        &vcard,
+    )
+    .await?;
+
+    let row = ContactRow {
+        href: outcome.href.clone(),
+        etag: outcome.etag.clone(),
+        vcard_uid: handle.vcard_uid.clone(),
+        display_name: parsed.display_name.clone(),
+        emails: parsed.emails.clone(),
+        phones: parsed.phones.clone(),
+        organization: parsed.organization.clone(),
+        photo_mime: parsed.photo_mime.clone(),
+        photo_data: parsed.photo_data.clone(),
+        vcard_raw: vcard,
+    };
+    cache
+        .upsert_single_contact(&handle.nextcloud_account_id, &handle.addressbook, &row)
+        .map_err(NimbusError::from)?;
+
+    Ok(row_to_contact(&handle.nextcloud_account_id, &row))
+}
+
+/// Delete a contact from the server and the local cache. The
+/// server delete is gated on the cached etag; if that fails we
+/// leave the cache row alone so the UI can show the user the
+/// fresh state on the next sync.
+#[tauri::command]
+async fn delete_contact(
+    contact_id: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let handle = load_contact_handle(&cache, &contact_id)?;
+    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+
+    carddav_delete_contact(&handle.href, &account.username, &app_password, &handle.etag)
+        .await?;
+
+    cache
+        .delete_contact_by_id(&contact_id)
+        .map_err(NimbusError::from)?;
+    Ok(())
+}
+
+/// A trimmed-down addressbook record for the UI's "save new contact
+/// to…" dropdown. We don't ship ctags or sync tokens — those are
+/// sync-layer bookkeeping the frontend has no business touching.
+#[derive(Debug, Clone, Serialize)]
+struct AddressbookSummary {
+    path: String,
+    name: String,
+    display_name: Option<String>,
+}
+
+/// List the user's addressbooks on a Nextcloud account. Used by
+/// the Contacts view to populate a target-addressbook dropdown
+/// when creating a new contact. Hits the server (PROPFIND) because
+/// the list can change between logins and we want a fresh view.
+#[tauri::command]
+async fn list_nextcloud_addressbooks(
+    nc_id: String,
+) -> Result<Vec<AddressbookSummary>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let books: Vec<Addressbook> =
+        list_addressbooks(&account.server_url, &account.username, &app_password).await?;
+    Ok(books
+        .into_iter()
+        .map(|b| AddressbookSummary {
+            path: b.path,
+            name: b.name,
+            display_name: b.display_name,
+        })
+        .collect())
+}
+
+/// Fold a `ContactInput` into the shape `build_vcard` expects. The
+/// UID is pulled from the caller because the two code paths (create
+/// vs. update) source it differently — a fresh UUID vs. the cached
+/// one.
+fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
+    ParsedVcard {
+        uid: uid.to_string(),
+        display_name: input.display_name.clone(),
+        emails: input.emails.clone(),
+        phones: input.phones.clone(),
+        organization: input.organization.clone(),
+        photo_mime: input.photo_mime.clone(),
+        photo_data: input.photo_data.clone(),
+    }
+}
+
+/// Hydrate a freshly-written `ContactRow` into a UI-facing
+/// `Contact`. The composite id has to match the one the store
+/// uses internally (`{nc_account_id}::{vcard_uid}`) so the next
+/// `get_contacts` call returns the same record.
+fn row_to_contact(nc_account_id: &str, row: &ContactRow) -> Contact {
+    Contact {
+        id: format!("{nc_account_id}::{}", row.vcard_uid),
+        nextcloud_account_id: nc_account_id.to_string(),
+        display_name: row.display_name.clone(),
+        email: row.emails.clone(),
+        phone: row.phones.clone(),
+        organization: row.organization.clone(),
+        photo_mime: row.photo_mime.clone(),
+        photo_data: row.photo_data.clone(),
+    }
+}
+
+fn load_nextcloud_account(nc_id: &str) -> Result<NextcloudAccount, NimbusError> {
+    nextcloud_store::load_accounts()?
+        .into_iter()
+        .find(|a| a.id == nc_id)
+        .ok_or_else(|| NimbusError::Other(format!("no Nextcloud account with id '{nc_id}'")))
+}
+
+fn load_contact_handle(
+    cache: &Cache,
+    contact_id: &str,
+) -> Result<ContactServerHandle, NimbusError> {
+    cache
+        .get_contact_server_handle(contact_id)
+        .map_err(NimbusError::from)?
+        .ok_or_else(|| {
+            NimbusError::Other(format!(
+                "contact '{contact_id}' is not in the local cache — refresh and try again"
+            ))
+        })
 }
 
 // ── IMAP commands ───────────────────────────────────────────────
@@ -749,6 +1009,77 @@ async fn detect_jmap(host: String) -> Result<Option<String>, NimbusError> {
     Ok(None)
 }
 
+// ── Custom URI scheme: contact photos ──────────────────────────
+//
+// Contact avatars are served via a custom `contact-photo://<id>`
+// scheme so the webview can request them with a plain `<img src>`
+// instead of round-tripping the bytes through the JSON IPC layer.
+// JSON serialises a byte as one number (3–4 chars per byte), so
+// shipping 200 photos that way turned the contacts list into tens
+// of MB of IPC traffic. Going through a URI scheme:
+//
+// - the body is raw bytes — no encoding bloat
+// - the browser caches per-URL, so scrolling a row off and back on
+//   doesn't re-fetch
+// - `loading="lazy"` on the `<img>` defers fetches for off-screen
+//   rows, so opening a 1000-contact addressbook only pays for the
+//   ~20 photos actually visible
+//
+// The path component of the URL is the contact's app-side id,
+// percent-encoded by `convertFileSrc` on the JS side.
+fn contact_photo_protocol(
+    ctx: UriSchemeContext<'_, tauri::Wry>,
+    request: tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<std::borrow::Cow<'static, [u8]>> {
+    let id = percent_decode(request.uri().path().trim_start_matches('/'));
+    let cache = ctx.app_handle().state::<Cache>();
+    match cache.get_contact_photo(&id) {
+        Ok(Some((mime, bytes))) => tauri::http::Response::builder()
+            .status(200)
+            .header("Content-Type", mime)
+            // The bytes are immutable per (id, etag) — but we don't
+            // know the etag here. A short cache window is enough to
+            // dedupe the burst of requests that comes from scrolling.
+            .header("Cache-Control", "private, max-age=300")
+            .body(std::borrow::Cow::Owned(bytes))
+            .expect("build photo response"),
+        Ok(None) => tauri::http::Response::builder()
+            .status(404)
+            .body(std::borrow::Cow::Owned(Vec::new()))
+            .expect("build 404"),
+        Err(e) => {
+            tracing::warn!("contact-photo lookup for '{id}' failed: {e}");
+            tauri::http::Response::builder()
+                .status(500)
+                .body(std::borrow::Cow::Owned(Vec::new()))
+                .expect("build 500")
+        }
+    }
+}
+
+/// Minimal RFC 3986 percent-decoder. Avoids pulling in a dep just
+/// to undo what `encodeURIComponent` did on the JS side. Unrecognised
+/// `%xx` sequences are passed through verbatim.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 // ── App entry point ─────────────────────────────────────────────
 
 fn main() {
@@ -762,6 +1093,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(cache)
+        .register_uri_scheme_protocol("contact-photo", contact_photo_protocol)
         // Register all our commands so the frontend can call them
         .invoke_handler(tauri::generate_handler![
             get_accounts,
@@ -787,6 +1119,11 @@ fn main() {
             sync_nextcloud_contacts,
             get_contacts,
             search_contacts,
+            get_contact_photo,
+            create_contact,
+            update_contact,
+            delete_contact,
+            list_nextcloud_addressbooks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nimbus");

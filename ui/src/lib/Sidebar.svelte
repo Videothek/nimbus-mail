@@ -25,19 +25,24 @@
     selectedFolder: string
     /** Bumped by the parent to force a network re-fetch (manual refresh). */
     refreshToken?: number
+    /** Which integration tab (if any) is currently active. */
+    activeIntegration?: string | null
     onselectfolder: (name: string) => void
     onsettings: () => void
     onrefresh?: () => void
     oncompose?: () => void
+    onselectintegration?: (name: string) => void
   }
   let {
     accountId,
     selectedFolder,
     refreshToken = 0,
+    activeIntegration = null,
     onselectfolder,
     onsettings,
     onrefresh,
     oncompose,
+    onselectintegration,
   }: Props = $props()
 
   let folders = $state<Folder[]>([])
@@ -185,7 +190,11 @@
     <p class="px-2 py-1 text-xs font-semibold text-surface-500 uppercase tracking-wider">Integrations</p>
     {#each integrations as item (item.name)}
       <button
-        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors
+          {activeIntegration === item.name
+            ? 'bg-primary-500/10 text-primary-500 font-medium'
+            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => onselectintegration?.(item.name)}
       >
         <span>{item.icon}</span>
         <span class="flex-1 text-left">{item.name}</span>

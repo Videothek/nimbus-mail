@@ -78,6 +78,9 @@ ical = { version = "0.11", default-features = false, features = ["vcard"] }
 # vCard PHOTO is base64-encoded inline; we decode once on import so
 # the cached row holds raw image bytes.
 base64 = "0.22"
+# UUIDs for fresh vCard UIDs on contact create — we picked `urn:uuid:`
+# form to match what other CardDAV clients emit.
+uuid = { version = "1", features = ["v4"] }
 # Internal crates
 nimbus-core = { path = "crates/nimbus-core" }
 nimbus-imap = { path = "crates/nimbus-imap" }

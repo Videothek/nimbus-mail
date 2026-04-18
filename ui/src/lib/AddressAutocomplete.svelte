@@ -20,11 +20,13 @@
    * every keystroke), token parsing (the query is only the text
    * after the last `,` or `;`), and keyboard navigation.
    *
-   * Photos come through as a `photo_data` byte array — we wrap it in
-   * a Blob URL for `<img src>`. Outlook does this; we should too.
+   * Photos render via the `contact-photo://` URI scheme — the
+   * webview fetches the bytes straight from the Rust cache, so the
+   * dropdown payload stays tiny (no JSON byte-array bloat) and the
+   * browser caches per-id automatically.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { onDestroy } from 'svelte'
 
   interface Contact {
@@ -35,7 +37,6 @@
     phone: string[]
     organization: string | null
     photo_mime: string | null
-    photo_data: number[] | null
   }
 
   interface Props {
@@ -51,9 +52,6 @@
   let open = $state(false)
   let activeIndex = $state(0)
   let inputEl: HTMLInputElement | undefined = $state()
-  // Per-contact object-URL cache so we don't re-allocate a Blob URL on
-  // every render. Revoked on component teardown.
-  let photoUrls = new Map<string, string>()
 
   // 150ms debounce keeps the UI snappy without firing a DB query on
   // every keystroke of a fast typer. The timer is a setTimeout handle
@@ -170,16 +168,16 @@
     }, 120)
   }
 
-  /** Turn raw photo bytes into an <img src>-able URL, cached per contact. */
+  /**
+   * URL for `<img src>` against the custom `contact-photo://` URI
+   * scheme. Returns `null` for contacts with no photo so callers
+   * can render the initials placeholder. The browser caches per-id
+   * so a contact that pops in and out of the dropdown only fetches
+   * its avatar once.
+   */
   function photoUrl(c: Contact): string | null {
-    if (!c.photo_data || c.photo_data.length === 0) return null
-    const cached = photoUrls.get(c.id)
-    if (cached) return cached
-    const mime = c.photo_mime ?? 'image/jpeg'
-    const blob = new Blob([new Uint8Array(c.photo_data)], { type: mime })
-    const url = URL.createObjectURL(blob)
-    photoUrls.set(c.id, url)
-    return url
+    if (!c.photo_mime) return null
+    return convertFileSrc(c.id, 'contact-photo')
   }
 
   function initials(name: string): string {
@@ -191,9 +189,6 @@
 
   onDestroy(() => {
     if (debounceTimer !== null) window.clearTimeout(debounceTimer)
-    // Release Blob URLs so the bytes can be GC'd.
-    for (const url of photoUrls.values()) URL.revokeObjectURL(url)
-    photoUrls.clear()
   })
 </script>
 
@@ -231,7 +226,12 @@
           onmouseenter={() => (activeIndex = i)}
         >
           {#if url}
-            <img src={url} alt="" class="w-8 h-8 rounded-full object-cover flex-shrink-0" />
+            <img
+              src={url}
+              alt=""
+              loading="lazy"
+              class="w-8 h-8 rounded-full object-cover flex-shrink-0"
+            />
           {:else}
             <div class="w-8 h-8 rounded-full bg-surface-300 dark:bg-surface-700
                         flex items-center justify-center text-xs font-semibold flex-shrink-0">
