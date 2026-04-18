@@ -21,12 +21,14 @@ use nimbus_nextcloud::{
     LoginFlowInit, LoginFlowResult, fetch_capabilities, poll_login, start_login,
 };
 use nimbus_smtp::SmtpClient;
-use nimbus_store::cache::{ContactRow, ContactServerHandle, SyncState};
-use tauri::Manager;
-use tauri::UriSchemeContext;
+use nimbus_store::cache::{
+    ContactRow, ContactServerHandle, SearchFilters, SearchHit, SearchScope, SyncState,
+};
 use nimbus_store::{Cache, account_store, credentials, nextcloud_store};
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 use tauri::State;
+use tauri::UriSchemeContext;
 
 // ── Tauri commands ──────────────────────────────────────────────
 //
@@ -256,8 +258,7 @@ async fn sync_nextcloud_contacts(
         .ok_or_else(|| NimbusError::Other(format!("no Nextcloud account with id '{nc_id}'")))?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
-    let books =
-        list_addressbooks(&account.server_url, &account.username, &app_password).await?;
+    let books = list_addressbooks(&account.server_url, &account.username, &app_password).await?;
     tracing::info!(
         "CardDAV: {} addressbook(s) to sync for {}",
         books.len(),
@@ -298,8 +299,7 @@ async fn sync_nextcloud_contacts(
             }
         };
 
-        let upserts: Vec<ContactRow> =
-            delta.upserts.iter().map(raw_contact_to_row).collect();
+        let upserts: Vec<ContactRow> = delta.upserts.iter().map(raw_contact_to_row).collect();
 
         if let Err(e) = cache.apply_contact_delta(
             &nc_id,
@@ -329,9 +329,7 @@ fn get_contacts(
     nc_id: Option<String>,
     cache: State<'_, Cache>,
 ) -> Result<Vec<Contact>, NimbusError> {
-    cache
-        .list_contacts(nc_id.as_deref())
-        .map_err(Into::into)
+    cache.list_contacts(nc_id.as_deref()).map_err(Into::into)
 }
 
 /// Substring search over cached contacts — feeds the compose
@@ -343,9 +341,7 @@ fn search_contacts(
     limit: u32,
     cache: State<'_, Cache>,
 ) -> Result<Vec<Contact>, NimbusError> {
-    cache
-        .search_contacts(&query, limit)
-        .map_err(Into::into)
+    cache.search_contacts(&query, limit).map_err(Into::into)
 }
 
 /// Fetched separately from `get_contacts` because photo bytes are
@@ -518,16 +514,12 @@ async fn update_contact(
 /// leave the cache row alone so the UI can show the user the
 /// fresh state on the next sync.
 #[tauri::command]
-async fn delete_contact(
-    contact_id: String,
-    cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+async fn delete_contact(contact_id: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
     let handle = load_contact_handle(&cache, &contact_id)?;
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
-    carddav_delete_contact(&handle.href, &account.username, &app_password, &handle.etag)
-        .await?;
+    carddav_delete_contact(&handle.href, &account.username, &app_password, &handle.etag).await?;
 
     cache
         .delete_contact_by_id(&contact_id)
@@ -1080,6 +1072,158 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+// ── Search commands (Issue #15) ────────────────────────────────
+//
+// Two-tier search, Outlook-style:
+//
+//   1. `search_emails`  — instant, against the local FTS5 index.
+//                         Covers everything in the cache.
+//
+//   2. `search_imap_server` — explicit fallback that hits IMAP
+//                             `UID SEARCH`. Slower, server-dependent,
+//                             only run when the user asks for it
+//                             ("Search server too" button).
+//
+// The cache-first path is the default UX. The fallback is a button
+// because (a) it's slow and (b) we don't want to spam the server on
+// every keystroke.
+
+/// Run a full-text search against the local mail cache.
+///
+/// The query is parsed as Outlook-style operator syntax (see
+/// `nimbus_store::cache::search` for grammar). `scope` and
+/// `filters` are optional narrowings from the UI — empty values
+/// mean "search everything the cache has".
+#[tauri::command]
+fn search_emails(
+    query: String,
+    scope: Option<SearchScope>,
+    filters: Option<SearchFilters>,
+    cache: State<'_, Cache>,
+) -> Result<Vec<SearchHit>, NimbusError> {
+    let scope = scope.unwrap_or_default();
+    let filters = filters.unwrap_or_default();
+    cache
+        .search_emails(&query, &scope, &filters)
+        .map_err(Into::into)
+}
+
+/// Server-side IMAP SEARCH fallback. Only JMAP/IMAP — the JMAP
+/// client already pulls everything into the cache lazily, so users
+/// pointed at a JMAP server get instant results via the local FTS5
+/// index and don't need this path.
+///
+/// Returns envelopes in the same shape as `fetch_envelopes` so the
+/// frontend can feed them into the existing mail-list renderer and
+/// also upserts them into the local cache so the next search
+/// finds them instantly without another round-trip.
+#[tauri::command]
+async fn search_imap_server(
+    account_id: String,
+    folder: String,
+    query: String,
+    limit: u32,
+    cache: State<'_, Cache>,
+) -> Result<Vec<EmailEnvelope>, NimbusError> {
+    let account = load_account(&account_id)?;
+    if uses_jmap(&account) {
+        // JMAP cache-first coverage is comprehensive; no separate
+        // server-side search path yet. Return empty so the UI
+        // silently no-ops the fallback button for JMAP accounts.
+        return Ok(Vec::new());
+    }
+
+    let criterion = imap_search_criterion(&query);
+    if criterion.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut client = connect_imap(&account).await?;
+    let hits = client.search_envelopes(&folder, &criterion, limit).await?;
+    let _ = client.logout().await;
+
+    // Warm the cache so the next query is served locally.
+    if !hits.is_empty() {
+        cache.upsert_envelopes_for_account(&account_id, &hits)?;
+    }
+    Ok(hits)
+}
+
+/// Translate a user query into an IMAP SEARCH criterion string.
+///
+/// We keep this much simpler than the FTS parser — IMAP SEARCH
+/// doesn't have rich boolean syntax and most servers only support
+/// a small subset of RFC 3501's operators. We emit a conjunction
+/// (implicit AND) of `TEXT`/`FROM`/`TO`/`SUBJECT` terms.
+///
+/// The result is a single string like:
+///   `SUBJECT "foo" FROM "alice" TEXT "budget"`
+fn imap_search_criterion(query: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut free_text: Vec<String> = Vec::new();
+
+    for token in tokenize_imap_query(query) {
+        if let Some((op, value)) = token.split_once(':') {
+            let value = value.trim_matches('"');
+            if value.is_empty() {
+                continue;
+            }
+            let key = match op.to_ascii_lowercase().as_str() {
+                "from" => Some("FROM"),
+                "to" => Some("TO"),
+                "cc" => Some("CC"),
+                "subject" | "title" => Some("SUBJECT"),
+                "body" => Some("BODY"),
+                _ => None,
+            };
+            if let Some(k) = key {
+                parts.push(format!("{k} \"{}\"", imap_quote(value)));
+                continue;
+            }
+        }
+        let cleaned = token.trim_matches('"');
+        if !cleaned.is_empty() {
+            free_text.push(cleaned.to_string());
+        }
+    }
+
+    for text in free_text {
+        parts.push(format!("TEXT \"{}\"", imap_quote(&text)));
+    }
+
+    parts.join(" ")
+}
+
+/// Split a query into tokens, keeping quoted phrases intact.
+fn tokenize_imap_query(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote = false;
+    for c in input.chars() {
+        match c {
+            '"' => {
+                in_quote = !in_quote;
+                cur.push(c);
+            }
+            w if w.is_whitespace() && !in_quote => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Escape `"` and `\` inside an IMAP quoted string (RFC 3501 §4.3).
+fn imap_quote(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 // ── App entry point ─────────────────────────────────────────────
 
 fn main() {
@@ -1111,6 +1255,8 @@ fn main() {
             get_cached_folders,
             test_jmap_connection,
             detect_jmap,
+            search_emails,
+            search_imap_server,
             start_nextcloud_login,
             poll_nextcloud_login,
             get_nextcloud_accounts,

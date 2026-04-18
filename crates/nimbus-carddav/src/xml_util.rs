@@ -65,10 +65,7 @@ pub fn read_text_until(
 
 /// Skip past a subtree, consuming events until the matching close tag.
 /// Used to drop branches we don't care about (e.g. unknown propstats).
-pub fn skip_subtree(
-    reader: &mut Reader<&[u8]>,
-    start_local: &str,
-) -> Result<(), quick_xml::Error> {
+pub fn skip_subtree(reader: &mut Reader<&[u8]>, start_local: &str) -> Result<(), quick_xml::Error> {
     let mut depth = 1;
     loop {
         match reader.read_event() {

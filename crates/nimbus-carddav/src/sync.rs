@@ -268,14 +268,8 @@ async fn fetch_vcards(
         // the same form the server originally returned. Stripping the
         // server prefix is safe because we built the absolute form
         // from that prefix in the first place.
-        let path = c
-            .href
-            .strip_prefix(server_url)
-            .unwrap_or(&c.href);
-        hrefs_xml.push_str(&format!(
-            "  <d:href>{}</d:href>\n",
-            xml_escape(path)
-        ));
+        let path = c.href.strip_prefix(server_url).unwrap_or(&c.href);
+        hrefs_xml.push_str(&format!("  <d:href>{}</d:href>\n", xml_escape(path)));
     }
 
     let body = format!(

@@ -176,11 +176,7 @@ fn parse_response(
     // Trim non-empty href; derive the addressbook slug from the last
     // non-empty path segment.
     let trimmed = href.trim_end_matches('/');
-    let name = trimmed
-        .rsplit('/')
-        .next()
-        .unwrap_or(trimmed)
-        .to_string();
+    let name = trimmed.rsplit('/').next().unwrap_or(trimmed).to_string();
     let display_name = display_name.filter(|s| !s.is_empty());
 
     Ok(Some(Addressbook {
