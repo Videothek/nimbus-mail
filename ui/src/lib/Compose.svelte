@@ -19,6 +19,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
   import RichTextEditor from './RichTextEditor.svelte'
+  import AddressAutocomplete from './AddressAutocomplete.svelte'
 
   interface Attachment {
     filename: string
@@ -205,7 +206,11 @@
     <div class="flex-1 overflow-y-auto p-5 space-y-3">
       <div class="flex items-center gap-2">
         <label class="text-xs w-14 text-surface-500" for="compose-to">To</label>
-        <input id="compose-to" class="input flex-1 px-3 py-2 text-sm rounded-md" bind:value={to} placeholder="alice@example.com, bob@example.com" />
+        <AddressAutocomplete
+          id="compose-to"
+          bind:value={to}
+          placeholder="alice@example.com, bob@example.com"
+        />
         {#if !showCcBcc}
           <button class="text-xs text-primary-500 hover:underline" onclick={() => (showCcBcc = true)}>Cc/Bcc</button>
         {/if}
@@ -214,11 +219,11 @@
       {#if showCcBcc}
         <div class="flex items-center gap-2">
           <label class="text-xs w-14 text-surface-500" for="compose-cc">Cc</label>
-          <input id="compose-cc" class="input flex-1 px-3 py-2 text-sm rounded-md" bind:value={cc} />
+          <AddressAutocomplete id="compose-cc" bind:value={cc} />
         </div>
         <div class="flex items-center gap-2">
           <label class="text-xs w-14 text-surface-500" for="compose-bcc">Bcc</label>
-          <input id="compose-bcc" class="input flex-1 px-3 py-2 text-sm rounded-md" bind:value={bcc} />
+          <AddressAutocomplete id="compose-bcc" bind:value={bcc} />
         </div>
       {/if}
 
