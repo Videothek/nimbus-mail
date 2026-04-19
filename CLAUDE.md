@@ -154,32 +154,51 @@ This means Claude should:
 
 ## Git Branching Strategy
 
+We use **short-lived feature branches, one per issue.** This keeps PRs focused, reviews small, and avoids the long-running merge conflicts that come with permanent personal branches.
+
 ```
 main (stable, always compiles)
- ├── nick   (Nick's working branch)
- └── jannik (Jannik's working branch)
+ ├── feature/10-contacts-view       (short-lived, deleted after merge)
+ ├── feature/14-settings-panel      (short-lived, deleted after merge)
+ └── feature/17-imap-idle           (short-lived, deleted after merge)
 ```
 
 ### Rules
 - **Never push directly to `main`** — always merge via Pull Request
-- **When your issue is done** — open a PR from your branch to `main`, the other person reviews and merges
-- **When the other person merged to `main`** — pull `main` into your branch to get their changes:
+- **One branch per issue** — name it `feature/<issue-number>-<short-slug>` (e.g. `feature/10-contacts-view`)
+- **Branch from the latest `main`** — always start a new feature branch from an up-to-date `main`:
   ```bash
+  git checkout main
   git pull origin main
+  git checkout -b feature/<issue-number>-<short-slug>
   ```
-- **Merge early, merge small** — don't wait until an entire issue is done. If you add a shared type to `nimbus-core`, merge that to `main` first so the other branch can use it
+- **When your issue is done** — open a PR from your feature branch to `main`, the other person reviews and merges
+- **After the PR is merged** — delete the branch (locally and on GitHub), then start the next issue with a fresh branch off the new `main`:
+  ```bash
+  git checkout main
+  git pull origin main
+  git branch -d feature/<old-branch>
+  git push origin --delete feature/<old-branch>
+  ```
+- **Merge early, merge small** — if you add a shared type to `nimbus-core` that the other person needs, split it into its own tiny PR first so the other feature branch can use it
 
 ### When to merge to main
-- A new model or type is added to `nimbus-core`
+- The issue is complete (or a clean slice of it is)
+- A new model or type is added to `nimbus-core` that other work depends on
 - A crate compiles and has basic functionality or tests
 - A UI component works (even with mock data)
 - **Do NOT merge** broken code or half-finished functions
 
-### Claude reminder obligation
-**When an issue or meaningful unit of work is completed and merged to `main`, Claude MUST remind the developer:**
-> "This is now merged to main. Remind the other developer (Nick/Jannik) to pull main into their branch: `git pull origin main`"
+### Claude reminder obligations
+Claude MUST proactively remind the developer in these situations:
 
-This ensures both branches stay in sync and avoids painful merge conflicts.
+**Before opening a PR:**
+> "Ready to open a PR? Double-check: you're on a feature branch named `feature/<issue-number>-<slug>`, branched from an up-to-date `main`, and this branch covers exactly one issue. If you're on `main` or a long-lived personal branch, stop and move the commits onto a proper feature branch first."
+
+**After an issue is merged to `main`:**
+> "This is now merged to main. Delete the feature branch (`git branch -d feature/<name>` locally, `git push origin --delete feature/<name>` on GitHub), then remind the other developer (Nick/Jannik) to pull main before starting their next branch: `git pull origin main`."
+
+Together these keep both developers starting every issue from the same clean base and avoid painful merge conflicts.
 
 ## Team Context
 
