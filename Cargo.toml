@@ -34,6 +34,10 @@ tracing-subscriber = "0.3"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
+# IANA timezone database. Used by nimbus-caldav to resolve
+# `DTSTART;TZID=America/New_York:...`-style values to UTC. The crate
+# bundles the tz database (~600 KB) so we don't need system tzdata.
+chrono-tz = "0.10"
 # App data directories
 dirs = "6"
 # OS keychain access (Credential Manager / Keychain / Secret Service)
@@ -71,10 +75,11 @@ mail-parser = "0.11"
 # the responses with quick-xml's pull parser; no full DAV client crate
 # is needed.
 quick-xml = { version = "0.36", features = ["serialize"] }
-# vCard 3 / 4 parser. Backs nimbus-carddav's contact import. Default
-# features pull in ical-event handling we don't need, so we ask only
-# for the vCard module.
-ical = { version = "0.11", default-features = false, features = ["vcard"] }
+# vCard 3 / 4 + iCalendar parser. Backs nimbus-carddav's contact import
+# (vcard feature) and nimbus-caldav's event sync (ical feature). Default
+# features also pull in a generator we don't need, so we ask only for
+# the two parser modules we actually use.
+ical = { version = "0.11", default-features = false, features = ["vcard", "ical"] }
 # vCard PHOTO is base64-encoded inline; we decode once on import so
 # the cached row holds raw image bytes.
 base64 = "0.22"

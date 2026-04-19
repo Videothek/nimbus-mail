@@ -11,3 +11,10 @@ serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 chrono.workspace = true
+# Named IANA zone lookup for `DTSTART;TZID=…` resolution.
+chrono-tz.workspace = true
+# WebDAV XML — same PROPFIND / REPORT multistatus shape as CardDAV.
+quick-xml.workspace = true
+# iCalendar parser (`ical` feature) — pulls VEVENT/VCALENDAR handling
+# out of the same crate CardDAV uses for vCards.
+ical.workspace = true
