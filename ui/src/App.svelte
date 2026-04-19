@@ -19,6 +19,7 @@
   import AccountSettings from './lib/AccountSettings.svelte'
   import Compose, { type ComposeInitial } from './lib/Compose.svelte'
   import ContactsView from './lib/ContactsView.svelte'
+  import CalendarView from './lib/CalendarView.svelte'
   import SearchBar, {
     type SearchScope,
     type SearchFilters,
@@ -28,7 +29,13 @@
   // ── View state ──────────────────────────────────────────────
   // Which view is currently shown. Starts as 'loading' until we
   // check whether any accounts exist.
-  type View = 'loading' | 'setup' | 'inbox' | 'settings' | 'contacts'
+  type View =
+    | 'loading'
+    | 'setup'
+    | 'inbox'
+    | 'settings'
+    | 'contacts'
+    | 'calendar'
   let currentView = $state<View>('loading')
 
   // Which integration tab is active in the sidebar. Lives next to
@@ -122,12 +129,16 @@
     currentView = 'settings'
   }
 
-  // Sidebar "Integrations" click. Only Contacts routes somewhere
-  // today; the other entries fall through until their feature lands.
+  // Sidebar "Integrations" click. Routes Contacts / Calendar to their
+  // dedicated views; the other entries fall through until their
+  // feature lands.
   function onSelectIntegration(name: string) {
     if (name === 'Contacts') {
       activeIntegration = name
       currentView = 'contacts'
+    } else if (name === 'Calendar') {
+      activeIntegration = name
+      currentView = 'calendar'
     }
   }
 
@@ -259,6 +270,29 @@
     />
     <div class="flex-1">
       <ContactsView onclose={goToInbox} />
+    </div>
+  </div>
+
+<!-- Calendar view: same split as Contacts — sidebar on the left, the
+     integration fills the rest of the window. -->
+{:else if currentView === 'calendar' && activeAccountId}
+  <div class="h-full flex">
+    <Sidebar
+      accountId={activeAccountId}
+      selectedFolder={selectedFolder}
+      refreshToken={refreshToken}
+      activeIntegration={activeIntegration}
+      onselectfolder={(f) => {
+        selectFolder(f)
+        goToInbox()
+      }}
+      onsettings={goToSettings}
+      onrefresh={refreshAll}
+      oncompose={() => openCompose()}
+      onselectintegration={onSelectIntegration}
+    />
+    <div class="flex-1">
+      <CalendarView onclose={goToInbox} />
     </div>
   </div>
 

@@ -6,6 +6,10 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use nimbus_caldav::{
+    Calendar as CaldavCalendar, RawEvent, list_calendars as caldav_list_calendars,
+    sync_calendar as caldav_sync_calendar,
+};
 use nimbus_carddav::{
     Addressbook, ParsedVcard, RawContact, build_vcard, create_contact as carddav_create_contact,
     delete_contact as carddav_delete_contact, list_addressbooks, sync_addressbook,
@@ -13,7 +17,7 @@ use nimbus_carddav::{
 };
 use nimbus_core::NimbusError;
 use nimbus_core::models::{
-    Account, Contact, Email, EmailEnvelope, Folder, NextcloudAccount, OutgoingEmail,
+    Account, CalendarEvent, Contact, Email, EmailEnvelope, Folder, NextcloudAccount, OutgoingEmail,
 };
 use nimbus_imap::ImapClient;
 use nimbus_jmap::JmapClient;
@@ -22,7 +26,8 @@ use nimbus_nextcloud::{
 };
 use nimbus_smtp::SmtpClient;
 use nimbus_store::cache::{
-    ContactRow, ContactServerHandle, SearchFilters, SearchHit, SearchScope, SyncState,
+    CalendarEventRow, CalendarRow, ContactRow, ContactServerHandle, SearchFilters, SearchHit,
+    SearchScope, SyncState,
 };
 use nimbus_store::{Cache, account_store, credentials, nextcloud_store};
 use serde::{Deserialize, Serialize};
@@ -190,13 +195,17 @@ fn get_nextcloud_accounts() -> Result<Vec<NextcloudAccount>, NimbusError> {
 /// local-only, fast, and offline-safe. Users who want to fully revoke
 /// can delete the app password from their NC security settings.
 ///
-/// Also drops cached contacts and CardDAV sync state for this account;
-/// a best-effort failure there is logged but doesn't block removal.
+/// Also drops cached contacts, calendars, and their DAV sync state for
+/// this account; a best-effort failure there is logged but doesn't
+/// block removal.
 #[tauri::command]
 fn remove_nextcloud_account(id: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
     credentials::delete_nextcloud_password(&id)?;
     if let Err(e) = cache.wipe_nextcloud_contacts(&id) {
         tracing::warn!("failed to wipe contacts for NC account '{id}': {e}");
+    }
+    if let Err(e) = cache.wipe_nextcloud_calendars(&id) {
+        tracing::warn!("failed to wipe calendars for NC account '{id}': {e}");
     }
     nextcloud_store::remove_account(&id)
 }
@@ -557,6 +566,290 @@ async fn list_nextcloud_addressbooks(
             display_name: b.display_name,
         })
         .collect())
+}
+
+// ── CalDAV calendars ────────────────────────────────────────────
+//
+// Calendar sync mirrors the CardDAV flow: one user-facing entry
+// point (`sync_nextcloud_calendars`) walks the user's calendars and
+// runs an incremental sync-collection REPORT per calendar, persisting
+// each delta transactionally via the store. The UI reads cached data
+// via `get_cached_calendars` (list for settings / sidebar header) and
+// `get_cached_events` (events in a date window — the sidebar body).
+//
+// What the UI never sees: hrefs, etags, sync tokens, raw ICS blobs.
+// Those all stay behind the store boundary.
+
+/// Thin summary of a calendar — what the Svelte side needs to render
+/// a row or colour-chip. Sourced from `CachedCalendar` but omits the
+/// sync bookkeeping (tokens, ctag) the UI shouldn't care about.
+#[derive(Debug, Clone, Serialize)]
+struct CalendarSummary {
+    id: String,
+    nextcloud_account_id: String,
+    display_name: String,
+    color: Option<String>,
+    last_synced_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Summary returned to the UI after a calendar sync run.
+///
+/// Per-calendar counts let the UI say "Personal: 4 new, 0 removed"
+/// instead of a generic "done". `errors` accumulates per-calendar
+/// failures so one broken calendar (commonly a subscribed read-only
+/// feed that doesn't support sync-collection) doesn't paint the
+/// whole run red.
+#[derive(Debug, Clone, Serialize)]
+struct SyncCalendarsReport {
+    nc_account_id: String,
+    calendars_synced: u32,
+    upserted: u32,
+    deleted: u32,
+    errors: Vec<String>,
+}
+
+/// Fresh PROPFIND list of the user's calendars on the server.
+///
+/// Lighter than `sync_nextcloud_calendars` — no per-calendar sync,
+/// no cache write. Used in settings UIs where the user just wants
+/// to see what calendars exist server-side before toggling sync on.
+#[tauri::command]
+async fn list_nextcloud_calendars(
+    nc_id: String,
+) -> Result<Vec<CalendarSummary>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let calendars: Vec<CaldavCalendar> =
+        caldav_list_calendars(&account.server_url, &account.username, &app_password).await?;
+    Ok(calendars
+        .into_iter()
+        .map(|c| CalendarSummary {
+            // Matches the id scheme used by the cache — stable across
+            // syncs so the UI can key rows by it whether it's looking
+            // at a fresh discovery list or the cached list.
+            id: format!("{nc_id}::{}", c.path),
+            nextcloud_account_id: nc_id.clone(),
+            display_name: c.display_name.unwrap_or(c.name),
+            color: c.color,
+            // Discovery alone doesn't produce a sync timestamp.
+            last_synced_at: None,
+        })
+        .collect())
+}
+
+/// Pull the latest calendars and events from a Nextcloud account.
+///
+/// Two phases:
+///   1. Discovery (PROPFIND) → `upsert_calendars`. This also prunes
+///      any calendar that vanished server-side, cascading its events.
+///   2. Per-calendar incremental sync. We pass the previous
+///      `sync_token` (from the cache) so the server returns only
+///      what changed. A failure on calendar N is logged and added
+///      to the report; calendar N+1 still runs.
+///
+/// Each calendar's delta is committed in its own transaction, so
+/// a partial run leaves earlier calendars fully up-to-date.
+#[tauri::command]
+async fn sync_nextcloud_calendars(
+    nc_id: String,
+    cache: State<'_, Cache>,
+) -> Result<SyncCalendarsReport, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    // ── Phase 1: discovery + reconcile the calendar list ────────
+    let server_calendars =
+        caldav_list_calendars(&account.server_url, &account.username, &app_password).await?;
+    tracing::info!(
+        "CalDAV: {} calendar(s) discovered for {}",
+        server_calendars.len(),
+        nc_id
+    );
+
+    let rows: Vec<CalendarRow> = server_calendars
+        .iter()
+        .map(|c| CalendarRow {
+            path: c.path.clone(),
+            display_name: c.display_name.clone().unwrap_or_else(|| c.name.clone()),
+            color: c.color.clone(),
+            ctag: c.ctag.clone(),
+        })
+        .collect();
+    cache.upsert_calendars(&nc_id, &rows)?;
+
+    // ── Phase 2: sync each calendar individually ────────────────
+    let mut report = SyncCalendarsReport {
+        nc_account_id: nc_id.clone(),
+        calendars_synced: 0,
+        upserted: 0,
+        deleted: 0,
+        errors: Vec::new(),
+    };
+
+    for cal in server_calendars {
+        // id matches the (nc_id, path) scheme `upsert_calendars`
+        // just committed, so `get_calendar_sync_state` and
+        // `apply_event_delta` will find/target the right row.
+        let cal_id = format!("{nc_id}::{}", cal.path);
+
+        let prev_token = cache
+            .get_calendar_sync_state(&cal_id)
+            .ok()
+            .flatten()
+            .and_then(|s| s.sync_token);
+
+        let delta = match caldav_sync_calendar(
+            &account.server_url,
+            &cal.path,
+            &account.username,
+            &app_password,
+            prev_token.as_deref(),
+        )
+        .await
+        {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("CalDAV sync failed for calendar '{}': {e}", cal.path);
+                report.errors.push(format!("{}: {e}", cal.path));
+                continue;
+            }
+        };
+
+        // One `RawEvent` can carry several VEVENTs (master + overrides
+        // at the same href). Flatten into one store row per VEVENT so
+        // the range query sees them individually. `ics_raw` is cloned
+        // onto every row from the same href — the raw blob stays
+        // identical, and the store is optimised for per-row reads,
+        // not per-href grouping.
+        let upserts: Vec<CalendarEventRow> = delta
+            .upserts
+            .iter()
+            .flat_map(raw_event_to_rows)
+            .collect();
+
+        if let Err(e) = cache.apply_event_delta(
+            &cal_id,
+            &upserts,
+            &delta.deleted_hrefs,
+            delta.new_sync_token.as_deref(),
+            cal.ctag.as_deref(),
+        ) {
+            tracing::warn!("apply_event_delta failed for '{}': {e}", cal.path);
+            report.errors.push(format!("{}: {e}", cal.path));
+            continue;
+        }
+
+        report.calendars_synced += 1;
+        report.upserted += upserts.len() as u32;
+        report.deleted += delta.deleted_hrefs.len() as u32;
+    }
+
+    Ok(report)
+}
+
+/// Cache-only list of calendars for a Nextcloud account. Used by the
+/// sidebar widget on startup so it can paint before the first sync
+/// finishes (or if the user is offline).
+#[tauri::command]
+fn get_cached_calendars(
+    nc_id: String,
+    cache: State<'_, Cache>,
+) -> Result<Vec<CalendarSummary>, NimbusError> {
+    let cached = cache.list_calendars(&nc_id)?;
+    Ok(cached
+        .into_iter()
+        .map(|c| CalendarSummary {
+            id: c.id,
+            nextcloud_account_id: c.nextcloud_account_id,
+            display_name: c.display_name,
+            color: c.color,
+            last_synced_at: c.last_synced_at,
+        })
+        .collect())
+}
+
+/// Events in `[range_start, range_end)` across the given calendars,
+/// with recurring series already expanded into concrete occurrences.
+///
+/// `calendar_ids` is the full set the UI wants to display at once —
+/// typically every calendar belonging to a Nextcloud account, so one
+/// round-trip paints the whole sidebar.
+///
+/// The expansion pipeline:
+/// 1. `cache.list_events_for_expansion` returns three buckets of rows
+///    — in-window singletons, all recurring masters, all overrides.
+///    Masters and overrides are fetched un-windowed because a series'
+///    master may predate the window but still have instances inside
+///    it, and an override may have been moved from outside the window
+///    to inside it (or vice versa).
+/// 2. Overrides are indexed by the `{calendar_id}::{uid}` prefix of
+///    their composite id — the very same prefix that a master's id
+///    has — so matching an override to its series is O(1).
+/// 3. `nimbus_caldav::expand_event` does the RFC 5545 work: RRULE
+///    enumeration, EXDATE removal, RDATE insertion, override swap-in.
+#[tauri::command]
+fn get_cached_events(
+    calendar_ids: Vec<String>,
+    range_start: chrono::DateTime<chrono::Utc>,
+    range_end: chrono::DateTime<chrono::Utc>,
+    cache: State<'_, Cache>,
+) -> Result<Vec<CalendarEvent>, NimbusError> {
+    let input = cache
+        .list_events_for_expansion(&calendar_ids, range_start, range_end)
+        .map_err(NimbusError::from)?;
+
+    // Index overrides by the master prefix that's baked into their id
+    // (`{cal}::{uid}::{epoch}` → `{cal}::{uid}`). Rare uid collisions
+    // across different calendars are already ruled out by the
+    // `{cal}::` segment.
+    let mut overrides_by_master: std::collections::HashMap<&str, Vec<&CalendarEvent>> =
+        std::collections::HashMap::new();
+    for ov in &input.overrides {
+        if let Some(master_id) = ov.id.rsplit_once("::").map(|(prefix, _)| prefix) {
+            overrides_by_master.entry(master_id).or_default().push(ov);
+        }
+    }
+
+    let mut out: Vec<CalendarEvent> = input.singletons;
+    for master in &input.masters {
+        let ovs = overrides_by_master
+            .get(master.id.as_str())
+            .cloned()
+            .unwrap_or_default();
+        out.extend(nimbus_caldav::expand_event(master, &ovs, range_start, range_end));
+    }
+    // Expansion doesn't guarantee chronological order across the whole
+    // set (singletons come first, then per-master occurrences). Sort
+    // once at the end so the UI's day-bucket grouping stays coherent.
+    out.sort_by_key(|e| e.start);
+    Ok(out)
+}
+
+/// Flatten one CalDAV resource (href-with-ics) into one store row per
+/// VEVENT it contains. Master + recurrence-id overrides all share the
+/// same `href`, `etag`, and `ics_raw` — `apply_event_delta` keys the
+/// wipe-on-upsert by href, so re-syncing an href with fewer overrides
+/// correctly removes the ones that vanished server-side.
+fn raw_event_to_rows(raw: &RawEvent) -> Vec<CalendarEventRow> {
+    raw.events
+        .iter()
+        .map(|e| CalendarEventRow {
+            // The caldav parser stores the VEVENT UID in `id`.
+            uid: e.id.clone(),
+            recurrence_id: e.recurrence_id,
+            href: raw.href.clone(),
+            etag: raw.etag.clone(),
+            summary: e.summary.clone(),
+            description: e.description.clone(),
+            start: e.start,
+            end: e.end,
+            location: e.location.clone(),
+            rrule: e.rrule.clone(),
+            rdate: e.rdate.clone(),
+            exdate: e.exdate.clone(),
+            ics_raw: raw.ics_raw.clone(),
+        })
+        .collect()
 }
 
 /// Fold a `ContactInput` into the shape `build_vcard` expects. The
@@ -1270,6 +1563,10 @@ fn main() {
             update_contact,
             delete_contact,
             list_nextcloud_addressbooks,
+            list_nextcloud_calendars,
+            sync_nextcloud_calendars,
+            get_cached_calendars,
+            get_cached_events,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nimbus");

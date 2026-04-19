@@ -7,15 +7,13 @@
 //! for incremental sync, and a pure-parser `ical` module that turns
 //! `text/calendar` bodies into flat `CalendarEvent`s.
 //!
-//! # Scope of the first landing (issue #11)
+//! # Scope
 //!
-//! - Discovery + sync-collection + calendar-multiget (read-only)
-//! - One `CalendarEvent` per VEVENT — recurring series land as their
-//!   master; additional occurrences are not yet *expanded* into
-//!   separate records, but the raw recurrence fields (`rrule`,
-//!   `rdate`, `exdate`, `recurrence_id`) **are** captured on every
-//!   event so the future expander in issue #47 has a complete picture
-//!   without re-syncing.
+//! - Discovery + sync-collection + calendar-multiget (read-only).
+//! - One `CalendarEvent` row per VEVENT in the cache — masters and
+//!   `RECURRENCE-ID` overrides land as separate rows sharing a UID.
+//!   The [`expand`] module then turns a master + overrides + a
+//!   date window into concrete occurrences for the UI.
 //! - UTC, all-day, and named-TZID events (via `chrono-tz`) all
 //!   resolve accurately. Only unknown TZIDs and DST-gap edge cases
 //!   fall back to UTC (logged at `warn`).
@@ -24,10 +22,12 @@
 
 pub mod client;
 pub mod discovery;
+pub mod expand;
 pub mod ical;
 pub mod sync;
 mod xml_util;
 
 pub use discovery::{Calendar, list_calendars};
+pub use expand::expand_event;
 pub use ical::parse_ics;
 pub use sync::{CalendarSyncDelta, RawEvent, sync_calendar};

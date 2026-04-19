@@ -8,11 +8,11 @@
 //! # Scope of this module (important)
 //!
 //! - **One `CalendarEvent` per VEVENT block.** A recurring series
-//!   lands as its master event (the first occurrence). Additional
-//!   occurrences are **not expanded** — that work is tracked in
-//!   issue #47. We *do* capture the raw recurrence fields (RRULE,
-//!   RDATE, EXDATE, RECURRENCE-ID) on every event so the expander
-//!   has everything it needs without re-syncing.
+//!   lands as its master event (the first occurrence) plus one row
+//!   per `RECURRENCE-ID` override. We capture the raw recurrence
+//!   fields (RRULE, RDATE, EXDATE, RECURRENCE-ID) on every event so
+//!   `nimbus_caldav::expand` can turn a master into concrete
+//!   occurrences without re-syncing.
 //! - **Timezone handling.** Three cases, all resolved to UTC:
 //!   - `…Z` suffix → exact UTC
 //!   - `TZID=<iana-zone>` param → resolved via `chrono-tz`; DST gaps
@@ -270,8 +270,9 @@ fn parse_single_datetime(value: &str, tzid: Option<&str>) -> Result<DateTime<Utc
 /// of the series.
 ///
 /// `VALUE=DATE` lists (all-day exceptions) are currently returned as
-/// midnight UTC for each date. Full all-day-in-local-zone handling
-/// belongs with the expander in #47.
+/// midnight UTC for each date. Full all-day-in-local-zone handling is
+/// a separate follow-up — today's expander treats these as the UTC
+/// instants the parser produces.
 fn parse_datetime_list(prop: &Property, value: &str) -> Result<Vec<DateTime<Utc>>, String> {
     let tzid = property_param(prop, "TZID");
     let is_date_only = property_param(prop, "VALUE")

@@ -38,6 +38,12 @@ chrono = { version = "0.4", features = ["serde"] }
 # `DTSTART;TZID=America/New_York:...`-style values to UTC. The crate
 # bundles the tz database (~600 KB) so we don't need system tzdata.
 chrono-tz = "0.10"
+# RFC 5545 recurrence-rule engine. Used by nimbus-caldav to expand a
+# VEVENT master's RRULE/RDATE/EXDATE into concrete occurrences over a
+# requested date window. The crate handles DST transitions, BYDAY /
+# BYMONTHDAY etc. quirks, and UNTIL semantics — things we really
+# don't want to reimplement.
+rrule = "0.14"
 # App data directories
 dirs = "6"
 # OS keychain access (Credential Manager / Keychain / Secret Service)
