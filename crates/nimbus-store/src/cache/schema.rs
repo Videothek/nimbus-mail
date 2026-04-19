@@ -338,6 +338,83 @@ const MIGRATIONS: &[&str] = &[
         AND b.folder = sm.folder
         AND b.uid = sm.uid;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v4 → v5: CalDAV calendars + events cache (Issue #47).
+    //
+    // - `calendars`: one row per remote calendar. Keyed by app-side
+    //   `id` (`{nc_id}::{path}`) so events can reference a single
+    //   stable string; the natural `(nextcloud_account_id, path)` is
+    //   also UNIQUE so a server-side rename stays idempotent.
+    //   `sync_token` lives here — it's the RFC 6578 bookmark that
+    //   makes every app-restart's first sync an incremental delta
+    //   instead of a full re-fetch. `ctag` is the cheaper-than-
+    //   sync-collection "did anything change at all" pre-check.
+    //
+    // - `calendar_events`: one row per VEVENT. A single href on the
+    //   server can carry a master plus recurrence-id overrides; each
+    //   of those lands as its own row sharing `(calendar_id, uid)`
+    //   but distinguished by `recurrence_id` (NULL for the master,
+    //   epoch seconds for an override). FK to `calendars` with
+    //   CASCADE so deleting a calendar wipes its events in one go.
+    //   `ics_raw` is kept so future model changes (and the
+    //   recurrence expander in `nimbus_caldav::expand`) can
+    //   re-extract from the cached blob without re-syncing.
+    //
+    // Indexes:
+    //   - `calendar_events_by_start` on `(calendar_id, start_utc)`
+    //     so the sidebar "next N events in this window" query can be
+    //     satisfied by a single index range scan, no sort.
+    //   - `calendar_events_by_href` on `(calendar_id, href)` so
+    //     sync-collection deletes (which come as href lists) are O(1).
+    //   - `calendars_by_nc_account` so "list calendars for this
+    //     Nextcloud account" is a simple index seek.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    CREATE TABLE calendars (
+        id                    TEXT PRIMARY KEY,
+        nextcloud_account_id  TEXT NOT NULL,
+        path                  TEXT NOT NULL,
+        display_name          TEXT NOT NULL DEFAULT '',
+        color                 TEXT,
+        ctag                  TEXT,
+        sync_token            TEXT,
+        last_synced_at        INTEGER,
+        UNIQUE (nextcloud_account_id, path)
+    );
+
+    CREATE INDEX calendars_by_nc_account
+        ON calendars (nextcloud_account_id);
+
+    CREATE TABLE calendar_events (
+        id             TEXT PRIMARY KEY,
+        calendar_id    TEXT    NOT NULL,
+        uid            TEXT    NOT NULL,
+        href           TEXT    NOT NULL,
+        etag           TEXT    NOT NULL,
+        summary        TEXT    NOT NULL DEFAULT '',
+        description    TEXT,
+        start_utc      INTEGER NOT NULL,  -- unix epoch seconds
+        end_utc        INTEGER NOT NULL,  -- unix epoch seconds
+        location       TEXT,
+        rrule          TEXT,
+        rdate_json     TEXT    NOT NULL DEFAULT '[]',
+        exdate_json    TEXT    NOT NULL DEFAULT '[]',
+        -- NULL for a master (or a non-recurring event); epoch seconds
+        -- of the original occurrence start for a RECURRENCE-ID override.
+        recurrence_id  INTEGER,
+        ics_raw        TEXT    NOT NULL,
+        cached_at      INTEGER NOT NULL,
+        FOREIGN KEY (calendar_id)
+            REFERENCES calendars (id)
+            ON DELETE CASCADE
+    );
+
+    CREATE INDEX calendar_events_by_start
+        ON calendar_events (calendar_id, start_utc);
+
+    CREATE INDEX calendar_events_by_href
+        ON calendar_events (calendar_id, href);
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

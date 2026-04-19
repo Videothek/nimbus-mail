@@ -8,11 +8,11 @@
 //! # Scope of this module (important)
 //!
 //! - **One `CalendarEvent` per VEVENT block.** A recurring series
-//!   lands as its master event (the first occurrence). Additional
-//!   occurrences are **not expanded** — that work is tracked in
-//!   issue #47. We *do* capture the raw recurrence fields (RRULE,
-//!   RDATE, EXDATE, RECURRENCE-ID) on every event so the expander
-//!   has everything it needs without re-syncing.
+//!   lands as its master event (the first occurrence) plus one row
+//!   per `RECURRENCE-ID` override. We capture the raw recurrence
+//!   fields (RRULE, RDATE, EXDATE, RECURRENCE-ID) on every event so
+//!   `nimbus_caldav::expand` can turn a master into concrete
+//!   occurrences without re-syncing.
 //! - **Timezone handling.** Three cases, all resolved to UTC:
 //!   - `…Z` suffix → exact UTC
 //!   - `TZID=<iana-zone>` param → resolved via `chrono-tz`; DST gaps
@@ -179,17 +179,30 @@ impl DateTimeValue {
         }
     }
 
-    /// Convert to the UTC end sentinel: end-of-day for dates (since an
-    /// all-day DTEND in iCalendar is exclusive at midnight, not 23:59
-    /// — but the UI treats our end as inclusive, so we snap here),
-    /// the exact instant for date-times.
+    /// Convert to the UTC end sentinel: for dates, `DTEND` in iCalendar
+    /// is *exclusive* at midnight (RFC 5545 §3.6.1) — a one-day event
+    /// on May 1 is written `DTEND;VALUE=DATE:20260502`, meaning "up to
+    /// but not including May 2". The UI wants an inclusive end, so we
+    /// step back one day and snap to `23:59:59` on the last covered
+    /// day. For date-times, DTEND is itself exclusive of the event
+    /// but we preserve the raw instant — the UI already handles that.
     fn to_utc_end(&self) -> DateTime<Utc> {
         match self {
             DateTimeValue::DateTime(dt) => *dt,
-            DateTimeValue::Date(d) => Utc.from_utc_datetime(
-                &d.and_hms_opt(23, 59, 59)
-                    .expect("23:59:59 is always valid"),
-            ),
+            DateTimeValue::Date(d) => {
+                // Defensive: a malformed VEVENT with DTEND == DTSTART
+                // (RFC says DTEND MUST be strictly after DTSTART, but
+                // real-world producers occasionally send equal values)
+                // would produce an end *before* start here. Callers in
+                // `resolve_window` don't re-validate, so guard with
+                // `pred_opt()` and fall back to same-day end.
+                let last = d.pred_opt().unwrap_or(*d);
+                Utc.from_utc_datetime(
+                    &last
+                        .and_hms_opt(23, 59, 59)
+                        .expect("23:59:59 is always valid"),
+                )
+            }
         }
     }
 }
@@ -270,8 +283,9 @@ fn parse_single_datetime(value: &str, tzid: Option<&str>) -> Result<DateTime<Utc
 /// of the series.
 ///
 /// `VALUE=DATE` lists (all-day exceptions) are currently returned as
-/// midnight UTC for each date. Full all-day-in-local-zone handling
-/// belongs with the expander in #47.
+/// midnight UTC for each date. Full all-day-in-local-zone handling is
+/// a separate follow-up — today's expander treats these as the UTC
+/// instants the parser produces.
 fn parse_datetime_list(prop: &Property, value: &str) -> Result<Vec<DateTime<Utc>>, String> {
     let tzid = property_param(prop, "TZID");
     let is_date_only = property_param(prop, "VALUE")
@@ -528,9 +542,11 @@ END:VCALENDAR\r\n";
         let events = parse_ics(ALL_DAY).unwrap();
         assert_eq!(events.len(), 1);
         let e = &events[0];
-        // Start at midnight, end snaps to end-of-day on the DTEND date.
+        // DTSTART=May 1, DTEND=May 2 means a single-day event on May 1
+        // (DTEND is exclusive). Start = UTC midnight of May 1, end snaps
+        // to 23:59:59 on the *last covered day* (May 1), not on DTEND.
         assert_eq!(e.start.to_rfc3339(), "2026-05-01T00:00:00+00:00");
-        assert_eq!(e.end.to_rfc3339(), "2026-05-02T23:59:59+00:00");
+        assert_eq!(e.end.to_rfc3339(), "2026-05-01T23:59:59+00:00");
     }
 
     const WITH_DURATION: &str = "BEGIN:VCALENDAR\r\n\
@@ -542,6 +558,26 @@ DTSTART:20260420T140000Z\r\n\
 DURATION:PT1H30M\r\n\
 END:VEVENT\r\n\
 END:VCALENDAR\r\n";
+
+    #[test]
+    fn parses_multi_day_all_day_event() {
+        // A three-day all-day event (May 1, 2, 3) is written in iCal
+        // as DTSTART=May 1 / DTEND=May 4 (DTEND exclusive). Inclusive
+        // end should land at May 3 23:59:59.
+        let ics = "BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+BEGIN:VEVENT\r\n\
+UID:evt-multiday@example.com\r\n\
+SUMMARY:Conference\r\n\
+DTSTART;VALUE=DATE:20260501\r\n\
+DTEND;VALUE=DATE:20260504\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+        let events = parse_ics(ics).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].start.to_rfc3339(), "2026-05-01T00:00:00+00:00");
+        assert_eq!(events[0].end.to_rfc3339(), "2026-05-03T23:59:59+00:00");
+    }
 
     #[test]
     fn dtstart_plus_duration() {

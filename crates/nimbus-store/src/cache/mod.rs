@@ -32,12 +32,16 @@
 //! connection, does its work, and returns it. The pool is internally
 //! synchronised so `Cache` is cheap to `clone()` and share across tasks.
 
+pub mod calendars;
 pub mod contacts;
 pub mod key;
 pub mod pool;
 pub mod schema;
 pub mod search;
 
+pub use calendars::{
+    CachedCalendar, CalendarEventRow, CalendarRow, CalendarSyncState, ExpansionInput,
+};
 pub use contacts::{AddressbookSyncState, ContactRow, ContactServerHandle};
 pub use search::{SearchFilters, SearchHit, SearchScope};
 

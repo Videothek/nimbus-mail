@@ -13,6 +13,10 @@ tracing.workspace = true
 chrono.workspace = true
 # Named IANA zone lookup for `DTSTART;TZID=…` resolution.
 chrono-tz.workspace = true
+# Recurrence-rule expander. Feeds on the RRULE/RDATE/EXDATE values the
+# iCalendar parser emits and produces concrete occurrences — see
+# `expand.rs`.
+rrule.workspace = true
 # WebDAV XML — same PROPFIND / REPORT multistatus shape as CardDAV.
 quick-xml.workspace = true
 # iCalendar parser (`ical` feature) — pulls VEVENT/VCALENDAR handling

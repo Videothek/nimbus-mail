@@ -1,0 +1,1094 @@
+//! Calendar + event cache and sync-state persistence.
+//!
+//! The shapes here mirror the CalDAV layer's outputs, but live in
+//! their own structs (`CalendarRow`, `CalendarEventRow`) so this
+//! crate doesn't have to depend on `nimbus-caldav`. The Tauri layer
+//! maps between the two — the same pattern we use for contacts.
+//!
+//! # What gets stored where
+//!
+//! - `calendars` — one row per remote calendar. Carries the RFC 6578
+//!   `sync_token` and Nextcloud's `ctag` so the next app launch can
+//!   do an incremental sync instead of a full re-fetch.
+//!
+//! - `calendar_events` — one row per VEVENT. A single CalDAV href can
+//!   carry a master plus several recurrence-id overrides; we unfold
+//!   those into separate rows that all share `(calendar_id, uid)` and
+//!   are distinguished by `recurrence_id` (NULL for the master, the
+//!   original occurrence's epoch seconds for an override).
+//!
+//! # Why we keep `ics_raw`
+//!
+//! Same reasoning as contacts: if we later surface more iCalendar
+//! fields (ATTENDEE, ORGANIZER, VALARM…) we can re-extract them from
+//! the cached blob without re-syncing every event. The recurrence
+//! expander in `nimbus_caldav::expand` also benefits — it can
+//! cross-check a row's parsed `rrule` / `exdate` against the raw
+//! source if anything ever looks off.
+
+use chrono::{DateTime, TimeZone, Utc};
+use rusqlite::{OptionalExtension, params};
+
+use nimbus_core::models::CalendarEvent;
+
+use crate::cache::{Cache, CacheError};
+
+/// One discovered calendar ready for upsert.
+///
+/// Comes from CalDAV PROPFIND in `nimbus_caldav::discovery`. We take
+/// only the fields that matter for the cache — the path is the stable
+/// key, and `ctag` is optional because not every server surfaces it.
+/// `sync_token` is **not** on this struct: discovery returns an
+/// initial token but we let `apply_event_delta` write it atomically
+/// alongside the first batch of events so the two stay consistent.
+#[derive(Debug, Clone)]
+pub struct CalendarRow {
+    /// Absolute path on the server, e.g.
+    /// `/remote.php/dav/calendars/alice/personal/`. Stable across
+    /// syncs for a given calendar.
+    pub path: String,
+    pub display_name: String,
+    /// Hex colour (e.g. `#2bb0ed`). Optional — some servers / user
+    /// agents don't set it.
+    pub color: Option<String>,
+    pub ctag: Option<String>,
+}
+
+/// One VEVENT ready for upsert. Mirrors `nimbus_caldav::RawEvent`'s
+/// inner shape without the dependency.
+#[derive(Debug, Clone)]
+pub struct CalendarEventRow {
+    /// The VEVENT UID from the iCalendar source. Shared between a
+    /// master and all of its recurrence-id overrides — that's how
+    /// RFC 5545 links them.
+    pub uid: String,
+    /// `None` for masters and non-recurring events; `Some(original
+    /// occurrence start)` for a RECURRENCE-ID override.
+    pub recurrence_id: Option<DateTime<Utc>>,
+    /// CalDAV href this event lives at. Multiple rows can share one
+    /// href (master + overrides are colocated in the same ICS blob).
+    pub href: String,
+    pub etag: String,
+    pub summary: String,
+    pub description: Option<String>,
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub location: Option<String>,
+    pub rrule: Option<String>,
+    pub rdate: Vec<DateTime<Utc>>,
+    pub exdate: Vec<DateTime<Utc>>,
+    /// Raw `text/calendar` blob as the server returned it. Kept so
+    /// future parser evolutions and the recurrence expander have a
+    /// source of truth on disk.
+    pub ics_raw: String,
+}
+
+/// A calendar as read back from the cache. Extends `CalendarRow` with
+/// the server-side sync bookkeeping we populate during sync.
+#[derive(Debug, Clone)]
+pub struct CachedCalendar {
+    /// App-side `{nc_account_id}::{path}` — stable across syncs;
+    /// events FK on this.
+    pub id: String,
+    pub nextcloud_account_id: String,
+    pub path: String,
+    pub display_name: String,
+    pub color: Option<String>,
+    pub ctag: Option<String>,
+    /// Last known RFC 6578 sync-collection token. Feed this back to
+    /// the server on the next sync to get "what's changed since".
+    pub sync_token: Option<String>,
+    pub last_synced_at: Option<DateTime<Utc>>,
+}
+
+/// Sync bookmark for a single calendar. Separate from `CachedCalendar`
+/// because the sync path only needs the bookkeeping bits and doesn't
+/// care about display metadata.
+#[derive(Debug, Clone)]
+pub struct CalendarSyncState {
+    pub sync_token: Option<String>,
+    pub ctag: Option<String>,
+    pub last_synced_at: Option<DateTime<Utc>>,
+}
+
+/// All rows the recurrence expander needs to render a date window.
+///
+/// Fetched in one `list_events_for_expansion` call so the Tauri layer
+/// can loop over masters and match overrides against them without
+/// issuing a query per master.
+#[derive(Debug, Default, Clone)]
+pub struct ExpansionInput {
+    /// Non-recurring, non-override events whose time overlaps the
+    /// requested window. Safe to return straight to the UI.
+    pub singletons: Vec<CalendarEvent>,
+    /// Recurring masters in the given calendars. **Not** filtered by
+    /// the window — a weekly series's master row sits on the first
+    /// occurrence, which is often far before the visible window even
+    /// though later occurrences fall inside it.
+    pub masters: Vec<CalendarEvent>,
+    /// RECURRENCE-ID overrides for the given calendars. **Not**
+    /// filtered by the window either — an override whose *new* start
+    /// is in-window is relevant even if its original RECURRENCE-ID is
+    /// outside, so we hand the expander the full set and let it
+    /// decide.
+    pub overrides: Vec<CalendarEvent>,
+}
+
+impl Cache {
+    // ── Calendars ───────────────────────────────────────────────
+
+    /// Reconcile the cached calendar list for a Nextcloud account
+    /// against a fresh discovery result.
+    ///
+    /// Upserts every `rows[i]` (preserving `sync_token` on existing
+    /// rows — display_name / color / ctag can drift, the token can't
+    /// be recovered from discovery) and deletes any calendar that
+    /// was previously cached for `nc_account_id` but no longer
+    /// appears in the server's list. `ON DELETE CASCADE` on
+    /// `calendar_events.calendar_id` takes care of the events.
+    ///
+    /// All inside one transaction so a server hiccup mid-reconcile
+    /// leaves the old state intact rather than a half-applied list.
+    pub fn upsert_calendars(
+        &self,
+        nc_account_id: &str,
+        rows: &[CalendarRow],
+    ) -> Result<(), CacheError> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+
+        // Insert / update every calendar in the server list. We
+        // explicitly do NOT touch `sync_token` or `last_synced_at`
+        // here — those are only valid after a real sync, and a
+        // discovery run shouldn't pretend otherwise.
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO calendars
+                    (id, nextcloud_account_id, path, display_name, color, ctag)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (nextcloud_account_id, path) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    color        = COALESCE(excluded.color, calendars.color),
+                    ctag         = COALESCE(excluded.ctag, calendars.ctag)",
+            )?;
+            for r in rows {
+                let id = format!("{nc_account_id}::{}", r.path);
+                stmt.execute(params![
+                    id,
+                    nc_account_id,
+                    r.path,
+                    r.display_name,
+                    r.color,
+                    r.ctag,
+                ])?;
+            }
+        }
+
+        // Prune calendars that vanished server-side. We bind the
+        // full server path list as an in-memory temp join so we
+        // don't have to build a variadic `NOT IN (...)` clause.
+        tx.execute(
+            "CREATE TEMP TABLE _seen_paths (path TEXT PRIMARY KEY)",
+            [],
+        )?;
+        {
+            let mut stmt = tx.prepare("INSERT INTO _seen_paths (path) VALUES (?1)")?;
+            for r in rows {
+                stmt.execute(params![r.path])?;
+            }
+        }
+        tx.execute(
+            "DELETE FROM calendars
+             WHERE nextcloud_account_id = ?1
+               AND path NOT IN (SELECT path FROM _seen_paths)",
+            params![nc_account_id],
+        )?;
+        tx.execute("DROP TABLE _seen_paths", [])?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// All cached calendars for one Nextcloud account, alphabetised
+    /// by display name.
+    pub fn list_calendars(
+        &self,
+        nc_account_id: &str,
+    ) -> Result<Vec<CachedCalendar>, CacheError> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, nextcloud_account_id, path, display_name, color,
+                    ctag, sync_token, last_synced_at
+             FROM calendars
+             WHERE nextcloud_account_id = ?1
+             ORDER BY display_name COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map(params![nc_account_id], |r| {
+            let ts: Option<i64> = r.get(7)?;
+            Ok(CachedCalendar {
+                id: r.get(0)?,
+                nextcloud_account_id: r.get(1)?,
+                path: r.get(2)?,
+                display_name: r.get(3)?,
+                color: r.get(4)?,
+                ctag: r.get(5)?,
+                sync_token: r.get(6)?,
+                last_synced_at: ts.and_then(|t| Utc.timestamp_opt(t, 0).single()),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Read the sync bookmark for a single calendar.
+    pub fn get_calendar_sync_state(
+        &self,
+        calendar_id: &str,
+    ) -> Result<Option<CalendarSyncState>, CacheError> {
+        let conn = self.pool.get()?;
+        let row = conn
+            .query_row(
+                "SELECT sync_token, ctag, last_synced_at
+                 FROM calendars
+                 WHERE id = ?1",
+                params![calendar_id],
+                |r| {
+                    let ts: Option<i64> = r.get(2)?;
+                    Ok(CalendarSyncState {
+                        sync_token: r.get(0)?,
+                        ctag: r.get(1)?,
+                        last_synced_at: ts.and_then(|t| Utc.timestamp_opt(t, 0).single()),
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    // ── Calendar events ─────────────────────────────────────────
+
+    /// Apply one CalDAV sync delta to a single calendar.
+    ///
+    /// `upserts` are VEVENT rows that were added or changed;
+    /// `deleted_hrefs` are resources the server reported as gone
+    /// (404 in the sync-collection response). The new sync token
+    /// and ctag, when provided, land on the `calendars` row in the
+    /// same transaction so the bookmark never drifts away from the
+    /// data it corresponds to.
+    ///
+    /// # Master vs. override rows
+    ///
+    /// A CalDAV href often contains one master VEVENT plus any
+    /// number of RECURRENCE-ID overrides. We store them as separate
+    /// rows keyed by `{calendar_id}::{uid}[::{recurrence_epoch}]` —
+    /// that way a query in a date window returns both the base
+    /// occurrence and any overrides for that window naturally.
+    ///
+    /// When a delete comes in we key by `href` rather than by id,
+    /// since the server only tells us the resource is gone — not
+    /// which of the VEVENT rows inside it existed on our side. A
+    /// single `DELETE ... WHERE href = ?` cleans up the master and
+    /// all overrides at once, which is the semantically correct
+    /// behaviour.
+    pub fn apply_event_delta(
+        &self,
+        calendar_id: &str,
+        upserts: &[CalendarEventRow],
+        deleted_hrefs: &[String],
+        new_sync_token: Option<&str>,
+        new_ctag: Option<&str>,
+    ) -> Result<(), CacheError> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+        let now = Utc::now().timestamp();
+
+        if !deleted_hrefs.is_empty() {
+            let mut stmt = tx.prepare(
+                "DELETE FROM calendar_events
+                 WHERE calendar_id = ?1 AND href = ?2",
+            )?;
+            for href in deleted_hrefs {
+                stmt.execute(params![calendar_id, href])?;
+            }
+        }
+
+        // When an href is re-synced we don't know up-front whether
+        // the new ICS has the same mix of master/overrides as before.
+        // Simplest correct behaviour: wipe the href's existing rows
+        // and re-insert from `upserts`. Overrides that were removed
+        // server-side therefore disappear locally too, even though
+        // they don't show up in `deleted_hrefs`.
+        if !upserts.is_empty() {
+            let mut wipe = tx.prepare(
+                "DELETE FROM calendar_events
+                 WHERE calendar_id = ?1 AND href = ?2",
+            )?;
+            // Collect the distinct set of hrefs in this delta so we
+            // only clear each once, even if the batch contains
+            // master + overrides at the same href.
+            let mut seen_hrefs: Vec<&str> = Vec::new();
+            for e in upserts {
+                if !seen_hrefs.contains(&e.href.as_str()) {
+                    wipe.execute(params![calendar_id, e.href])?;
+                    seen_hrefs.push(e.href.as_str());
+                }
+            }
+
+            let mut stmt = tx.prepare(
+                "INSERT INTO calendar_events
+                    (id, calendar_id, uid, href, etag, summary, description,
+                     start_utc, end_utc, location, rrule, rdate_json, exdate_json,
+                     recurrence_id, ics_raw, cached_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                         ?14, ?15, ?16)",
+            )?;
+            for e in upserts {
+                let id = event_row_id(calendar_id, &e.uid, e.recurrence_id);
+                let rdate_json = serde_json::to_string(
+                    &e.rdate.iter().map(|d| d.timestamp()).collect::<Vec<_>>(),
+                )
+                .unwrap_or_else(|_| "[]".into());
+                let exdate_json = serde_json::to_string(
+                    &e.exdate.iter().map(|d| d.timestamp()).collect::<Vec<_>>(),
+                )
+                .unwrap_or_else(|_| "[]".into());
+                stmt.execute(params![
+                    id,
+                    calendar_id,
+                    e.uid,
+                    e.href,
+                    e.etag,
+                    e.summary,
+                    e.description,
+                    e.start.timestamp(),
+                    e.end.timestamp(),
+                    e.location,
+                    e.rrule,
+                    rdate_json,
+                    exdate_json,
+                    e.recurrence_id.map(|d| d.timestamp()),
+                    e.ics_raw,
+                    now,
+                ])?;
+            }
+        }
+
+        // Bump the bookmark even when the delta was empty — an empty
+        // incremental run still proves "we talked to the server at
+        // time T and nothing had changed", which keeps the UI from
+        // showing a stale "last synced 3 hours ago".
+        tx.execute(
+            "UPDATE calendars
+             SET sync_token     = COALESCE(?1, sync_token),
+                 ctag           = COALESCE(?2, ctag),
+                 last_synced_at = ?3
+             WHERE id = ?4",
+            params![new_sync_token, new_ctag, now, calendar_id],
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// All events in `[range_start, range_end)` across the supplied
+    /// calendars, ordered by start time ascending. Returns both
+    /// masters and recurrence-id overrides as stored — callers that
+    /// need concrete occurrences should go through
+    /// [`Cache::list_events_for_expansion`] and `nimbus_caldav::
+    /// expand_event` instead, which turns RRULE/RDATE/EXDATE series
+    /// into visible occurrences.
+    ///
+    /// Half-open interval: events whose `start_utc` falls in the
+    /// window are included; the `end_utc >= range_start` condition
+    /// also pulls in events that started earlier but are still
+    /// ongoing across the boundary.
+    pub fn list_events_in_range(
+        &self,
+        calendar_ids: &[String],
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+    ) -> Result<Vec<CalendarEvent>, CacheError> {
+        if calendar_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.pool.get()?;
+        let placeholders = sql_placeholders(calendar_ids.len());
+        let sql = format!(
+            "SELECT {EVENT_COLUMNS}
+             FROM calendar_events
+             WHERE calendar_id IN ({placeholders})
+               AND end_utc   >= ?{start_idx}
+               AND start_utc <  ?{end_idx}
+             ORDER BY start_utc ASC",
+            start_idx = calendar_ids.len() + 1,
+            end_idx = calendar_ids.len() + 2,
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let mut bound: Vec<Box<dyn rusqlite::ToSql>> =
+            Vec::with_capacity(calendar_ids.len() + 2);
+        for id in calendar_ids {
+            bound.push(Box::new(id.clone()));
+        }
+        bound.push(Box::new(range_start.timestamp()));
+        bound.push(Box::new(range_end.timestamp()));
+        let param_refs: Vec<&dyn rusqlite::ToSql> =
+            bound.iter().map(|b| b.as_ref()).collect();
+
+        let rows = stmt.query_map(param_refs.as_slice(), row_to_calendar_event)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Pull everything the recurrence expander needs for a date
+    /// window: in-window singletons plus *all* masters and overrides
+    /// in the given calendars.
+    ///
+    /// Why three separate queries, not one? The three result sets
+    /// have structurally different filters — singletons intersect the
+    /// window, masters and overrides don't — and collapsing them
+    /// into a single query forces the caller to re-classify rows
+    /// client-side. Three small, named queries are easier to audit
+    /// and easier to profile if the expansion ever looks slow.
+    pub fn list_events_for_expansion(
+        &self,
+        calendar_ids: &[String],
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+    ) -> Result<ExpansionInput, CacheError> {
+        if calendar_ids.is_empty() {
+            return Ok(ExpansionInput::default());
+        }
+
+        let conn = self.pool.get()?;
+        let placeholders = sql_placeholders(calendar_ids.len());
+
+        // ── Singletons in-window ────────────────────────────────
+        // Non-recurring, non-override rows. `rdate_json = '[]'` drops
+        // the pure-RDATE "floating" masters — they belong in the
+        // `masters` set instead so the expander can emit every RDATE.
+        let singletons_sql = format!(
+            "SELECT {EVENT_COLUMNS}
+             FROM calendar_events
+             WHERE calendar_id IN ({placeholders})
+               AND rrule IS NULL
+               AND recurrence_id IS NULL
+               AND rdate_json = '[]'
+               AND end_utc   >= ?{start_idx}
+               AND start_utc <  ?{end_idx}
+             ORDER BY start_utc ASC",
+            start_idx = calendar_ids.len() + 1,
+            end_idx = calendar_ids.len() + 2,
+        );
+        let singletons = self.run_event_query(
+            &conn,
+            &singletons_sql,
+            calendar_ids,
+            Some((range_start, range_end)),
+        )?;
+
+        // ── Recurring masters (all of them) ─────────────────────
+        let masters_sql = format!(
+            "SELECT {EVENT_COLUMNS}
+             FROM calendar_events
+             WHERE calendar_id IN ({placeholders})
+               AND (rrule IS NOT NULL OR rdate_json != '[]')
+               AND recurrence_id IS NULL
+             ORDER BY start_utc ASC"
+        );
+        let masters = self.run_event_query(&conn, &masters_sql, calendar_ids, None)?;
+
+        // ── All RECURRENCE-ID overrides ─────────────────────────
+        let overrides_sql = format!(
+            "SELECT {EVENT_COLUMNS}
+             FROM calendar_events
+             WHERE calendar_id IN ({placeholders})
+               AND recurrence_id IS NOT NULL
+             ORDER BY start_utc ASC"
+        );
+        let overrides = self.run_event_query(&conn, &overrides_sql, calendar_ids, None)?;
+
+        Ok(ExpansionInput {
+            singletons,
+            masters,
+            overrides,
+        })
+    }
+
+    /// Bind `calendar_ids` into the IN-clause placeholders and, when
+    /// `range` is provided, also bind the start/end timestamps.
+    /// Private helper used by the three shapes of event query.
+    fn run_event_query(
+        &self,
+        conn: &rusqlite::Connection,
+        sql: &str,
+        calendar_ids: &[String],
+        range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    ) -> Result<Vec<CalendarEvent>, CacheError> {
+        let mut stmt = conn.prepare(sql)?;
+        let mut bound: Vec<Box<dyn rusqlite::ToSql>> =
+            Vec::with_capacity(calendar_ids.len() + 2);
+        for id in calendar_ids {
+            bound.push(Box::new(id.clone()));
+        }
+        if let Some((rs, re)) = range {
+            bound.push(Box::new(rs.timestamp()));
+            bound.push(Box::new(re.timestamp()));
+        }
+        let param_refs: Vec<&dyn rusqlite::ToSql> =
+            bound.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(param_refs.as_slice(), row_to_calendar_event)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Drop every calendar and event we have cached for a Nextcloud
+    /// account — called when the user disconnects that account.
+    /// `ON DELETE CASCADE` handles the events side, so this is one
+    /// statement.
+    pub fn wipe_nextcloud_calendars(&self, nc_account_id: &str) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "DELETE FROM calendars WHERE nextcloud_account_id = ?1",
+            params![nc_account_id],
+        )?;
+        Ok(())
+    }
+}
+
+/// Build the stable app-side event id.
+///
+/// Matches the schema comment: `{calendar_id}::{uid}` for a master
+/// (or a non-recurring VEVENT), and `{calendar_id}::{uid}::{epoch}`
+/// for a RECURRENCE-ID override. Callers use this id as their single
+/// handle to a row.
+fn event_row_id(
+    calendar_id: &str,
+    uid: &str,
+    recurrence_id: Option<DateTime<Utc>>,
+) -> String {
+    match recurrence_id {
+        Some(t) => format!("{calendar_id}::{uid}::{}", t.timestamp()),
+        None => format!("{calendar_id}::{uid}"),
+    }
+}
+
+/// Column list the three event queries select in lockstep so
+/// `row_to_calendar_event` can address them by index without drifting
+/// out of sync with individual `SELECT` statements.
+const EVENT_COLUMNS: &str =
+    "id, calendar_id, summary, description, start_utc, end_utc, \
+     location, rrule, rdate_json, exdate_json, recurrence_id";
+
+/// `?1, ?2, ?N` placeholder list for binding a slice of calendar ids
+/// into an `IN (…)` clause. `n` is the number of calendar ids the
+/// caller has — the result is always safe because the string only
+/// contains `?` and digits, never user input.
+fn sql_placeholders(n: usize) -> String {
+    (1..=n).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", ")
+}
+
+/// Shared row → `CalendarEvent` mapper. All three event queries keep
+/// their `SELECT` list equal to [`EVENT_COLUMNS`] so the column
+/// indices here are stable.
+fn row_to_calendar_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<CalendarEvent> {
+    let start_ts: i64 = r.get(4)?;
+    let end_ts: i64 = r.get(5)?;
+    let recurrence_ts: Option<i64> = r.get(10)?;
+    let rdate_json: String = r.get(8)?;
+    let exdate_json: String = r.get(9)?;
+    let rdate_epochs: Vec<i64> = serde_json::from_str(&rdate_json).unwrap_or_default();
+    let exdate_epochs: Vec<i64> = serde_json::from_str(&exdate_json).unwrap_or_default();
+    Ok(CalendarEvent {
+        id: r.get(0)?,
+        summary: r.get(2)?,
+        description: r.get(3)?,
+        start: Utc
+            .timestamp_opt(start_ts, 0)
+            .single()
+            .unwrap_or_else(Utc::now),
+        end: Utc
+            .timestamp_opt(end_ts, 0)
+            .single()
+            .unwrap_or_else(Utc::now),
+        location: r.get(6)?,
+        rrule: r.get(7)?,
+        rdate: rdate_epochs
+            .into_iter()
+            .filter_map(|t| Utc.timestamp_opt(t, 0).single())
+            .collect(),
+        exdate: exdate_epochs
+            .into_iter()
+            .filter_map(|t| Utc.timestamp_opt(t, 0).single())
+            .collect(),
+        recurrence_id: recurrence_ts.and_then(|t| Utc.timestamp_opt(t, 0).single()),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::{pool, schema};
+    use chrono::Duration;
+
+    fn open_test_cache() -> Cache {
+        let pool = pool::open_memory_pool().expect("open memory pool");
+        let mut conn = pool.get().expect("checkout");
+        schema::run_migrations(&mut conn).expect("migrate");
+        drop(conn);
+        Cache { pool }
+    }
+
+    fn cal(path: &str, name: &str) -> CalendarRow {
+        CalendarRow {
+            path: path.into(),
+            display_name: name.into(),
+            color: Some("#2bb0ed".into()),
+            ctag: Some(format!("ctag-{path}")),
+        }
+    }
+
+    fn event(uid: &str, href: &str, offset_hours: i64) -> CalendarEventRow {
+        let start = Utc::now() + Duration::hours(offset_hours);
+        CalendarEventRow {
+            uid: uid.into(),
+            recurrence_id: None,
+            href: href.into(),
+            etag: format!("etag-{uid}"),
+            summary: format!("Event {uid}"),
+            description: None,
+            start,
+            end: start + Duration::hours(1),
+            location: Some("Somewhere".into()),
+            rrule: None,
+            rdate: vec![],
+            exdate: vec![],
+            ics_raw: format!("BEGIN:VEVENT\r\nUID:{uid}\r\nEND:VEVENT\r\n"),
+        }
+    }
+
+    #[test]
+    fn upsert_and_list_calendars() {
+        let cache = open_test_cache();
+        cache
+            .upsert_calendars(
+                "nc1",
+                &[cal("/dav/personal/", "Personal"), cal("/dav/work/", "Work")],
+            )
+            .unwrap();
+
+        let got = cache.list_calendars("nc1").unwrap();
+        assert_eq!(got.len(), 2);
+        // Alphabetical by display_name.
+        assert_eq!(got[0].display_name, "Personal");
+        assert_eq!(got[1].display_name, "Work");
+        // id derived from (nc_id, path).
+        assert_eq!(got[0].id, "nc1::/dav/personal/");
+        // sync_token starts empty — only a real sync sets it.
+        assert!(got[0].sync_token.is_none());
+    }
+
+    #[test]
+    fn upsert_preserves_sync_token_but_updates_name_and_ctag() {
+        let cache = open_test_cache();
+        cache
+            .upsert_calendars("nc1", &[cal("/dav/personal/", "Personal")])
+            .unwrap();
+        let id = "nc1::/dav/personal/".to_string();
+
+        // Pretend we've synced once — writes sync_token + ctag + last_synced_at.
+        cache
+            .apply_event_delta(&id, &[], &[], Some("tok-1"), Some("ctag-after-sync"))
+            .unwrap();
+
+        // Now re-discover with a new display_name and ctag.
+        cache
+            .upsert_calendars(
+                "nc1",
+                &[CalendarRow {
+                    display_name: "Personal (renamed)".into(),
+                    ctag: Some("ctag-v2".into()),
+                    ..cal("/dav/personal/", "Personal")
+                }],
+            )
+            .unwrap();
+
+        let got = cache.list_calendars("nc1").unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].display_name, "Personal (renamed)");
+        // ctag updated…
+        assert_eq!(got[0].ctag.as_deref(), Some("ctag-v2"));
+        // …but the sync_token survived (discovery can't know it).
+        assert_eq!(got[0].sync_token.as_deref(), Some("tok-1"));
+    }
+
+    #[test]
+    fn upsert_prunes_missing_calendars_and_cascades_events() {
+        let cache = open_test_cache();
+        cache
+            .upsert_calendars(
+                "nc1",
+                &[cal("/dav/personal/", "Personal"), cal("/dav/work/", "Work")],
+            )
+            .unwrap();
+
+        let personal = "nc1::/dav/personal/".to_string();
+        cache
+            .apply_event_delta(
+                &personal,
+                &[event("u1", "/dav/personal/u1.ics", 1)],
+                &[],
+                Some("tok"),
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            cache
+                .list_events_in_range(
+                    std::slice::from_ref(&personal),
+                    Utc::now() - Duration::hours(1),
+                    Utc::now() + Duration::hours(5),
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Second discovery: only Work remains.
+        cache
+            .upsert_calendars("nc1", &[cal("/dav/work/", "Work")])
+            .unwrap();
+
+        // Personal is gone…
+        assert_eq!(cache.list_calendars("nc1").unwrap().len(), 1);
+        // …and its events with it (FK cascade).
+        let still_there = cache
+            .list_events_in_range(
+                &[personal],
+                Utc::now() - Duration::hours(1),
+                Utc::now() + Duration::hours(5),
+            )
+            .unwrap();
+        assert!(still_there.is_empty());
+    }
+
+    #[test]
+    fn apply_delta_upserts_and_deletes() {
+        let cache = open_test_cache();
+        cache
+            .upsert_calendars("nc1", &[cal("/dav/personal/", "Personal")])
+            .unwrap();
+        let cal_id = "nc1::/dav/personal/".to_string();
+
+        cache
+            .apply_event_delta(
+                &cal_id,
+                &[event("u1", "/dav/u1.ics", 1), event("u2", "/dav/u2.ics", 2)],
+                &[],
+                Some("tok-1"),
+                Some("ctag-1"),
+            )
+            .unwrap();
+
+        let got = cache
+            .list_events_in_range(
+                std::slice::from_ref(&cal_id),
+                Utc::now() - Duration::hours(1),
+                Utc::now() + Duration::hours(10),
+            )
+            .unwrap();
+        assert_eq!(got.len(), 2);
+
+        // Delete u1 via href.
+        cache
+            .apply_event_delta(&cal_id, &[], &["/dav/u1.ics".into()], Some("tok-2"), None)
+            .unwrap();
+
+        let got = cache
+            .list_events_in_range(
+                std::slice::from_ref(&cal_id),
+                Utc::now() - Duration::hours(1),
+                Utc::now() + Duration::hours(10),
+            )
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].summary, "Event u2");
+
+        // Sync bookmark stuck around and bumped forward.
+        let s = cache.get_calendar_sync_state(&cal_id).unwrap().unwrap();
+        assert_eq!(s.sync_token.as_deref(), Some("tok-2"));
+        // ctag was COALESCEd — the second call passed None, so the
+        // existing "ctag-1" must survive.
+        assert_eq!(s.ctag.as_deref(), Some("ctag-1"));
+        assert!(s.last_synced_at.is_some());
+    }
+
+    #[test]
+    fn master_and_override_coexist_distinct_ids() {
+        let cache = open_test_cache();
+        cache
+            .upsert_calendars("nc1", &[cal("/dav/personal/", "Personal")])
+            .unwrap();
+        let cal_id = "nc1::/dav/personal/".to_string();
+
+        let master = event("weekly", "/dav/weekly.ics", 1);
+        let override_start = master.start + Duration::days(7);
+        let override_row = CalendarEventRow {
+            recurrence_id: Some(override_start),
+            start: override_start + Duration::hours(2), // moved later
+            end: override_start + Duration::hours(3),
+            summary: "Event weekly (moved)".into(),
+            ..event("weekly", "/dav/weekly.ics", 0)
+        };
+
+        cache
+            .apply_event_delta(
+                &cal_id,
+                &[master, override_row],
+                &[],
+                Some("tok"),
+                None,
+            )
+            .unwrap();
+
+        let got = cache
+            .list_events_in_range(
+                std::slice::from_ref(&cal_id),
+                Utc::now() - Duration::hours(1),
+                Utc::now() + Duration::days(14),
+            )
+            .unwrap();
+        assert_eq!(got.len(), 2);
+        // Master has no recurrence_id; override does.
+        let has_master = got.iter().any(|e| e.recurrence_id.is_none());
+        let has_override = got.iter().any(|e| e.recurrence_id.is_some());
+        assert!(has_master && has_override);
+        // Distinct app-side ids so the UI can address them separately.
+        let ids: Vec<&str> = got.iter().map(|e| e.id.as_str()).collect();
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn re_syncing_an_href_drops_removed_overrides() {
+        // If the server removes an override but keeps the master,
+        // it just sends the updated ICS — no `deleted_hrefs` entry.
+        // Our wipe-on-upsert-per-href keeps that consistent.
+        let cache = open_test_cache();
+        cache
+            .upsert_calendars("nc1", &[cal("/dav/personal/", "Personal")])
+            .unwrap();
+        let cal_id = "nc1::/dav/personal/".to_string();
+
+        let master = event("weekly", "/dav/weekly.ics", 1);
+        let override_start = master.start + Duration::days(7);
+        let override_row = CalendarEventRow {
+            recurrence_id: Some(override_start),
+            start: override_start + Duration::hours(2),
+            end: override_start + Duration::hours(3),
+            ..event("weekly", "/dav/weekly.ics", 0)
+        };
+
+        cache
+            .apply_event_delta(
+                &cal_id,
+                &[master.clone(), override_row],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            cache
+                .list_events_in_range(
+                    std::slice::from_ref(&cal_id),
+                    Utc::now() - Duration::hours(1),
+                    Utc::now() + Duration::days(14),
+                )
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // Re-sync the same href — just the master this time.
+        cache
+            .apply_event_delta(&cal_id, &[master], &[], None, None)
+            .unwrap();
+
+        let got = cache
+            .list_events_in_range(
+                &[cal_id],
+                Utc::now() - Duration::hours(1),
+                Utc::now() + Duration::days(14),
+            )
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(got[0].recurrence_id.is_none());
+    }
+
+    #[test]
+    fn range_filter_is_half_open_and_includes_ongoing() {
+        let cache = open_test_cache();
+        cache
+            .upsert_calendars("nc1", &[cal("/dav/personal/", "Personal")])
+            .unwrap();
+        let cal_id = "nc1::/dav/personal/".to_string();
+
+        let now = Utc::now();
+        let mut in_window = event("in", "/dav/in.ics", 0);
+        in_window.start = now + Duration::hours(2);
+        in_window.end = now + Duration::hours(3);
+
+        let mut straddling = event("straddle", "/dav/s.ics", 0);
+        straddling.start = now - Duration::hours(2);
+        straddling.end = now + Duration::hours(2);
+
+        let mut before = event("before", "/dav/b.ics", 0);
+        before.start = now - Duration::hours(5);
+        before.end = now - Duration::hours(4);
+
+        let mut after = event("after", "/dav/a.ics", 0);
+        after.start = now + Duration::hours(10);
+        after.end = now + Duration::hours(11);
+
+        cache
+            .apply_event_delta(
+                &cal_id,
+                &[in_window, straddling, before, after],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+
+        let got = cache
+            .list_events_in_range(
+                &[cal_id],
+                now - Duration::hours(1),
+                now + Duration::hours(5),
+            )
+            .unwrap();
+        let summaries: Vec<&str> = got.iter().map(|e| e.summary.as_str()).collect();
+        // Ongoing one pulled in, out-of-window ones excluded.
+        assert!(summaries.contains(&"Event in"));
+        assert!(summaries.contains(&"Event straddle"));
+        assert!(!summaries.contains(&"Event before"));
+        assert!(!summaries.contains(&"Event after"));
+    }
+
+    #[test]
+    fn list_events_for_expansion_splits_rows_correctly() {
+        // Three distinct row kinds co-located in one calendar. We want
+        // the expansion loader to bucket them correctly: singletons
+        // only when in-window, masters and overrides regardless of
+        // window.
+        let cache = open_test_cache();
+        cache
+            .upsert_calendars("nc1", &[cal("/dav/personal/", "Personal")])
+            .unwrap();
+        let cal_id = "nc1::/dav/personal/".to_string();
+
+        let now = Utc::now();
+        // (a) In-window singleton.
+        let mut singleton = event("single", "/dav/single.ics", 0);
+        singleton.start = now + Duration::hours(2);
+        singleton.end = now + Duration::hours(3);
+
+        // (b) Recurring master whose first instance is *before* our
+        //     window — expansion should still need to see it.
+        let mut master = event("weekly", "/dav/weekly.ics", 0);
+        master.start = now - Duration::days(60);
+        master.end = now - Duration::days(60) + Duration::hours(1);
+        master.rrule = Some("FREQ=WEEKLY".into());
+
+        // (c) Override on that series, recurrence_id also outside our
+        //     window, but whose new start pushes it into view.
+        let override_rid = now + Duration::days(30);
+        let override_row = CalendarEventRow {
+            recurrence_id: Some(override_rid),
+            start: now + Duration::hours(6),
+            end: now + Duration::hours(7),
+            ..event("weekly", "/dav/weekly.ics", 0)
+        };
+
+        // (d) Out-of-window singleton — should NOT show up.
+        let mut stale = event("stale", "/dav/stale.ics", 0);
+        stale.start = now - Duration::days(10);
+        stale.end = now - Duration::days(10) + Duration::hours(1);
+
+        cache
+            .apply_event_delta(
+                &cal_id,
+                &[singleton, master, override_row, stale],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+
+        let input = cache
+            .list_events_for_expansion(
+                std::slice::from_ref(&cal_id),
+                now - Duration::hours(1),
+                now + Duration::days(7),
+            )
+            .unwrap();
+
+        assert_eq!(input.singletons.len(), 1);
+        assert_eq!(input.singletons[0].summary, "Event single");
+        assert_eq!(input.masters.len(), 1);
+        assert!(input.masters[0].rrule.is_some());
+        assert_eq!(input.overrides.len(), 1);
+        // DB stores timestamps at second precision — compare via epoch
+        // rather than the full `DateTime<Utc>` to avoid the nanosecond
+        // part of `Utc::now()` leaking into the assertion.
+        assert_eq!(
+            input.overrides[0].recurrence_id.map(|d| d.timestamp()),
+            Some(override_rid.timestamp())
+        );
+    }
+
+    #[test]
+    fn wipe_nextcloud_calendars_clears_everything() {
+        let cache = open_test_cache();
+        cache
+            .upsert_calendars(
+                "nc1",
+                &[cal("/dav/personal/", "Personal"), cal("/dav/work/", "Work")],
+            )
+            .unwrap();
+        let cal_id = "nc1::/dav/personal/".to_string();
+        cache
+            .apply_event_delta(
+                &cal_id,
+                &[event("u1", "/dav/u1.ics", 1)],
+                &[],
+                Some("tok"),
+                None,
+            )
+            .unwrap();
+
+        cache.wipe_nextcloud_calendars("nc1").unwrap();
+
+        assert!(cache.list_calendars("nc1").unwrap().is_empty());
+        assert!(
+            cache
+                .list_events_in_range(
+                    &[cal_id],
+                    Utc::now() - Duration::hours(1),
+                    Utc::now() + Duration::hours(5),
+                )
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
