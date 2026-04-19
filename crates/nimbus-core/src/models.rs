@@ -200,6 +200,13 @@ pub struct Contact {
 }
 
 /// Represents a calendar event from CalDAV / Nextcloud.
+///
+/// The recurrence fields below (`rrule`, `rdate`, `exdate`,
+/// `recurrence_id`) are **captured during sync but not yet expanded**.
+/// The struct always describes one concrete instance — the master for
+/// non-recurring events, or the first occurrence of a recurring
+/// series. See issue #47 for the expansion work that turns these
+/// fields into visible additional occurrences.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CalendarEvent {
     pub id: String,
@@ -208,4 +215,24 @@ pub struct CalendarEvent {
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
     pub location: Option<String>,
+    /// Raw RRULE value, e.g. `FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20270101T000000Z`.
+    /// Stored as-is so the eventual expander doesn't re-parse from the
+    /// iCalendar source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rrule: Option<String>,
+    /// Extra occurrence dates added to the series (`RDATE`). Mostly
+    /// empty in practice — many calendar UIs don't expose it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rdate: Vec<DateTime<Utc>>,
+    /// Cancelled occurrences (`EXDATE`). Present on cancelled
+    /// instances of an otherwise-recurring series.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exdate: Vec<DateTime<Utc>>,
+    /// If this VEVENT is an override for a specific occurrence of a
+    /// recurring series, this holds the original start time of that
+    /// occurrence (the `RECURRENCE-ID`). `None` for masters and for
+    /// non-recurring events. The shared UID between master and
+    /// override is in `id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recurrence_id: Option<DateTime<Utc>>,
 }
