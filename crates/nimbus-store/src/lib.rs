@@ -4,6 +4,7 @@
 //! and account credential management via the OS keychain.
 
 pub mod account_store;
+pub mod app_settings;
 pub mod cache;
 pub mod credentials;
 pub mod nextcloud_store;

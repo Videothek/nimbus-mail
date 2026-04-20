@@ -6,6 +6,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod badge;
+
 use nimbus_caldav::{
     Calendar as CaldavCalendar, RawEvent, list_calendars as caldav_list_calendars,
     sync_calendar as caldav_sync_calendar,
@@ -17,7 +19,8 @@ use nimbus_carddav::{
 };
 use nimbus_core::NimbusError;
 use nimbus_core::models::{
-    Account, CalendarEvent, Contact, Email, EmailEnvelope, Folder, NextcloudAccount, OutgoingEmail,
+    Account, AppSettings, CalendarEvent, Contact, Email, EmailEnvelope, Folder, NextcloudAccount,
+    OutgoingEmail,
 };
 use nimbus_imap::ImapClient;
 use nimbus_jmap::JmapClient;
@@ -29,11 +32,33 @@ use nimbus_store::cache::{
     CalendarEventRow, CalendarRow, ContactRow, ContactServerHandle, SearchFilters, SearchHit,
     SearchScope, SyncState,
 };
-use nimbus_store::{Cache, account_store, credentials, nextcloud_store};
+use nimbus_store::{Cache, account_store, app_settings, credentials, nextcloud_store};
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
-use tauri::State;
-use tauri::UriSchemeContext;
+use std::sync::Arc;
+use std::time::Duration;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, State, UriSchemeContext, WindowEvent};
+use tokio::sync::RwLock;
+
+/// Shared, mutable app preferences. Held as Tauri managed state so the
+/// background loop can snapshot under a read lock on every tick while
+/// `update_app_settings` swaps in a new value under the write lock.
+type SharedSettings = Arc<RwLock<AppSettings>>;
+
+/// Minimum enforced sync interval — guards against a hand-edited
+/// `app_settings.json` DOSing the user's mail server.
+const MIN_SYNC_INTERVAL_SECS: u64 = 30;
+
+/// Captured-once raw RGBA of the base tray icon. We hold this so the
+/// badge renderer can re-composite a fresh badge on every unread-count
+/// change without re-reading the on-disk PNG. The window's default
+/// icon is the source of truth at startup.
+struct TrayBaseIcon {
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+}
 
 // ── Tauri commands ──────────────────────────────────────────────
 //
@@ -982,39 +1007,103 @@ async fn fetch_envelopes_inner(
     cache: &Cache,
 ) -> Result<Vec<EmailEnvelope>, NimbusError> {
     let account = load_account(account_id)?;
+    let _ = poll_folder(&account, folder, limit, cache).await?;
+    // The poll helper already wrote through to the cache and updated
+    // the sync bookmark; we return the newest `limit` from the cache
+    // rather than just the delta, because the UI expects a full list
+    // regardless of whether this was an incremental or full sync.
+    cache
+        .get_envelopes(account_id, folder, limit)
+        .map_err(Into::into)
+}
+
+/// Outcome of polling a single folder — used by both the user-facing
+/// `fetch_envelopes` command and the background sync loop.
+///
+/// Only the "new" subset is returned: the full batch is already
+/// reflected in the cache via write-through, and callers that want it
+/// simply `cache.get_envelopes(...)` afterwards. On the very first
+/// poll (no prior sync state) `new_envelopes` is empty by design — a
+/// fresh install shouldn't fire a notification for every pre-existing
+/// message.
+struct FolderPollOutcome {
+    new_envelopes: Vec<EmailEnvelope>,
+}
+
+/// Fetch+cache+reconcile for one (account, folder) pair.
+///
+/// Shared code path for interactive refreshes and background polling.
+/// Steps:
+/// 1. Consult the cache for prior `SyncState` (UIDVALIDITY + highest UID).
+/// 2. JMAP: one-shot fetch; there's no UIDVALIDITY, so "new" is decided
+///    purely by comparing UIDs to `prior_highest`.
+/// 3. IMAP: incremental fetch via `since_uid`; if UIDVALIDITY rotated,
+///    wipe the folder cache and redo in full mode (no notifications on
+///    rotation — `new_envelopes` stays empty in that branch).
+/// 4. Write envelopes through to the cache.
+/// 5. Update the sync bookmark to `max(prior, newest-fetched)` so an
+///    empty incremental response can't accidentally rewind it.
+async fn poll_folder(
+    account: &Account,
+    folder: &str,
+    limit: u32,
+    cache: &Cache,
+) -> Result<FolderPollOutcome, NimbusError> {
+    let account_id = &account.id;
+    let prior = cache.get_sync_state(account_id, folder).ok().flatten();
+    let prior_highest = prior.as_ref().and_then(|s| s.highest_uid_seen);
 
     // ── JMAP path ──────────────────────────────────────────────
-    // JMAP handles pagination server-side (no UIDVALIDITY, no incremental
-    // sync bookmarks). We fetch, cache, and return.
-    if uses_jmap(&account) {
-        let client = connect_jmap(&account).await?;
+    if uses_jmap(account) {
+        let client = connect_jmap(account).await?;
         let envelopes = client.fetch_envelopes(folder, limit, None).await?;
 
         if let Err(e) = cache.upsert_envelopes_for_account(account_id, &envelopes) {
             tracing::warn!("cache.upsert_envelopes (JMAP) failed: {e}");
         }
-        return Ok(envelopes);
+
+        let new_envelopes: Vec<EmailEnvelope> = envelopes
+            .iter()
+            .filter(|e| prior_highest.is_some_and(|p| e.uid > p))
+            .cloned()
+            .collect();
+
+        // Bookmark UPDATE: JMAP has no UIDVALIDITY; we only track the
+        // highest UID so background polls can diff.
+        let new_highest = envelopes
+            .iter()
+            .map(|e| e.uid)
+            .max()
+            .into_iter()
+            .chain(prior_highest)
+            .max();
+        let state = SyncState {
+            uidvalidity: None,
+            highest_uid_seen: new_highest,
+            last_synced_at: Some(chrono::Utc::now()),
+        };
+        if let Err(e) = cache.set_sync_state(account_id, folder, &state) {
+            tracing::warn!("cache.set_sync_state (JMAP) failed: {e}");
+        }
+
+        return Ok(FolderPollOutcome { new_envelopes });
     }
 
-    // ── IMAP path (unchanged) ──────────────────────────────────
-    let mut client = connect_imap(&account).await?;
-
-    // Consult the cache so we know whether to do an incremental or full sync.
-    // An error reading sync state is not fatal — we just fall back to full.
-    let prior = cache.get_sync_state(account_id, folder).ok().flatten();
-    let since_uid = prior.as_ref().and_then(|s| s.highest_uid_seen);
-
-    let mut batch = client.fetch_envelopes(folder, limit, since_uid).await?;
+    // ── IMAP path ──────────────────────────────────────────────
+    let mut client = connect_imap(account).await?;
+    let mut batch = client.fetch_envelopes(folder, limit, prior_highest).await?;
 
     // UIDVALIDITY check. If the server has rotated it, every cached UID
     // for this folder now points at a different (or deleted) message —
     // wipe the folder and redo the fetch in full mode so the cache
-    // reflects reality.
-    let uidvalidity_changed = matches!(
+    // reflects reality. We also mark the outcome as rotated so the
+    // caller can skip any "new mail" reactions (the UIDs aren't really
+    // new — they're the same messages under a new numbering).
+    let uidvalidity_rotated = matches!(
         (prior.as_ref().and_then(|s| s.uidvalidity), batch.uidvalidity),
         (Some(old), Some(new)) if old != new,
     );
-    if uidvalidity_changed {
+    if uidvalidity_rotated {
         tracing::warn!(
             "UIDVALIDITY changed for '{account_id}'/'{folder}' \
              (was {:?}, now {:?}) — wiping folder cache",
@@ -1024,28 +1113,33 @@ async fn fetch_envelopes_inner(
         if let Err(e) = cache.wipe_folder(account_id, folder) {
             tracing::warn!("cache.wipe_folder failed: {e}");
         }
-        // Redo the fetch with no `since_uid` so we get the newest `limit`
-        // messages under the new UID space.
         batch = client.fetch_envelopes(folder, limit, None).await?;
     }
 
     let _ = client.logout().await;
 
-    // Write-through. Cache failures are logged but don't block the return:
-    // the cache is an optimisation, not a correctness requirement.
     if let Err(e) = cache.upsert_envelopes_for_account(account_id, &batch.envelopes) {
         tracing::warn!("cache.upsert_envelopes failed: {e}");
     }
 
-    // Update sync bookmarks. `highest_uid_seen` is max(prior, newly-fetched)
-    // so an empty incremental response doesn't accidentally rewind it.
+    let new_envelopes: Vec<EmailEnvelope> = if uidvalidity_rotated {
+        Vec::new()
+    } else {
+        batch
+            .envelopes
+            .iter()
+            .filter(|e| prior_highest.is_some_and(|p| e.uid > p))
+            .cloned()
+            .collect()
+    };
+
     let new_highest = batch
         .envelopes
         .iter()
         .map(|e| e.uid)
         .max()
         .into_iter()
-        .chain(prior.as_ref().and_then(|s| s.highest_uid_seen))
+        .chain(prior_highest)
         .max();
     let state = SyncState {
         uidvalidity: batch.uidvalidity,
@@ -1056,13 +1150,7 @@ async fn fetch_envelopes_inner(
         tracing::warn!("cache.set_sync_state failed: {e}");
     }
 
-    // Return the newest `limit` from the cache, not just what the server
-    // sent back — an incremental sync only ships new messages, but the
-    // UI expects a full list. Cache read is cheap (indexed by
-    // `(account_id, folder, internal_date DESC)`).
-    cache
-        .get_envelopes(account_id, folder, limit)
-        .map_err(Into::into)
+    Ok(FolderPollOutcome { new_envelopes })
 }
 
 /// Fetch a full message (headers + body) by folder + UID.
@@ -1121,11 +1209,17 @@ async fn mark_as_read(
     folder: String,
     uid: u32,
     cache: State<'_, Cache>,
+    app: AppHandle,
 ) -> Result<(), NimbusError> {
     // Optimistic cache update — instant UI feedback.
     if let Err(e) = cache.mark_envelope_read(&account_id, &folder, uid) {
         tracing::warn!("cache.mark_envelope_read failed: {e}");
     }
+
+    // Reading a message should immediately drop the tray/taskbar
+    // badge — the user's mental model is "I read it, the counter
+    // dropped" and a 5-minute sync wait would feel broken.
+    refresh_unread_badge(&app);
 
     let account = load_account(&account_id)?;
     if uses_jmap(&account) {
@@ -1517,6 +1611,217 @@ fn imap_quote(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+// ── Tray, window lifecycle, and background sync (Issue #16) ────
+//
+// Three concerns wired together here:
+//
+//   1. **Tray icon + menu** — always present; gives the user a way
+//      back into the app when the window is hidden, plus one-click
+//      actions (Check Mail, Compose, Quit).
+//   2. **Close-to-tray** — if the user's preference is on, clicking
+//      the window's close button hides the window instead of
+//      quitting. They quit explicitly via the tray menu.
+//   3. **Background sync** — a tokio task polls every configured
+//      account's INBOX at a user-set interval. New messages trigger
+//      a Tauri event that the frontend turns into an OS toast.
+//
+// The Rust side deliberately does **not** call the notification
+// plugin itself. It emits `new-mail` events with
+// `{ account_id, folder, uid, from, subject }` payloads and the
+// frontend decides whether (and how) to display them. Rationale:
+// one permission check path (in JS), one formatting path, and no
+// risk of a background tick racing the OS permission prompt.
+
+#[derive(Debug, Clone, Serialize)]
+struct NewMailPayload {
+    account_id: String,
+    folder: String,
+    uid: u32,
+    from: String,
+    subject: String,
+}
+
+/// Load the tray icon. Reuses the window icon when present (same PNG
+/// we ship with the app) so dev and prod builds paint the same bitmap.
+fn load_tray_icon(app: &AppHandle) -> Result<tauri::image::Image<'_>, NimbusError> {
+    app.default_window_icon()
+        .cloned()
+        .ok_or_else(|| NimbusError::Other("no default window icon available for tray".into()))
+}
+
+/// Bring the main window to the front. Called from the tray's
+/// left-click handler, the tray menu's "Open Nimbus" item, and the
+/// `show_main_window` command.
+fn show_main_window(app: &AppHandle) -> Result<(), NimbusError> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| NimbusError::Other("main window not found".into()))?;
+    // show() may be a no-op if the window is already visible, but
+    // unminimize() + set_focus() still make sense in that case.
+    let _ = win.show();
+    let _ = win.unminimize();
+    let _ = win.set_focus();
+    Ok(())
+}
+
+/// One poll across every configured account's INBOX. Emits `new-mail`
+/// for each envelope whose UID is greater than the previously-seen
+/// high-water mark, then emits a single `unread-count-updated` with
+/// the fresh total. Used by both the periodic loop and the `Check Mail
+/// Now` tray/UI action — same code path so manual and automatic
+/// refreshes behave identically.
+async fn check_mail_now_inner(app: &AppHandle) -> Result<(), NimbusError> {
+    let accounts = account_store::load_accounts().unwrap_or_default();
+    let cache = app.state::<Cache>();
+
+    for account in &accounts {
+        match poll_folder(account, "INBOX", 20, &cache).await {
+            Ok(outcome) => {
+                for env in &outcome.new_envelopes {
+                    let payload = NewMailPayload {
+                        account_id: account.id.clone(),
+                        folder: "INBOX".to_string(),
+                        uid: env.uid,
+                        from: env.from.clone(),
+                        subject: env.subject.clone(),
+                    };
+                    if let Err(e) = app.emit("new-mail", &payload) {
+                        tracing::warn!("failed to emit new-mail event: {e}");
+                    }
+                }
+                if !outcome.new_envelopes.is_empty() {
+                    tracing::info!(
+                        "{}: {} new message(s) in INBOX",
+                        account.id,
+                        outcome.new_envelopes.len()
+                    );
+                }
+            }
+            Err(e) => {
+                // One broken account shouldn't stop us polling the others.
+                tracing::warn!("background poll failed for '{}': {e}", account.id);
+            }
+        }
+    }
+
+    // Refresh the tray icon badge, the Windows taskbar overlay, and
+    // notify the UI. A failure to read the cache count is non-fatal —
+    // the badge stays stale until the next tick.
+    refresh_unread_badge(app);
+
+    Ok(())
+}
+
+/// Recompute the unread total and apply it everywhere it shows up:
+/// the tray icon (badge + tooltip), the Windows taskbar overlay, and
+/// the `unread-count-updated` event for the UI.
+///
+/// Called from three places: the setup hook (paint the initial badge),
+/// `check_mail_now_inner` (after polling), and `mark_as_read` (so
+/// reading a message visibly drops the count without waiting for the
+/// next sync tick).
+fn refresh_unread_badge(app: &AppHandle) {
+    let total = match app.state::<Cache>().total_unread_count() {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!("refresh_unread_badge: cache read failed: {e}");
+            return;
+        }
+    };
+
+    if let Some(tray) = app.tray_by_id("nimbus-main") {
+        let base = app.state::<TrayBaseIcon>();
+        let badged = badge::render_tray_icon(&base.rgba, base.width, base.height, total);
+        if let Err(e) = tray.set_icon(Some(badged)) {
+            tracing::warn!("failed to update tray icon: {e}");
+        }
+        let tip = if total == 0 {
+            "Nimbus Mail".to_string()
+        } else {
+            format!("Nimbus Mail — {total} unread")
+        };
+        let _ = tray.set_tooltip(Some(&tip));
+    }
+
+    // Windows-only: the taskbar overlay icon. macOS/Linux have no
+    // direct equivalent, and Tauri only exposes `set_overlay_icon`
+    // behind `#[cfg(windows)]`.
+    #[cfg(windows)]
+    if let Some(win) = app.get_webview_window("main") {
+        let overlay = badge::render_taskbar_overlay(total);
+        if let Err(e) = win.set_overlay_icon(overlay) {
+            tracing::warn!("failed to set taskbar overlay icon: {e}");
+        }
+    }
+
+    if let Err(e) = app.emit("unread-count-updated", total) {
+        tracing::warn!("failed to emit unread-count-updated: {e}");
+    }
+}
+
+/// Periodic poll. Re-reads the settings snapshot each tick so the user
+/// can toggle sync on/off or change the interval and have it take
+/// effect on the next cycle without restarting the loop.
+async fn background_sync_loop(app: AppHandle) {
+    tracing::info!("background sync loop started");
+    loop {
+        let (enabled, interval) = {
+            let settings = app.state::<SharedSettings>();
+            let s = settings.read().await;
+            (
+                s.background_sync_enabled,
+                Duration::from_secs(s.background_sync_interval_secs.max(MIN_SYNC_INTERVAL_SECS)),
+            )
+        };
+
+        tokio::time::sleep(interval).await;
+
+        if !enabled {
+            continue;
+        }
+        if let Err(e) = check_mail_now_inner(&app).await {
+            tracing::warn!("background check_mail_now_inner failed: {e}");
+        }
+    }
+}
+
+// ── App-settings commands ──────────────────────────────────────
+
+#[tauri::command]
+async fn get_app_settings(settings: State<'_, SharedSettings>) -> Result<AppSettings, NimbusError> {
+    Ok(settings.read().await.clone())
+}
+
+#[tauri::command]
+async fn update_app_settings(
+    new_settings: AppSettings,
+    settings: State<'_, SharedSettings>,
+) -> Result<(), NimbusError> {
+    app_settings::save_settings(&new_settings)?;
+    *settings.write().await = new_settings;
+    Ok(())
+}
+
+#[tauri::command]
+async fn check_mail_now(app: AppHandle) -> Result<(), NimbusError> {
+    check_mail_now_inner(&app).await
+}
+
+#[tauri::command]
+fn get_total_unread(cache: State<'_, Cache>) -> Result<u32, NimbusError> {
+    cache.total_unread_count().map_err(Into::into)
+}
+
+#[tauri::command]
+fn show_main_window_cmd(app: AppHandle) -> Result<(), NimbusError> {
+    show_main_window(&app)
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
 // ── App entry point ─────────────────────────────────────────────
 
 fn main() {
@@ -1528,10 +1833,149 @@ fn main() {
     // is broken, and the user would silently lose offline capability.
     let cache = Cache::open_default().expect("failed to open local mail cache");
 
+    // App-wide preferences (Issue #16). A missing file is fine on first
+    // run — `load_settings` returns defaults. We wrap in Arc<RwLock<..>>
+    // so the background sync loop can re-snapshot per tick while the
+    // `update_app_settings` command swaps in a fresh value under the
+    // write lock.
+    let settings = app_settings::load_settings().unwrap_or_default();
+    let shared_settings: SharedSettings = Arc::new(RwLock::new(settings));
+
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .manage(cache)
+        .manage(shared_settings)
         .register_uri_scheme_protocol("contact-photo", contact_photo_protocol)
-        // Register all our commands so the frontend can call them
+        .setup(|app| {
+            // ── Tray menu + icon ────────────────────────────────
+            //
+            // Built inside `setup` (not a command) so we have `&mut App`
+            // and can register the tray lifecycle against the Tauri
+            // event loop directly.
+            let handle = app.handle().clone();
+            let menu = Menu::with_items(
+                &handle,
+                &[
+                    &MenuItem::with_id(&handle, "open", "Open Nimbus", true, None::<&str>)?,
+                    &MenuItem::with_id(&handle, "check", "Check Mail Now", true, None::<&str>)?,
+                    &MenuItem::with_id(&handle, "compose", "Compose", true, None::<&str>)?,
+                    &PredefinedMenuItem::separator(&handle)?,
+                    &MenuItem::with_id(&handle, "quit", "Quit Nimbus", true, None::<&str>)?,
+                ],
+            )?;
+
+            let tray_icon = load_tray_icon(&handle)?;
+
+            // Snapshot the base icon's raw RGBA so the badge renderer
+            // can re-composite without re-reading the on-disk PNG on
+            // every unread-count change. Stored in managed state.
+            let base = TrayBaseIcon {
+                rgba: tray_icon.rgba().to_vec(),
+                width: tray_icon.width(),
+                height: tray_icon.height(),
+            };
+            app.manage(base);
+
+            let _tray = TrayIconBuilder::with_id("nimbus-main")
+                .icon(tray_icon)
+                .tooltip("Nimbus Mail")
+                .menu(&menu)
+                // Windows: without this, left-click auto-pops the menu
+                // and our click-handler never fires. We want left-click
+                // to show the window, right-click to show the menu.
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => {
+                        if let Err(e) = show_main_window(app) {
+                            tracing::warn!("tray open failed: {e}");
+                        }
+                    }
+                    "check" => {
+                        let h = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = check_mail_now_inner(&h).await {
+                                tracing::warn!("tray check_mail_now failed: {e}");
+                            }
+                        });
+                    }
+                    "compose" => {
+                        if let Err(e) = show_main_window(app) {
+                            tracing::warn!("tray compose open failed: {e}");
+                        }
+                        if let Err(e) = app.emit("open-compose", ()) {
+                            tracing::warn!("failed to emit open-compose: {e}");
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    other => tracing::debug!("unknown tray menu id: {other}"),
+                })
+                .on_tray_icon_event(|tray, event| {
+                    // Single left-click (button up) opens the window.
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                        && let Err(e) = show_main_window(tray.app_handle())
+                    {
+                        tracing::warn!("tray left-click show failed: {e}");
+                    }
+                })
+                .build(app)?;
+
+            // ── Close-to-tray wiring ────────────────────────────
+            //
+            // We clone the settings Arc out of managed state so the
+            // window-event closure (which is `Fn`, not `FnMut`, and
+            // not async) can consult the current preference on every
+            // close attempt. `blocking_read` is safe here: the window
+            // event thread is already off the async runtime.
+            if let Some(main_window) = app.get_webview_window("main") {
+                let settings_for_close: SharedSettings =
+                    app.state::<SharedSettings>().inner().clone();
+                let close_window = main_window.clone();
+                main_window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        let should_hide = settings_for_close.blocking_read().minimize_to_tray;
+                        if should_hide {
+                            api.prevent_close();
+                            let _ = close_window.hide();
+                        }
+                    }
+                });
+
+                // Honour `start_minimized`: hide the window right away
+                // so the app boots straight into the tray.
+                let should_hide_on_start = app
+                    .state::<SharedSettings>()
+                    .inner()
+                    .blocking_read()
+                    .start_minimized;
+                if should_hide_on_start {
+                    let _ = main_window.hide();
+                }
+            } else {
+                tracing::warn!("main window not found at setup time");
+            }
+
+            // Paint the initial badge from whatever's already in the
+            // cache so the tray + taskbar reflect unread count from
+            // the moment the app finishes booting (not only after the
+            // first sync tick).
+            refresh_unread_badge(app.handle());
+
+            // ── Background sync ─────────────────────────────────
+            //
+            // `tauri::async_runtime::spawn` uses Tauri's managed
+            // runtime, which is guaranteed to exist regardless of
+            // how the app was started.
+            let bg_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                background_sync_loop(bg_handle).await;
+            });
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_accounts,
             add_account,
@@ -1567,6 +2011,13 @@ fn main() {
             sync_nextcloud_calendars,
             get_cached_calendars,
             get_cached_events,
+            // Issue #16: tray + notifications + preferences
+            get_app_settings,
+            update_app_settings,
+            check_mail_now,
+            get_total_unread,
+            show_main_window_cmd,
+            quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nimbus");

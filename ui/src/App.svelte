@@ -12,6 +12,12 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+  import {
+    isPermissionGranted,
+    requestPermission,
+    sendNotification,
+  } from '@tauri-apps/plugin-notification'
   import Sidebar from './lib/Sidebar.svelte'
   import MailList from './lib/MailList.svelte'
   import MailView from './lib/MailView.svelte'
@@ -96,6 +102,128 @@
   // to see if the user has already configured an email account.
   $effect(() => {
     checkAccounts()
+  })
+
+  // ── Issue #16: background-sync events + desktop notifications ──
+  //
+  // Rust emits a `new-mail` event per newly-fetched envelope and an
+  // `unread-count-updated` event after each poll cycle. The frontend
+  // owns notification display so there's a single permission check
+  // path and a single formatting path.
+  //
+  // Notification burst cap: if more than 3 `new-mail` events land
+  // inside a 2-second window, the tail gets collapsed into one
+  // summary toast — avoids a rain of toasts after a long offline
+  // period or on first JMAP sync.
+  let notificationsGranted = $state(false)
+  let recentBurst: number[] = []
+  let pendingSummaryTimer: ReturnType<typeof setTimeout> | null = null
+
+  type NewMail = {
+    account_id: string
+    folder: string
+    uid: number
+    from: string
+    subject: string
+  }
+
+  type AppPrefs = {
+    minimize_to_tray: boolean
+    background_sync_enabled: boolean
+    background_sync_interval_secs: number
+    notifications_enabled: boolean
+    start_minimized: boolean
+  }
+
+  // Cached settings snapshot — refreshed when the settings command is
+  // called, and consulted when a `new-mail` event arrives to decide
+  // whether to show a toast.
+  let appPrefs = $state<AppPrefs | null>(null)
+
+  async function bootstrapNotifications() {
+    try {
+      const granted = await isPermissionGranted()
+      if (granted) {
+        notificationsGranted = true
+        return
+      }
+      // Only prompt once the user is past setup — on the very first
+      // launch the setup wizard should own the screen, not an OS
+      // permission dialog.
+      if (currentView === 'setup') return
+      const res = await requestPermission()
+      notificationsGranted = res === 'granted'
+    } catch (err) {
+      console.warn('notification permission bootstrap failed', err)
+    }
+  }
+
+  function shouldNotify(): boolean {
+    return (
+      notificationsGranted && (appPrefs?.notifications_enabled ?? true)
+    )
+  }
+
+  function fireToast(title: string, body: string) {
+    try {
+      sendNotification({ title, body })
+    } catch (err) {
+      console.warn('sendNotification failed', err)
+    }
+  }
+
+  function handleNewMail(payload: NewMail) {
+    // Refresh the list regardless of notification state — new mail
+    // should appear in the inbox even if toasts are off.
+    refreshToken++
+
+    if (!shouldNotify()) return
+
+    const now = Date.now()
+    // Prune burst entries older than 2s — a pure sliding window.
+    recentBurst = recentBurst.filter((t) => now - t < 2000)
+    recentBurst.push(now)
+
+    if (recentBurst.length <= 3) {
+      fireToast(payload.from || 'New mail', payload.subject || '(no subject)')
+      return
+    }
+
+    // 4th+ toast in the window — suppress individual toast and
+    // schedule one summary toast for the end of the window.
+    if (pendingSummaryTimer) clearTimeout(pendingSummaryTimer)
+    const count = recentBurst.length
+    pendingSummaryTimer = setTimeout(() => {
+      fireToast('Nimbus Mail', `${count} new messages`)
+      pendingSummaryTimer = null
+    }, 600)
+  }
+
+  async function loadAppPrefs() {
+    try {
+      appPrefs = await invoke<AppPrefs>('get_app_settings')
+    } catch (err) {
+      console.warn('get_app_settings failed', err)
+    }
+  }
+
+  $effect(() => {
+    loadAppPrefs()
+    bootstrapNotifications()
+
+    let unlistenNewMail: UnlistenFn | null = null
+    let unlistenCompose: UnlistenFn | null = null
+    ;(async () => {
+      unlistenNewMail = await listen<NewMail>('new-mail', (e) =>
+        handleNewMail(e.payload),
+      )
+      unlistenCompose = await listen('open-compose', () => openCompose({}))
+    })()
+    return () => {
+      unlistenNewMail?.()
+      unlistenCompose?.()
+      if (pendingSummaryTimer) clearTimeout(pendingSummaryTimer)
+    }
   })
 
   async function checkAccounts() {
