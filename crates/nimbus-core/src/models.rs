@@ -3,6 +3,42 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// App-wide user preferences (not per-account).
+///
+/// Persisted to a single JSON file (`app_settings.json`) alongside
+/// `accounts.json`. The struct carries `#[serde(default)]` at the
+/// top level so adding a new field in a future version silently
+/// slots in its default value instead of failing to parse an
+/// existing user's settings file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppSettings {
+    /// Close button hides the window instead of quitting the app.
+    /// Users quit explicitly via the tray menu.
+    pub minimize_to_tray: bool,
+    /// Whether the background sync loop polls INBOX across all accounts.
+    pub background_sync_enabled: bool,
+    /// How often (seconds) to poll. Clamped to a 30s floor at runtime
+    /// so a misconfigured file can't DOS the user's mail server.
+    pub background_sync_interval_secs: u64,
+    /// Whether to show OS-native toasts when new mail arrives.
+    pub notifications_enabled: bool,
+    /// Launch hidden to tray on app start.
+    pub start_minimized: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            minimize_to_tray: true,
+            background_sync_enabled: true,
+            background_sync_interval_secs: 300,
+            notifications_enabled: true,
+            start_minimized: false,
+        }
+    }
+}
+
 /// Represents an email account configured by the user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {

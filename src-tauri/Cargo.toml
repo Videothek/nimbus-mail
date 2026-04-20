@@ -20,7 +20,11 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
 uuid.workspace = true
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# Desktop notifications (Issue #16). The plugin is registered on the
+# Rust side so JS can `sendNotification` through the capability-gated
+# IPC; Rust itself only emits events — the frontend owns formatting.
+tauri-plugin-notification = "2"
 # Opens a URL in the system default browser. Used by the Nextcloud
 # Login Flow v2 command to bounce the user out to their NC login page.
 open = { workspace = true }

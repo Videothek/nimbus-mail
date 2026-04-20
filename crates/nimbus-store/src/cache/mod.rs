@@ -367,6 +367,23 @@ impl Cache {
         Ok(())
     }
 
+    /// Total unread messages across all accounts' INBOX folders.
+    ///
+    /// Feeds the tray tooltip ("Nimbus Mail — 3 unread") and any
+    /// aggregate badge UI. We scope to INBOX only because other folders
+    /// (Archive, Trash) aren't typically surfaced as "unread" to the
+    /// user even when they technically have `is_read = 0` rows.
+    pub fn total_unread_count(&self) -> Result<u32, CacheError> {
+        let conn = self.pool.get()?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages
+             WHERE folder = 'INBOX' AND is_read = 0",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(count as u32)
+    }
+
     // ── Message bodies ──────────────────────────────────────────
 
     /// Upsert a cached message body alongside its envelope.
