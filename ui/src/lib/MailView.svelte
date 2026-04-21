@@ -51,6 +51,10 @@
     onreply?: (mail: Email) => void
     onreplyall?: (mail: Email) => void
     onforward?: (mail: Email) => void
+    /** Open the "Create Talk room" flow seeded from this email's
+        subject + thread participants. Wired from `App.svelte` so the
+        resulting Compose window stacks on top of the inbox view. */
+    oncreatetalk?: (mail: Email) => void
   }
   let {
     accountId,
@@ -60,6 +64,7 @@
     onreply,
     onreplyall,
     onforward,
+    oncreatetalk,
   }: Props = $props()
 
   let email = $state<Email | null>(null)
@@ -358,6 +363,13 @@
       <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onreply?.(email)}>Reply</button>
       <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onreplyall?.(email)}>Reply All</button>
       <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onforward?.(email)}>Forward</button>
+      {#if oncreatetalk}
+        <button
+          class="btn btn-sm preset-outlined-primary-500"
+          onclick={() => email && oncreatetalk?.(email)}
+          title="Create a Nextcloud Talk room with the participants of this thread"
+        >💬 Talk</button>
+      {/if}
       <div class="flex-1"></div>
       <button class="btn btn-sm preset-outlined-surface-500">Archive</button>
       <button class="btn btn-sm preset-outlined-surface-500">Delete</button>

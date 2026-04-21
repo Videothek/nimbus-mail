@@ -27,6 +27,8 @@
   import ContactsView from './lib/ContactsView.svelte'
   import CalendarView from './lib/CalendarView.svelte'
   import FilesView from './lib/FilesView.svelte'
+  import TalkView from './lib/TalkView.svelte'
+  import CreateTalkRoomModal, { type TalkRoom } from './lib/CreateTalkRoomModal.svelte'
   import SearchBar, {
     type SearchScope,
     type SearchFilters,
@@ -44,6 +46,7 @@
     | 'contacts'
     | 'calendar'
     | 'files'
+    | 'talk'
   let currentView = $state<View>('loading')
 
   // Which integration tab is active in the sidebar. Lives next to
@@ -272,6 +275,9 @@
     } else if (name === 'Nextcloud Files') {
       activeIntegration = name
       currentView = 'files'
+    } else if (name === 'Nextcloud Talk') {
+      activeIntegration = name
+      currentView = 'talk'
     }
   }
 
@@ -366,6 +372,89 @@
     openCompose({
       subject: forwardSubject(mail.subject),
       body: `\n\n---------- Forwarded message ----------\nFrom: ${mail.from}\nDate: ${new Date(mail.date).toLocaleString()}\nSubject: ${mail.subject}\n\n${mail.body_text ?? ''}`,
+    })
+  }
+
+  // ── "Create Talk room from this thread" flow ────────────────
+  // Triggered from MailView's 💬 Talk button. Opens a modal seeded
+  // with the email's subject and the thread's participants; on
+  // create, chains into Compose with the room link in the body and
+  // the same recipients in the To field, satisfying issue #13's
+  // "create a Talk room from an email thread" task in one user
+  // gesture.
+  let talkRoomDraft = $state<{
+    ncId: string
+    initialName: string
+    initialParticipants: string[]
+    /** Pre-fills Compose's `To` after the room is created — kept on
+        the draft so we don't have to re-derive it from the email. */
+    composeTo: string
+  } | null>(null)
+
+  /** Strip an `"Name" <addr>` wrapper down to the bare email. */
+  function bareEmail(s: string): string | null {
+    const t = s.trim()
+    if (!t) return null
+    const m = t.match(/^\s*(?:"[^"]*"|[^<]*?)\s*<([^>]+)>\s*$/)
+    return m ? m[1].trim() : t
+  }
+
+  async function onCreateTalkFromMail(mail: OpenMail) {
+    // For the MVP we use the first connected Nextcloud account. A
+    // multi-account picker can land later — most users have one NC.
+    let ncId = ''
+    try {
+      const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      if (list.length === 0) {
+        alert('Connect a Nextcloud account first (Settings → Nextcloud).')
+        return
+      }
+      ncId = list[0].id
+    } catch (e) {
+      alert(`Failed to load Nextcloud accounts: ${e}`)
+      return
+    }
+
+    // Build the participant set: From + To + Cc, deduped, minus the
+    // current user (who's already in the room as the creator).
+    const seen = new Set<string>()
+    const participants: string[] = []
+    for (const piece of [mail.from, ...mail.to, ...mail.cc]) {
+      const addr = bareEmail(piece)
+      if (!addr) continue
+      const key = addr.toLowerCase()
+      if (key === activeAccountEmail.toLowerCase()) continue
+      if (seen.has(key)) continue
+      seen.add(key)
+      participants.push(addr)
+    }
+
+    // The Compose `To` field happily accepts the original
+    // `"Name" <addr>` strings, so display names round-trip into the
+    // sent invite without us having to re-format.
+    const composeTo = [mail.from, ...mail.to, ...mail.cc]
+      .filter((a) => {
+        const e = bareEmail(a)
+        return e && e.toLowerCase() !== activeAccountEmail.toLowerCase()
+      })
+      .join(', ')
+
+    talkRoomDraft = {
+      ncId,
+      initialName: mail.subject || 'Talk',
+      initialParticipants: participants,
+      composeTo,
+    }
+  }
+
+  function onTalkRoomCreatedFromMail(room: TalkRoom) {
+    const draft = talkRoomDraft
+    talkRoomDraft = null
+    if (!draft) return
+    openCompose({
+      to: draft.composeTo,
+      subject: `Join Talk: ${room.display_name}`,
+      talkLink: { name: room.display_name, url: room.web_url },
     })
   }
 </script>
@@ -463,6 +552,38 @@
     {/if}
   </div>
 
+<!-- Nextcloud Talk view: same shape as Files. The "Share link"
+     button inside `TalkView` opens Compose with the room URL pre-
+     rendered into the body. -->
+{:else if currentView === 'talk' && activeAccountId}
+  <div class="h-full flex">
+    <Sidebar
+      accountId={activeAccountId}
+      selectedFolder={selectedFolder}
+      refreshToken={refreshToken}
+      activeIntegration={activeIntegration}
+      onselectfolder={(f) => {
+        selectFolder(f)
+        goToInbox()
+      }}
+      onsettings={goToSettings}
+      onrefresh={refreshAll}
+      oncompose={() => openCompose()}
+      onselectintegration={onSelectIntegration}
+    />
+    <div class="flex-1">
+      <TalkView onclose={goToInbox} oncompose={openCompose} />
+    </div>
+    {#if composeInitial !== null}
+      <Compose
+        accountId={activeAccountId}
+        fromAddress={activeAccountEmail}
+        initial={composeInitial}
+        onclose={closeCompose}
+      />
+    {/if}
+  </div>
+
 <!-- Main inbox: the 3-panel mail client layout -->
 {:else if activeAccountId}
   <div class="h-full flex">
@@ -515,6 +636,7 @@
       onreply={onReply}
       onreplyall={onReplyAll}
       onforward={onForward}
+      oncreatetalk={onCreateTalkFromMail}
     />
     {#if composeInitial !== null}
       <Compose
@@ -529,4 +651,18 @@
   <div class="h-full flex items-center justify-center bg-surface-50 dark:bg-surface-900">
     <p class="text-surface-500">No account selected.</p>
   </div>
+{/if}
+
+<!-- Talk-room creation modal — mounted at the app level so it can
+     overlay any view. Driven entirely by `talkRoomDraft`: setting it
+     opens the modal pre-filled, clearing it (or `oncreated`)
+     dismisses. -->
+{#if talkRoomDraft}
+  <CreateTalkRoomModal
+    ncId={talkRoomDraft.ncId}
+    initialName={talkRoomDraft.initialName}
+    initialParticipants={talkRoomDraft.initialParticipants}
+    onclose={() => (talkRoomDraft = null)}
+    oncreated={onTalkRoomCreatedFromMail}
+  />
 {/if}

@@ -391,6 +391,72 @@ async fn create_nextcloud_directory(
     .await
 }
 
+// ── Nextcloud Talk ──────────────────────────────────────────────
+//
+// Three commands, mirroring the file/share pattern: each call loads
+// the account + app password from local state and forwards to the
+// matching `nimbus_nextcloud::talk::*` function. We don't cache the
+// room list — Talk's `/room` is cheap and unread counts go stale the
+// moment a colleague sends a message anyway. The sidebar polls on a
+// timer instead.
+
+/// List every Talk room the connected Nextcloud user is a participant
+/// of. Drives the sidebar's "Talk Rooms" group.
+#[tauri::command]
+async fn list_talk_rooms(nc_id: String) -> Result<Vec<nimbus_nextcloud::TalkRoom>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::list_rooms(&account.server_url, &account.username, &app_password).await
+}
+
+/// Create a new group Talk room and invite `participants` to it.
+///
+/// `participants` carries a tagged enum (`{kind: "user"|"email", value: ...}`)
+/// per invitee — `kind=email` triggers Talk's guest-invite flow so
+/// recipients without a Nextcloud account get an emailed link. The
+/// frontend builds this list from the email's To/Cc by treating
+/// addresses matching the connected NC server's user list as `user`
+/// and the rest as `email`. (For the MVP we always send `email` and
+/// let Talk match users on the server side.)
+#[tauri::command]
+async fn create_talk_room(
+    nc_id: String,
+    room_name: String,
+    participants: Vec<nimbus_nextcloud::ParticipantSource>,
+) -> Result<nimbus_nextcloud::TalkRoom, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::create_room(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &room_name,
+        &participants,
+    )
+    .await
+}
+
+/// Add a single participant to an existing Talk room. Exposed so the
+/// UI can grow an "Add participant" affordance later without a
+/// backend round-trip.
+#[tauri::command]
+async fn add_talk_participant(
+    nc_id: String,
+    room_token: String,
+    participant: nimbus_nextcloud::ParticipantSource,
+) -> Result<(), NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::add_participant(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &room_token,
+        &participant,
+    )
+    .await
+}
+
 // ── CardDAV contacts ────────────────────────────────────────────
 //
 // Contact sync is driven from a single entry point: the UI calls
@@ -2411,6 +2477,9 @@ fn main() {
             download_nextcloud_file,
             create_nextcloud_share,
             create_nextcloud_directory,
+            list_talk_rooms,
+            create_talk_room,
+            add_talk_participant,
             upload_to_nextcloud,
             save_bytes_to_path,
             sync_nextcloud_contacts,

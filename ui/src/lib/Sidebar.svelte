@@ -11,6 +11,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { onDestroy } from 'svelte'
   import { formatError } from './errors'
 
   interface Folder {
@@ -18,6 +19,14 @@
     delimiter: string | null
     attributes: string[]
     unread_count: number | null
+  }
+
+  /** Slim shape of a Talk room — only the fields we need for the
+      aggregate unread badge. Avoids importing TalkView's type so the
+      sidebar stays decoupled from the Talk view. */
+  interface TalkRoomSummary {
+    unread_messages: number
+    unread_mention: boolean
   }
 
   interface Props {
@@ -50,6 +59,16 @@
   let refreshing = $state(false)
   let error = $state('')
 
+  // Aggregate unread state across all Talk rooms on the user's first
+  // Nextcloud account. Drives the badge on the "Nextcloud Talk"
+  // integration entry — no count means no badge, mention means the
+  // badge gets the louder error tint. Polled on a 30s timer so the
+  // user gets a relatively prompt nudge when something new arrives.
+  let talkUnreadTotal = $state(0)
+  let talkUnreadHasMention = $state(false)
+  const TALK_POLL_MS = 30_000
+  let talkPollTimer: number | null = null
+
   // Integrations are still hardcoded — those are planned features, not
   // derived from the mail server.
   const integrations = [
@@ -65,6 +84,52 @@
     refreshToken
     void load(accountId)
   })
+
+  // Talk-unread polling lives in its own lifecycle: started once on
+  // mount and torn down on destroy. We don't tie it to `accountId`
+  // because the Talk badge follows the *Nextcloud* account, not the
+  // mail account — those can change independently.
+  $effect(() => {
+    void refreshTalkBadge()
+    talkPollTimer = window.setInterval(refreshTalkBadge, TALK_POLL_MS)
+    return () => {
+      if (talkPollTimer !== null) window.clearInterval(talkPollTimer)
+      talkPollTimer = null
+    }
+  })
+
+  onDestroy(() => {
+    if (talkPollTimer !== null) window.clearInterval(talkPollTimer)
+  })
+
+  /**
+   * Pull the latest Talk room list from the first connected Nextcloud
+   * account and aggregate the unread counts. Errors are swallowed —
+   * a flaky badge shouldn't block the rest of the sidebar from working.
+   */
+  async function refreshTalkBadge() {
+    try {
+      const accounts = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      if (accounts.length === 0) {
+        talkUnreadTotal = 0
+        talkUnreadHasMention = false
+        return
+      }
+      const rooms = await invoke<TalkRoomSummary[]>('list_talk_rooms', {
+        ncId: accounts[0].id,
+      })
+      let total = 0
+      let mention = false
+      for (const r of rooms) {
+        total += r.unread_messages
+        if (r.unread_mention && r.unread_messages > 0) mention = true
+      }
+      talkUnreadTotal = total
+      talkUnreadHasMention = mention
+    } catch (e) {
+      console.warn('Talk unread poll failed:', e)
+    }
+  }
 
   async function load(id: string) {
     loading = true
@@ -198,6 +263,13 @@
       >
         <span>{item.icon}</span>
         <span class="flex-1 text-left">{item.name}</span>
+        {#if item.name === 'Nextcloud Talk' && talkUnreadTotal > 0}
+          <span
+            class="badge text-xs
+                   {talkUnreadHasMention ? 'preset-filled-error-500' : 'preset-filled-primary-500'}"
+            title={talkUnreadHasMention ? 'You were mentioned' : 'Unread Talk messages'}
+          >{talkUnreadTotal}</span>
+        {/if}
       </button>
     {/each}
   </nav>
