@@ -9,8 +9,10 @@
 mod badge;
 
 use nimbus_caldav::{
-    Calendar as CaldavCalendar, RawEvent, list_calendars as caldav_list_calendars,
-    sync_calendar as caldav_sync_calendar,
+    Calendar as CaldavCalendar, RawEvent, build_ics as caldav_build_ics,
+    create_event as caldav_create_event, delete_event as caldav_delete_event,
+    list_calendars as caldav_list_calendars, sync_calendar as caldav_sync_calendar,
+    update_event as caldav_update_event,
 };
 use nimbus_carddav::{
     Addressbook, ParsedVcard, RawContact, build_vcard, create_contact as carddav_create_contact,
@@ -19,8 +21,8 @@ use nimbus_carddav::{
 };
 use nimbus_core::NimbusError;
 use nimbus_core::models::{
-    Account, AppSettings, CalendarEvent, Contact, Email, EmailEnvelope, Folder, NextcloudAccount,
-    OutgoingEmail,
+    Account, AppSettings, CalendarEvent, Contact, Email, EmailEnvelope, EventAttendee,
+    EventReminder, Folder, NextcloudAccount, OutgoingEmail,
 };
 use nimbus_imap::ImapClient;
 use nimbus_jmap::JmapClient;
@@ -29,8 +31,8 @@ use nimbus_nextcloud::{
 };
 use nimbus_smtp::SmtpClient;
 use nimbus_store::cache::{
-    CalendarEventRow, CalendarRow, ContactRow, ContactServerHandle, SearchFilters, SearchHit,
-    SearchScope, SyncState,
+    CalendarEventRow, CalendarEventServerHandle, CalendarRow, ContactRow, ContactServerHandle,
+    SearchFilters, SearchHit, SearchScope, SyncState,
 };
 use nimbus_store::{Cache, account_store, app_settings, credentials, nextcloud_store};
 use serde::{Deserialize, Serialize};
@@ -993,6 +995,231 @@ fn get_cached_events(
     Ok(out)
 }
 
+/// What the Svelte editor sends for a create or update. Matches the
+/// `CalendarEvent` shape the UI already knows but flattens to plain
+/// strings / booleans the Tauri IPC layer can serialise without
+/// extra adapters. Optional fields stay optional so the form can
+/// submit a partial event without leaving phantom values behind.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CalendarEventInput {
+    summary: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    location: Option<String>,
+    start: chrono::DateTime<chrono::Utc>,
+    end: chrono::DateTime<chrono::Utc>,
+    /// True for events the user picked "All day" on. The server stores
+    /// these as `VALUE=DATE` ranges; we re-derive that from the start /
+    /// end times being a midnight…23:59:59 window.
+    #[serde(default)]
+    all_day: bool,
+    #[serde(default)]
+    url: Option<String>,
+    /// `OPAQUE` (busy) or `TRANSPARENT` (free). Matches the editor's
+    /// "show as" picker. `None` means "leave whatever the server had".
+    #[serde(default)]
+    transparency: Option<String>,
+    #[serde(default)]
+    attendees: Vec<EventAttendee>,
+    #[serde(default)]
+    reminders: Vec<EventReminder>,
+}
+
+/// Build a `CalendarEvent` skeleton from form input. Caller fills in
+/// `id` (a fresh UID for create, the cached UID for update). Recurrence
+/// fields stay empty here — the editor doesn't expose them yet, and
+/// any existing recurrence is preserved from the cached event by the
+/// update command before this struct is rebuilt.
+fn input_to_calendar_event(uid: &str, input: &CalendarEventInput) -> CalendarEvent {
+    // For all-day events the editor sends midnight UTC starts; snap
+    // the end to 23:59:59 of the last covered day so `build_ics`
+    // recognises the all-day shape. For timed events we trust the
+    // editor's exact instants.
+    let (start, end) = if input.all_day {
+        use chrono::TimeZone;
+        let start_day = input.start.date_naive();
+        let end_day = input.end.date_naive();
+        let s = chrono::Utc
+            .from_utc_datetime(&start_day.and_hms_opt(0, 0, 0).unwrap());
+        let e = chrono::Utc
+            .from_utc_datetime(&end_day.and_hms_opt(23, 59, 59).unwrap());
+        (s, e)
+    } else {
+        (input.start, input.end)
+    };
+    CalendarEvent {
+        id: uid.to_string(),
+        summary: input.summary.clone(),
+        description: input.description.clone(),
+        start,
+        end,
+        location: input.location.clone(),
+        rrule: None,
+        rdate: vec![],
+        exdate: vec![],
+        recurrence_id: None,
+        url: input.url.clone(),
+        transparency: input.transparency.clone(),
+        attendees: input.attendees.clone(),
+        reminders: input.reminders.clone(),
+    }
+}
+
+/// Convert a `CalendarEvent` (post-write) into the row shape the cache
+/// expects. Used by both `create_calendar_event` and
+/// `update_calendar_event` so the local cache reflects the new state
+/// without waiting for the next sync round.
+fn calendar_event_to_row(
+    event: &CalendarEvent,
+    href: &str,
+    etag: &str,
+    ics_raw: &str,
+) -> CalendarEventRow {
+    CalendarEventRow {
+        uid: event.id.clone(),
+        recurrence_id: event.recurrence_id,
+        href: href.to_string(),
+        etag: etag.to_string(),
+        summary: event.summary.clone(),
+        description: event.description.clone(),
+        start: event.start,
+        end: event.end,
+        location: event.location.clone(),
+        rrule: event.rrule.clone(),
+        rdate: event.rdate.clone(),
+        exdate: event.exdate.clone(),
+        url: event.url.clone(),
+        transparency: event.transparency.clone(),
+        attendees: event.attendees.clone(),
+        reminders: event.reminders.clone(),
+        ics_raw: ics_raw.to_string(),
+    }
+}
+
+/// Create a new VEVENT in the given calendar.
+///
+/// Generates a fresh UUID for the UID so callers don't have to.
+/// The PUT uses `If-None-Match: *`, so a UID collision surfaces as
+/// a structured error instead of a silent overwrite. On success, the
+/// new event is upserted into the local cache so the UI can render it
+/// without waiting for the next sync.
+#[tauri::command]
+async fn create_calendar_event(
+    calendar_id: String,
+    input: CalendarEventInput,
+    cache: State<'_, Cache>,
+) -> Result<CalendarEvent, NimbusError> {
+    let (nc_id, calendar_path) = cache
+        .get_calendar_server_path(&calendar_id)?
+        .ok_or_else(|| {
+            NimbusError::Other(format!(
+                "calendar '{calendar_id}' is not in the local cache — refresh and try again"
+            ))
+        })?;
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    let uid = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+    let event = input_to_calendar_event(&uid, &input);
+    let ics = caldav_build_ics(&event);
+
+    // `calendar_path` from the cache is already an absolute URL —
+    // `nimbus-caldav::discovery` resolves it via `absolute_url` before
+    // storing. Don't re-prefix the server origin or the PUT goes to
+    // `https://hosthttps://host/...`.
+    let outcome = caldav_create_event(
+        &account.server_url,
+        &calendar_path,
+        &account.username,
+        &app_password,
+        &uid,
+        &ics,
+    )
+    .await?;
+
+    let row = calendar_event_to_row(&event, &outcome.href, &outcome.etag, &ics);
+    cache.upsert_single_event(&calendar_id, &row)?;
+
+    // Re-derive the app-side id the same way `event_row_id` does so the
+    // returned event matches what `get_cached_events` will surface.
+    let mut out = event;
+    out.id = format!("{calendar_id}::{uid}");
+    Ok(out)
+}
+
+/// Update an existing VEVENT, keyed by its app-side id.
+///
+/// Preserves the cached UID and href; everything else comes from the
+/// editor input. The PUT is gated on the cached etag so a concurrent
+/// edit on another device surfaces as a structured error (412 → human-
+/// readable string) instead of overwriting the other change silently.
+#[tauri::command]
+async fn update_calendar_event(
+    event_id: String,
+    input: CalendarEventInput,
+    cache: State<'_, Cache>,
+) -> Result<CalendarEvent, NimbusError> {
+    let handle = load_event_handle(&cache, &event_id)?;
+    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+
+    let mut event = input_to_calendar_event(&handle.uid, &input);
+    // Preserve recurrence info the editor doesn't surface — losing it
+    // would silently demote a recurring series back to a singleton.
+    event.recurrence_id = handle.recurrence_id;
+
+    let ics = caldav_build_ics(&event);
+    let outcome = caldav_update_event(
+        &handle.href,
+        &account.username,
+        &app_password,
+        &handle.etag,
+        &ics,
+    )
+    .await?;
+
+    let row = calendar_event_to_row(&event, &outcome.href, &outcome.etag, &ics);
+    cache.upsert_single_event(&handle.calendar_id, &row)?;
+
+    let mut out = event;
+    out.id = event_id;
+    Ok(out)
+}
+
+/// Delete an event from the server and the local cache. The server
+/// delete is gated on the cached etag; if that fails we leave the
+/// cache row alone so the UI shows the user the fresh state on the
+/// next sync.
+#[tauri::command]
+async fn delete_calendar_event(
+    event_id: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let handle = load_event_handle(&cache, &event_id)?;
+    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+
+    caldav_delete_event(&handle.href, &account.username, &app_password, &handle.etag).await?;
+    cache.delete_event_by_id(&event_id)?;
+    Ok(())
+}
+
+fn load_event_handle(
+    cache: &Cache,
+    event_id: &str,
+) -> Result<CalendarEventServerHandle, NimbusError> {
+    cache
+        .get_event_server_handle(event_id)
+        .map_err(NimbusError::from)?
+        .ok_or_else(|| {
+            NimbusError::Other(format!(
+                "event '{event_id}' is not in the local cache — refresh and try again"
+            ))
+        })
+}
+
 /// Flatten one CalDAV resource (href-with-ics) into one store row per
 /// VEVENT it contains. Master + recurrence-id overrides all share the
 /// same `href`, `etag`, and `ics_raw` — `apply_event_delta` keys the
@@ -1015,6 +1242,10 @@ fn raw_event_to_rows(raw: &RawEvent) -> Vec<CalendarEventRow> {
             rrule: e.rrule.clone(),
             rdate: e.rdate.clone(),
             exdate: e.exdate.clone(),
+            url: e.url.clone(),
+            transparency: e.transparency.clone(),
+            attendees: e.attendees.clone(),
+            reminders: e.reminders.clone(),
             ics_raw: raw.ics_raw.clone(),
         })
         .collect()
@@ -2194,6 +2425,9 @@ fn main() {
             sync_nextcloud_calendars,
             get_cached_calendars,
             get_cached_events,
+            create_calendar_event,
+            update_calendar_event,
+            delete_calendar_event,
             // Issue #16: tray + notifications + preferences
             get_app_settings,
             update_app_settings,

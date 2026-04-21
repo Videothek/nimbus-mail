@@ -29,7 +29,7 @@
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{OptionalExtension, params};
 
-use nimbus_core::models::CalendarEvent;
+use nimbus_core::models::{CalendarEvent, EventAttendee, EventReminder};
 
 use crate::cache::{Cache, CacheError};
 
@@ -43,9 +43,11 @@ use crate::cache::{Cache, CacheError};
 /// alongside the first batch of events so the two stay consistent.
 #[derive(Debug, Clone)]
 pub struct CalendarRow {
-    /// Absolute path on the server, e.g.
-    /// `/remote.php/dav/calendars/alice/personal/`. Stable across
-    /// syncs for a given calendar.
+    /// Absolute URL of the calendar collection on the server, e.g.
+    /// `https://cloud.example.com/remote.php/dav/calendars/alice/personal/`.
+    /// `nimbus-caldav::discovery` resolves the multistatus href against
+    /// the server URL before storing, so callers don't need to prefix
+    /// the server origin themselves. Stable across syncs.
     pub path: String,
     pub display_name: String,
     /// Hex colour (e.g. `#2bb0ed`). Optional — some servers / user
@@ -77,6 +79,14 @@ pub struct CalendarEventRow {
     pub rrule: Option<String>,
     pub rdate: Vec<DateTime<Utc>>,
     pub exdate: Vec<DateTime<Utc>>,
+    /// `URL` property — link associated with the event.
+    pub url: Option<String>,
+    /// `TRANSP` — `OPAQUE` (busy) or `TRANSPARENT` (free).
+    pub transparency: Option<String>,
+    /// Parsed `ATTENDEE` properties.
+    pub attendees: Vec<EventAttendee>,
+    /// Parsed `VALARM` blocks.
+    pub reminders: Vec<EventReminder>,
     /// Raw `text/calendar` blob as the server returned it. Kept so
     /// future parser evolutions and the recurrence expander have a
     /// source of truth on disk.
@@ -341,9 +351,10 @@ impl Cache {
                 "INSERT INTO calendar_events
                     (id, calendar_id, uid, href, etag, summary, description,
                      start_utc, end_utc, location, rrule, rdate_json, exdate_json,
-                     recurrence_id, ics_raw, cached_at)
+                     recurrence_id, ics_raw, cached_at,
+                     url, transparency, attendees_json, reminders_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                         ?14, ?15, ?16)",
+                         ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             )?;
             for e in upserts {
                 let id = event_row_id(calendar_id, &e.uid, e.recurrence_id);
@@ -355,6 +366,10 @@ impl Cache {
                     &e.exdate.iter().map(|d| d.timestamp()).collect::<Vec<_>>(),
                 )
                 .unwrap_or_else(|_| "[]".into());
+                let attendees_json = serde_json::to_string(&e.attendees)
+                    .unwrap_or_else(|_| "[]".into());
+                let reminders_json = serde_json::to_string(&e.reminders)
+                    .unwrap_or_else(|_| "[]".into());
                 stmt.execute(params![
                     id,
                     calendar_id,
@@ -372,6 +387,10 @@ impl Cache {
                     e.recurrence_id.map(|d| d.timestamp()),
                     e.ics_raw,
                     now,
+                    e.url,
+                    e.transparency,
+                    attendees_json,
+                    reminders_json,
                 ])?;
             }
         }
@@ -564,7 +583,175 @@ impl Cache {
         )?;
         Ok(())
     }
+
+    /// Look up the (server, calendar) coordinates for an event row by
+    /// app-side id. The Tauri write commands need href + etag for the
+    /// PUT/DELETE preconditions, plus the parent calendar's path for
+    /// constructing a fresh URL on create.
+    ///
+    /// Returns `Ok(None)` if the row isn't cached — callers treat that
+    /// as "stale UI; refresh and try again".
+    pub fn get_event_server_handle(
+        &self,
+        event_id: &str,
+    ) -> Result<Option<CalendarEventServerHandle>, CacheError> {
+        let conn = self.pool.get()?;
+        let row = conn
+            .query_row(
+                "SELECT e.uid, e.href, e.etag, e.recurrence_id, e.ics_raw,
+                        e.calendar_id, c.nextcloud_account_id, c.path
+                 FROM calendar_events e
+                 JOIN calendars c ON c.id = e.calendar_id
+                 WHERE e.id = ?1",
+                params![event_id],
+                |r| {
+                    let recurrence_ts: Option<i64> = r.get(3)?;
+                    Ok(CalendarEventServerHandle {
+                        uid: r.get(0)?,
+                        href: r.get(1)?,
+                        etag: r.get(2)?,
+                        recurrence_id: recurrence_ts
+                            .and_then(|t| Utc.timestamp_opt(t, 0).single()),
+                        ics_raw: r.get(4)?,
+                        calendar_id: r.get(5)?,
+                        nextcloud_account_id: r.get(6)?,
+                        calendar_path: r.get(7)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Look up the (nc account, server path) coordinates for a
+    /// cached calendar by app-side id. Used by the create-event
+    /// command to build the resource URL before any event row exists.
+    pub fn get_calendar_server_path(
+        &self,
+        calendar_id: &str,
+    ) -> Result<Option<(String, String)>, CacheError> {
+        let conn = self.pool.get()?;
+        let row = conn
+            .query_row(
+                "SELECT nextcloud_account_id, path FROM calendars WHERE id = ?1",
+                params![calendar_id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Insert (or replace) a single event row outside the
+    /// sync-collection delta path. Used by the create / update Tauri
+    /// commands after a successful PUT to Nextcloud — we already have
+    /// the server's new etag and don't want to wait for the next sync
+    /// to see our own write.
+    pub fn upsert_single_event(
+        &self,
+        calendar_id: &str,
+        row: &CalendarEventRow,
+    ) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        let id = event_row_id(calendar_id, &row.uid, row.recurrence_id);
+        let rdate_json = serde_json::to_string(
+            &row.rdate.iter().map(|d| d.timestamp()).collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".into());
+        let exdate_json = serde_json::to_string(
+            &row.exdate.iter().map(|d| d.timestamp()).collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".into());
+        let attendees_json =
+            serde_json::to_string(&row.attendees).unwrap_or_else(|_| "[]".into());
+        let reminders_json =
+            serde_json::to_string(&row.reminders).unwrap_or_else(|_| "[]".into());
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO calendar_events
+                (id, calendar_id, uid, href, etag, summary, description,
+                 start_utc, end_utc, location, rrule, rdate_json, exdate_json,
+                 recurrence_id, ics_raw, cached_at,
+                 url, transparency, attendees_json, reminders_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                     ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+             ON CONFLICT (id) DO UPDATE SET
+                href           = excluded.href,
+                etag           = excluded.etag,
+                summary        = excluded.summary,
+                description    = excluded.description,
+                start_utc      = excluded.start_utc,
+                end_utc        = excluded.end_utc,
+                location       = excluded.location,
+                rrule          = excluded.rrule,
+                rdate_json     = excluded.rdate_json,
+                exdate_json    = excluded.exdate_json,
+                recurrence_id  = excluded.recurrence_id,
+                ics_raw        = excluded.ics_raw,
+                cached_at      = excluded.cached_at,
+                url            = excluded.url,
+                transparency   = excluded.transparency,
+                attendees_json = excluded.attendees_json,
+                reminders_json = excluded.reminders_json",
+            params![
+                id,
+                calendar_id,
+                row.uid,
+                row.href,
+                row.etag,
+                row.summary,
+                row.description,
+                row.start.timestamp(),
+                row.end.timestamp(),
+                row.location,
+                row.rrule,
+                rdate_json,
+                exdate_json,
+                row.recurrence_id.map(|d| d.timestamp()),
+                row.ics_raw,
+                now,
+                row.url,
+                row.transparency,
+                attendees_json,
+                reminders_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Remove one event row by its app-side id. Used after a successful
+    /// DELETE to the server, so the next `get_cached_events` call
+    /// doesn't ghost-render the deleted row until the next sync.
+    pub fn delete_event_by_id(&self, event_id: &str) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "DELETE FROM calendar_events WHERE id = ?1",
+            params![event_id],
+        )?;
+        Ok(())
+    }
 }
+
+/// Server-side bookkeeping for one cached event, returned from
+/// [`Cache::get_event_server_handle`]. The Tauri layer needs these
+/// fields to do a PUT or DELETE — the user-facing `CalendarEvent`
+/// hides them since the UI shouldn't touch hrefs and etags.
+#[derive(Debug, Clone)]
+pub struct CalendarEventServerHandle {
+    pub nextcloud_account_id: String,
+    pub calendar_id: String,
+    /// Absolute URL of the calendar collection (already includes
+    /// scheme + host — see [`CalendarRow::path`]).
+    pub calendar_path: String,
+    pub uid: String,
+    pub href: String,
+    pub etag: String,
+    pub recurrence_id: Option<DateTime<Utc>>,
+    /// The full text/calendar blob as the server last sent it. Useful
+    /// for write paths that want to preserve fields the editor doesn't
+    /// surface yet.
+    pub ics_raw: String,
+}
+
 
 /// Build the stable app-side event id.
 ///
@@ -588,7 +775,8 @@ fn event_row_id(
 /// out of sync with individual `SELECT` statements.
 const EVENT_COLUMNS: &str =
     "id, calendar_id, summary, description, start_utc, end_utc, \
-     location, rrule, rdate_json, exdate_json, recurrence_id";
+     location, rrule, rdate_json, exdate_json, recurrence_id, \
+     url, transparency, attendees_json, reminders_json";
 
 /// `?1, ?2, ?N` placeholder list for binding a slice of calendar ids
 /// into an `IN (…)` clause. `n` is the number of calendar ids the
@@ -607,8 +795,14 @@ fn row_to_calendar_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<CalendarEven
     let recurrence_ts: Option<i64> = r.get(10)?;
     let rdate_json: String = r.get(8)?;
     let exdate_json: String = r.get(9)?;
+    let attendees_json: String = r.get(13)?;
+    let reminders_json: String = r.get(14)?;
     let rdate_epochs: Vec<i64> = serde_json::from_str(&rdate_json).unwrap_or_default();
     let exdate_epochs: Vec<i64> = serde_json::from_str(&exdate_json).unwrap_or_default();
+    let attendees: Vec<EventAttendee> =
+        serde_json::from_str(&attendees_json).unwrap_or_default();
+    let reminders: Vec<EventReminder> =
+        serde_json::from_str(&reminders_json).unwrap_or_default();
     Ok(CalendarEvent {
         id: r.get(0)?,
         summary: r.get(2)?,
@@ -632,6 +826,10 @@ fn row_to_calendar_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<CalendarEven
             .filter_map(|t| Utc.timestamp_opt(t, 0).single())
             .collect(),
         recurrence_id: recurrence_ts.and_then(|t| Utc.timestamp_opt(t, 0).single()),
+        url: r.get(11)?,
+        transparency: r.get(12)?,
+        attendees,
+        reminders,
     })
 }
 
@@ -673,6 +871,10 @@ mod tests {
             rrule: None,
             rdate: vec![],
             exdate: vec![],
+            url: None,
+            transparency: None,
+            attendees: vec![],
+            reminders: vec![],
             ics_raw: format!("BEGIN:VEVENT\r\nUID:{uid}\r\nEND:VEVENT\r\n"),
         }
     }

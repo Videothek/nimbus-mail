@@ -40,7 +40,8 @@ pub mod schema;
 pub mod search;
 
 pub use calendars::{
-    CachedCalendar, CalendarEventRow, CalendarRow, CalendarSyncState, ExpansionInput,
+    CachedCalendar, CalendarEventRow, CalendarEventServerHandle, CalendarRow, CalendarSyncState,
+    ExpansionInput,
 };
 pub use contacts::{AddressbookSyncState, ContactRow, ContactServerHandle};
 pub use search::{SearchFilters, SearchHit, SearchScope};

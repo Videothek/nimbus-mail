@@ -312,4 +312,60 @@ pub struct CalendarEvent {
     /// override is in `id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recurrence_id: Option<DateTime<Utc>>,
+    /// `URL` property — a link associated with the event (meeting URL,
+    /// agenda doc, etc.). Free-form, the editor doesn't validate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// `TRANSP` — `OPAQUE` (default — busy time) or `TRANSPARENT`
+    /// (free time). The editor surfaces this as a "show as
+    /// busy / free" picker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transparency: Option<String>,
+    /// `ATTENDEE` properties. Empty for events with no participants.
+    /// We store name + email + the participant status the server last
+    /// reported; the UI only edits the email list today.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attendees: Vec<EventAttendee>,
+    /// `VALARM` blocks. The editor exposes a single "remind me X
+    /// before" picker, but the model carries a list so existing
+    /// events with several alarms round-trip without losing data.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reminders: Vec<EventReminder>,
+}
+
+/// A single ATTENDEE property on a VEVENT.
+///
+/// Only the most-used fields are surfaced — CN (display name), the
+/// `mailto:` email, and PARTSTAT (acceptance status). The full set
+/// (ROLE, RSVP, CUTYPE, …) is preserved opaquely in `ics_raw` until
+/// a follow-up issue surfaces them in the UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventAttendee {
+    /// The email after `mailto:`. Required by the iCalendar spec.
+    pub email: String,
+    /// `CN=` parameter (e.g. `"Jane Doe"`). Optional — many invites
+    /// only carry the email.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub common_name: Option<String>,
+    /// `PARTSTAT=` parameter — `NEEDS-ACTION` / `ACCEPTED` /
+    /// `DECLINED` / `TENTATIVE`. `None` falls back to NEEDS-ACTION
+    /// when written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// A single VALARM block.
+///
+/// We model the most common reminder shape — a relative offset before
+/// the event start — directly. The trigger is stored as **minutes
+/// before** the event (positive = before, negative = after).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventReminder {
+    /// Minutes before the event start. `15` means "fire 15 minutes
+    /// before". Negative values fire after the start.
+    pub trigger_minutes_before: i32,
+    /// `ACTION` — `DISPLAY` (popup) or `EMAIL`. Defaults to `DISPLAY`
+    /// when written if `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }

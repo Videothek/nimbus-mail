@@ -442,6 +442,38 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE message_bodies
         ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v6 → v7: extra calendar-event fields the editor exposes
+    // (Issue #50).
+    //
+    // Adds the four fields that the new "all fields" editor edits but
+    // the original sync schema only kept inside `ics_raw`:
+    //
+    //   - `url`            — VEVENT `URL` property.
+    //   - `transparency`   — `TRANSP`, the busy/free flag.
+    //   - `attendees_json` — `Vec<EventAttendee>` (CN + email + status).
+    //   - `reminders_json` — `Vec<EventReminder>` (one row per VALARM).
+    //
+    // We could re-parse them out of `ics_raw` on every read, but the
+    // expansion path runs on every UI repaint and re-parsing would
+    // burn cycles for no benefit. JSON columns match the existing
+    // pattern (`rdate_json`, `exdate_json`, `attachments`) and let
+    // `serde_json` round-trip the whole `Vec<…>` in one call.
+    //
+    // NOT NULL with sensible defaults so older rows (written before
+    // this column existed) decode without a separate backfill: empty
+    // arrays for the lists and NULL for the singletons.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE calendar_events
+        ADD COLUMN url TEXT;
+    ALTER TABLE calendar_events
+        ADD COLUMN transparency TEXT;
+    ALTER TABLE calendar_events
+        ADD COLUMN attendees_json TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE calendar_events
+        ADD COLUMN reminders_json TEXT NOT NULL DEFAULT '[]';
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

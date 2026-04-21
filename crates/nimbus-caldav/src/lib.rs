@@ -17,17 +17,21 @@
 //! - UTC, all-day, and named-TZID events (via `chrono-tz`) all
 //!   resolve accurately. Only unknown TZIDs and DST-gap edge cases
 //!   fall back to UTC (logged at `warn`).
-//! - No write path yet — `VEVENT` create / update / delete will be
-//!   added alongside a calendar UI.
+//! - Write path covers VEVENT create / update / delete via PUT /
+//!   DELETE with `If-Match` etags (RFC 5545 + RFC 4918 §10.5). The
+//!   editor builds a `CalendarEvent`, [`ical::build_ics`] renders it,
+//!   and [`write::create_event`] / [`write::update_event`] PUTs it.
 
 pub mod client;
 pub mod discovery;
 pub mod expand;
 pub mod ical;
 pub mod sync;
+pub mod write;
 mod xml_util;
 
 pub use discovery::{Calendar, list_calendars};
 pub use expand::expand_event;
-pub use ical::parse_ics;
+pub use ical::{build_ics, parse_ics};
 pub use sync::{CalendarSyncDelta, RawEvent, sync_calendar};
+pub use write::{WriteOutcome, create_event, delete_event, update_event};

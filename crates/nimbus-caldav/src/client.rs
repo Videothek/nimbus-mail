@@ -68,6 +68,66 @@ pub async fn report(
         .map_err(|e| NimbusError::Network(format!("REPORT {url}: {e}")))
 }
 
+/// PUT a `text/calendar` body to a calendar resource.
+///
+/// `if_match` carries the existing etag for an update — the server
+/// returns 412 if the resource changed under us. For a fresh create,
+/// pass `None` and set `if_none_match_star = true` so the PUT only
+/// succeeds when the href is unused (basic two-client safety).
+pub async fn put_ics(
+    http: &Client,
+    url: &str,
+    username: &str,
+    app_password: &str,
+    body: &str,
+    if_match: Option<&str>,
+    if_none_match_star: bool,
+) -> Result<Response, NimbusError> {
+    let mut req = http
+        .put(url)
+        .basic_auth(username, Some(app_password))
+        .header("Content-Type", "text/calendar; charset=utf-8")
+        .body(body.to_string());
+    if let Some(etag) = if_match {
+        let v = if etag.starts_with('"') {
+            etag.to_string()
+        } else {
+            format!("\"{etag}\"")
+        };
+        req = req.header("If-Match", v);
+    }
+    if if_none_match_star {
+        req = req.header("If-None-Match", "*");
+    }
+    req.send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("PUT {url}: {e}")))
+}
+
+/// DELETE a CalDAV resource at `url`. `if_match` is recommended (and
+/// Nextcloud requires it) so we don't blow away an event someone else
+/// just edited.
+pub async fn delete_resource(
+    http: &Client,
+    url: &str,
+    username: &str,
+    app_password: &str,
+    if_match: Option<&str>,
+) -> Result<Response, NimbusError> {
+    let mut req = http.delete(url).basic_auth(username, Some(app_password));
+    if let Some(etag) = if_match {
+        let v = if etag.starts_with('"') {
+            etag.to_string()
+        } else {
+            format!("\"{etag}\"")
+        };
+        req = req.header("If-Match", v);
+    }
+    req.send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("DELETE {url}: {e}")))
+}
+
 /// Strip a trailing `/` from a server URL.
 pub fn normalize_server_url(url: &str) -> String {
     url.trim_end_matches('/').to_string()
