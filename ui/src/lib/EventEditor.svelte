@@ -34,6 +34,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import AddressAutocomplete from './AddressAutocomplete.svelte'
 
   // ── Types (kept local; these mirror the Rust models) ──────────
   interface EventAttendee {
@@ -132,16 +133,43 @@
   // svelte-ignore state_referenced_locally
   let endDate = $state(toDateInput(initialEnd()))
 
-  // Attendees are edited as a comma-separated email string. We parse
-  // them into the structured shape on save. Existing CN / PARTSTAT data
-  // round-trips opaquely (we hold it in `originalAttendees` and merge
-  // back by email at save time).
+  // Attendees are edited as a comma-separated address list. We seed
+  // each existing attendee in RFC `"Common Name" <addr>` form so the
+  // shape matches what `<AddressAutocomplete>` emits when the user
+  // picks a contact — that way edits round-trip cleanly. Existing CN /
+  // PARTSTAT data is held in `originalAttendees` and merged back by
+  // email at save time.
   // svelte-ignore state_referenced_locally
   let attendeesText = $state(
-    (event?.attendees ?? []).map((a) => a.email).join(', '),
+    (event?.attendees ?? []).map(formatAddressForInput).join(', '),
   )
   // svelte-ignore state_referenced_locally
   const originalAttendees = event?.attendees ?? []
+
+  /** Render an existing attendee back into the address-input format. */
+  function formatAddressForInput(a: EventAttendee): string {
+    if (a.common_name && a.common_name !== a.email) {
+      const safe = a.common_name.replace(/"/g, '\\"')
+      return `"${safe}" <${a.email}>`
+    }
+    return a.email
+  }
+
+  /**
+   * Parse a single comma-separated piece into `{ email, name }`.
+   * Accepts `"Name" <addr>`, `Name <addr>`, or a bare `addr`.
+   * Returns null for empty / malformed pieces.
+   */
+  function parseAddress(piece: string): { email: string; name: string | null } | null {
+    const trimmed = piece.trim()
+    if (!trimmed) return null
+    const m = trimmed.match(/^\s*(?:"([^"]*)"|([^<]*?))\s*<([^>]+)>\s*$/)
+    if (m) {
+      const name = (m[1] ?? m[2] ?? '').trim().replace(/\\"/g, '"')
+      return { email: m[3].trim(), name: name || null }
+    }
+    return { email: trimmed, name: null }
+  }
 
   // Reminder picker: a single dropdown that maps to the most common
   // VALARM offsets. "Custom" preserves whatever multi-alarm setup the
@@ -249,15 +277,18 @@
     const seen = new Map<string, EventAttendee>()
     for (const a of originalAttendees) seen.set(a.email.toLowerCase(), a)
     const out: EventAttendee[] = []
-    for (const piece of attendeesText.split(',')) {
-      const email = piece.trim()
-      if (!email) continue
-      const prior = seen.get(email.toLowerCase())
-      out.push(
-        prior
-          ? { email, common_name: prior.common_name ?? null, status: prior.status ?? null }
-          : { email, common_name: null, status: null },
-      )
+    for (const piece of attendeesText.split(/[,;]/)) {
+      const parsed = parseAddress(piece)
+      if (!parsed) continue
+      const prior = seen.get(parsed.email.toLowerCase())
+      // Prefer the freshly typed/picked name when present (the user may
+      // have updated it), and fall back to the server's prior CN.
+      const common_name = parsed.name ?? prior?.common_name ?? null
+      out.push({
+        email: parsed.email,
+        common_name,
+        status: prior?.status ?? null,
+      })
     }
     return out
   }
@@ -488,9 +519,8 @@
 
       <div class="flex items-start gap-2">
         <label class="text-xs w-20 text-surface-500 pt-2" for="event-attendees">Attendees</label>
-        <input
+        <AddressAutocomplete
           id="event-attendees"
-          class="input flex-1 px-3 py-2 text-sm rounded-md"
           bind:value={attendeesText}
           placeholder="alice@example.com, bob@example.com"
         />

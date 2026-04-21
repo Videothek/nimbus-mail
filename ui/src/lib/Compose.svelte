@@ -35,6 +35,15 @@
     subject?: string
     body?: string
     in_reply_to?: number | null
+    /** Files to pre-attach. Used by `FilesView`'s "New mail with
+        attachment" action so the user can pick files in the Files
+        view and land in Compose with them already attached. */
+    attachments?: Attachment[]
+    /** Public Nextcloud share URLs to render into the body as a
+        "Shared via Nextcloud" block. Used by `FilesView`'s "New mail
+        with link" action — the same shape the in-Compose picker
+        produces via `appendHtml`. */
+    nextcloudLinks?: { filename: string; url: string }[]
   }
 
   interface Props {
@@ -65,7 +74,8 @@
   let subject = $state(initial?.subject ?? saved?.subject ?? '')
   // svelte-ignore state_referenced_locally
   let body = $state(initial?.body ?? saved?.body ?? '')
-  let attachments = $state<Attachment[]>([])
+  // svelte-ignore state_referenced_locally
+  let attachments = $state<Attachment[]>(initial?.attachments ?? [])
   // Whether the Nextcloud file picker modal is mounted. Picker is lazy
   // so we don't hit `get_nextcloud_accounts` / PROPFIND until the user
   // actually clicks "Attach from Nextcloud".
@@ -78,7 +88,24 @@
   // onchange callback. The initial body (from reply/forward/draft) is
   // plain text, so we convert newlines to <br> for the WYSIWYG view.
   // svelte-ignore state_referenced_locally
-  let bodyHtml = $state(textToHtml(body))
+  let bodyHtml = $state(initialBodyHtml())
+
+  /** Build the editor's starting HTML — the body (plain text or
+      already-HTML draft) with any pre-rendered Nextcloud share-link
+      block appended. Same shape as the in-Compose picker emits when
+      its `onlinks` callback fires. */
+  function initialBodyHtml(): string {
+    let html = textToHtml(body)
+    if (initial?.nextcloudLinks && initial.nextcloudLinks.length > 0) {
+      const esc = (s: string) =>
+        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      const items = initial.nextcloudLinks
+        .map((l) => `<p>📎 <a href="${l.url}">${esc(l.filename)}</a></p>`)
+        .join('')
+      html += `<p><strong>Shared via Nextcloud:</strong></p>${items}`
+    }
+    return html
+  }
   // svelte-ignore state_referenced_locally
   let showCcBcc = $state(!!cc || !!bcc)
 

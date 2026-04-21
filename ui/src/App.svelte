@@ -26,6 +26,7 @@
   import Compose, { type ComposeInitial } from './lib/Compose.svelte'
   import ContactsView from './lib/ContactsView.svelte'
   import CalendarView from './lib/CalendarView.svelte'
+  import FilesView from './lib/FilesView.svelte'
   import SearchBar, {
     type SearchScope,
     type SearchFilters,
@@ -42,6 +43,7 @@
     | 'settings'
     | 'contacts'
     | 'calendar'
+    | 'files'
   let currentView = $state<View>('loading')
 
   // Which integration tab is active in the sidebar. Lives next to
@@ -267,6 +269,9 @@
     } else if (name === 'Calendar') {
       activeIntegration = name
       currentView = 'calendar'
+    } else if (name === 'Nextcloud Files') {
+      activeIntegration = name
+      currentView = 'files'
     }
   }
 
@@ -422,6 +427,40 @@
     <div class="flex-1">
       <CalendarView onclose={goToInbox} />
     </div>
+  </div>
+
+<!-- Nextcloud Files view: same shape as Calendar / Contacts. The
+     "New mail with link" / "New mail with attachment" buttons inside
+     `FilesView` route through the same `openCompose` everything else
+     uses, so the resulting draft sits on top of whichever view the
+     user came from. -->
+{:else if currentView === 'files' && activeAccountId}
+  <div class="h-full flex">
+    <Sidebar
+      accountId={activeAccountId}
+      selectedFolder={selectedFolder}
+      refreshToken={refreshToken}
+      activeIntegration={activeIntegration}
+      onselectfolder={(f) => {
+        selectFolder(f)
+        goToInbox()
+      }}
+      onsettings={goToSettings}
+      onrefresh={refreshAll}
+      oncompose={() => openCompose()}
+      onselectintegration={onSelectIntegration}
+    />
+    <div class="flex-1">
+      <FilesView onclose={goToInbox} oncompose={openCompose} />
+    </div>
+    {#if composeInitial !== null}
+      <Compose
+        accountId={activeAccountId}
+        fromAddress={activeAccountEmail}
+        initial={composeInitial}
+        onclose={closeCompose}
+      />
+    {/if}
   </div>
 
 <!-- Main inbox: the 3-panel mail client layout -->
