@@ -179,6 +179,18 @@
       to seed the "URL" field of the Calendar event so the meeting
       invite carries the join link. */
   let createdTalkLink = $state<{ name: string; url: string } | null>(null)
+  /** Token of the room behind `createdTalkLink` — needed by
+      `add_talk_participant` when we sync event attendees back into
+      the room after the event is saved. */
+  let talkRoomToken: string | null = null
+  /** Lower-cased bare addresses we've already POSTed to Talk's
+      participant endpoint, so the post-save sync skips them. Includes
+      the participants we passed at room-creation time. */
+  const talkRoomParticipants = new Set<string>()
+  /** Whether the "Join the Talk room" body block has been appended
+      yet. The Talk button injects immediately; the Add-Event auto-
+      create defers injection until the event is saved. */
+  let talkLinkInjected = false
   let openingEvent = $state(false)
 
   /** Resolve a Nextcloud account id (cached for the rest of the
@@ -211,21 +223,71 @@
     return [...splitAddrs(to), ...splitAddrs(cc)]
   }
 
-  function onTalkRoomCreated(room: TalkRoom, participants: string[]) {
-    createdTalkLink = { name: room.display_name, url: room.web_url }
-    // Keep the mail recipients in sync with the Talk invite: any
-    // address the user typed into the modal that wasn't already on
-    // To/Cc/Bcc gets added to To.
-    mergeIntoRecipients(participants)
-    // Same "Join the Talk room" block shape that `initialBodyHtml`
-    // and `TalkView`'s share-link path produce — keeps the rendered
-    // mail consistent across every entry point.
+  /** Append the "Join the Talk room" body block once. Used by both
+      the immediate-injection path (Talk button) and the deferred path
+      (Add-Event auto-create → injected on event save). The flag keeps
+      callers from accidentally duplicating the block. */
+  function injectTalkBlock(link: { name: string; url: string }) {
+    if (talkLinkInjected) return
     const esc = (s: string) =>
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     const block =
       `<p><strong>Join the Talk room:</strong></p>` +
-      `<p>💬 <a href="${room.web_url}">${esc(room.display_name)}</a></p>`
+      `<p>💬 <a href="${link.url}">${esc(link.name)}</a></p>`
     editorApi?.appendHtml(block)
+    talkLinkInjected = true
+  }
+
+  function onTalkRoomCreated(room: TalkRoom, participants: string[]) {
+    createdTalkLink = { name: room.display_name, url: room.web_url }
+    talkRoomToken = room.token
+    for (const p of participants) {
+      const k = bareAddr(p).toLowerCase()
+      if (k) talkRoomParticipants.add(k)
+    }
+    // Keep the mail recipients in sync with the Talk invite: any
+    // address the user typed into the modal that wasn't already on
+    // To/Cc/Bcc gets added to To.
+    mergeIntoRecipients(participants)
+    // The Talk button is itself a "share this room now" gesture, so
+    // inject the body block immediately. The Add-Event auto-create
+    // path deliberately bypasses this callback (it uses
+    // `createTalkRoomSilently`) so its block can be deferred.
+    injectTalkBlock(createdTalkLink)
+  }
+
+  /**
+   * Create a Talk room without going through CreateTalkRoomModal —
+   * used by the Add-Event path so the auto-created room's URL is
+   * available to prefill the event's URL field. The body block is
+   * **not** injected here; that happens after the event is saved
+   * (per the user-facing "after the event is saved, add the talk
+   * link to the mail body" semantics).
+   */
+  async function createTalkRoomSilently() {
+    const id = ncAccountId
+    if (!id) return
+    const seen = new Set<string>()
+    const dedupd: { kind: 'email'; value: string }[] = []
+    for (const r of recipients()) {
+      const addr = bareAddr(r)
+      if (!addr) continue
+      const k = addr.toLowerCase()
+      if (seen.has(k)) continue
+      seen.add(k)
+      dedupd.push({ kind: 'email', value: addr })
+    }
+    const room = await invoke<TalkRoom>('create_talk_room', {
+      ncId: id,
+      // Talk requires a non-empty name. Fall back to a generic label
+      // when the user hasn't set a subject yet — they can rename in
+      // Nextcloud later.
+      roomName: subject.trim() || '(meeting)',
+      participants: dedupd,
+    })
+    createdTalkLink = { name: room.display_name, url: room.web_url }
+    talkRoomToken = room.token
+    for (const p of dedupd) talkRoomParticipants.add(p.value.toLowerCase())
   }
 
   async function openEventEditor() {
@@ -240,6 +302,7 @@
         error = 'Connect a Nextcloud account first (Settings → Nextcloud).'
         return
       }
+      if (!ncAccountId) ncAccountId = accounts[0].id
       const all: CalendarSummary[] = []
       for (const acc of accounts) {
         try {
@@ -253,6 +316,19 @@
       if (all.length === 0) {
         error = 'No calendars cached yet. Open the Calendar tab once to sync.'
         return
+      }
+      // Auto-create a Talk room so the event's URL field carries the
+      // join link from the start. We skip this if the user already
+      // created one via the Talk button (or via an earlier click of
+      // Add Event in the same Compose session). Failure is non-fatal:
+      // surface the error and still open the editor — the user can
+      // create the event without a link or paste one in by hand.
+      if (!createdTalkLink) {
+        try {
+          await createTalkRoomSilently()
+        } catch (e) {
+          error = formatError(e) || 'Failed to create Talk room for event'
+        }
       }
       showEventEditor = true
     } finally {
@@ -284,13 +360,24 @@
     }
   }
 
-  /** After the EventEditor saves, append a short "📅 Meeting" block
-      (title, when, and the event URL — typically the Talk room link)
-      and sync any newly added attendees back into the mail's To field
-      so the invite and the email line up in both directions. */
-  function onEventSaved(saved?: SavedEvent) {
+  /** After the EventEditor saves, do the post-save bookkeeping:
+   *
+   *   1. Add any new event attendees to the email's To field so the
+   *      mail recipients track the invite list.
+   *   2. Inject the deferred "Join the Talk room" body block (the
+   *      auto-create path skips immediate injection so the link
+   *      lands in the body once the meeting is actually scheduled).
+   *   3. Append the "📅 Meeting" block with title / when / link.
+   *   4. Best-effort: POST any new event attendees to the Talk room
+   *      so the room's participant list stays aligned with the
+   *      event's. EventEditor doesn't await this callback so the
+   *      sync happens in the background; per-address failures
+   *      (already-added, invalid email) are logged and skipped.
+   */
+  async function onEventSaved(saved?: SavedEvent) {
     if (!saved) return
     mergeIntoRecipients(saved.attendees)
+    if (createdTalkLink) injectTalkBlock(createdTalkLink)
     const esc = (s: string) =>
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     const start = new Date(saved.start)
@@ -325,6 +412,23 @@
       `<p>When: ${esc(when)}</p>` +
       linkLine
     editorApi?.appendHtml(block)
+
+    if (talkRoomToken && ncAccountId) {
+      for (const addr of saved.attendees) {
+        const key = addr.toLowerCase()
+        if (!key || talkRoomParticipants.has(key)) continue
+        try {
+          await invoke('add_talk_participant', {
+            ncId: ncAccountId,
+            roomToken: talkRoomToken,
+            participant: { kind: 'email', value: addr },
+          })
+          talkRoomParticipants.add(key)
+        } catch (e) {
+          console.warn('Failed to add Talk participant', addr, ':', e)
+        }
+      }
+    }
   }
 
   // Autosave draft whenever the user edits a field.
@@ -545,9 +649,13 @@
         type="button"
         class="btn preset-outlined-surface-500"
         disabled={openingEvent}
-        title="Create a calendar event with the current recipients as attendees{createdTalkLink ? ' (Talk link prefilled)' : ''}"
+        title={
+          createdTalkLink
+            ? 'Create a calendar event with the current recipients as attendees (existing Talk link prefilled)'
+            : 'Create a Talk room and a calendar event with the current recipients — the Talk link is added to the event URL and the email body'
+        }
         onclick={openEventEditor}
-      >{openingEvent ? 'Loading…' : '📅 Add event'}</button>
+      >{openingEvent ? (createdTalkLink ? 'Loading…' : 'Creating Talk room…') : '📅 Add event'}</button>
       <button class="btn preset-outlined-surface-500" onclick={saveDraft}>Save draft</button>
       {#if savedHint}
         <span class="text-xs text-surface-500">{savedHint}</span>
