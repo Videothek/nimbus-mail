@@ -72,15 +72,47 @@
 
   type Mode = 'create' | 'edit'
 
+  /** Payload `onsaved` carries back after a successful create. Edit /
+      delete still fire `onsaved()` with no argument — callers that
+      don't care about the payload (e.g. CalendarView) keep their
+      `() => void` handler unchanged. Compose uses this to append a
+      "📅 Meeting" block to the email body. */
+  export interface SavedEvent {
+    summary: string
+    start: string
+    end: string
+    url: string | null
+  }
+
   interface Props {
     mode: Mode
     calendars: CalendarSummary[]
-    /** create-mode seed: which calendar + which start/end to prefill. */
-    draft?: { calendarId: string; start: Date; end: Date; allDay?: boolean } | null
+    /**
+     * create-mode seed. Always carries the calendar id + start/end
+     * (from a `+ New event` click or a click-and-drag on the grid).
+     * The remaining content fields are optional prefills used by
+     * callers that want to open the editor with more than just a
+     * time slot — e.g. Compose's "Add event" action seeds summary
+     * (from the email subject), attendees (from To/Cc), and url
+     * (from a freshly created Talk room).
+     */
+    draft?: {
+      calendarId: string
+      start: Date
+      end: Date
+      allDay?: boolean
+      summary?: string
+      description?: string
+      location?: string
+      url?: string
+      /** Each entry is a bare address or `"Name" <addr>` — same
+          shape `parseAddress` accepts everywhere else. */
+      attendees?: string[]
+    } | null
     /** edit-mode subject: the existing event being edited. */
     event?: CalendarEvent | null
     onclose: () => void
-    onsaved: () => void
+    onsaved: (saved?: SavedEvent) => void
   }
   const { mode, calendars, draft, event, onclose, onsaved }: Props = $props()
 
@@ -90,13 +122,13 @@
   // `$state` cells, so further changes to the prop don't clobber the
   // user's typing.
   // svelte-ignore state_referenced_locally
-  let summary = $state(event?.summary ?? '')
+  let summary = $state(event?.summary ?? draft?.summary ?? '')
   // svelte-ignore state_referenced_locally
-  let description = $state(event?.description ?? '')
+  let description = $state(event?.description ?? draft?.description ?? '')
   // svelte-ignore state_referenced_locally
-  let location = $state(event?.location ?? '')
+  let location = $state(event?.location ?? draft?.location ?? '')
   // svelte-ignore state_referenced_locally
-  let url = $state(event?.url ?? '')
+  let url = $state(event?.url ?? draft?.url ?? '')
   // svelte-ignore state_referenced_locally
   let transparency = $state(event?.transparency ?? 'OPAQUE')
 
@@ -141,7 +173,9 @@
   // email at save time.
   // svelte-ignore state_referenced_locally
   let attendeesText = $state(
-    (event?.attendees ?? []).map(formatAddressForInput).join(', '),
+    event
+      ? (event.attendees ?? []).map(formatAddressForInput).join(', ')
+      : (draft?.attendees ?? []).join(', '),
   )
   // svelte-ignore state_referenced_locally
   const originalAttendees = event?.attendees ?? []
@@ -345,10 +379,16 @@
     try {
       if (mode === 'create') {
         await invoke('create_calendar_event', { calendarId, input })
+        onsaved({
+          summary: input.summary,
+          start: input.start,
+          end: input.end,
+          url: input.url,
+        })
       } else if (event) {
         await invoke('update_calendar_event', { eventId: event.id, input })
+        onsaved()
       }
-      onsaved()
       onclose()
     } catch (e) {
       error = formatError(e) || 'Failed to save event'

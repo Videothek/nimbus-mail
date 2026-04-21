@@ -21,6 +21,24 @@
   import RichTextEditor, { type EditorApi } from './RichTextEditor.svelte'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
   import NextcloudFilePicker from './NextcloudFilePicker.svelte'
+  import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
+  import EventEditor, { type SavedEvent } from './EventEditor.svelte'
+
+  /** Slim Nextcloud account row — same shape `TalkView` / `Sidebar` use.
+      We only need the id to pass to the Talk + Calendar commands. */
+  interface NextcloudAccount {
+    id: string
+  }
+  /** Slim calendar summary — matches the Rust `CalendarSummary` Tauri
+      return shape. We pass the full list to `EventEditor` so the user
+      can pick which calendar the event lands in. */
+  interface CalendarSummary {
+    id: string
+    nextcloud_account_id: string
+    display_name: string
+    color: string | null
+    last_synced_at: string | null
+  }
 
   interface Attachment {
     filename: string
@@ -146,6 +164,152 @@
   let sending = $state(false)
   let error = $state('')
   let savedHint = $state('')
+
+  // ── Talk room + Calendar event creation from Compose ────────
+  // Both flows piggyback on the existing modals (`CreateTalkRoomModal`,
+  // `EventEditor`) so the UX matches what the user already sees in
+  // TalkView / CalendarView. We lazy-load the Nextcloud account list
+  // and calendar list — neither is needed unless the user opens one
+  // of these flows.
+  let showTalkModal = $state(false)
+  let showEventEditor = $state(false)
+  let ncAccountId = $state('')
+  let calendars = $state<CalendarSummary[]>([])
+  /** The Talk room created during this compose session (if any). Used
+      to seed the "URL" field of the Calendar event so the meeting
+      invite carries the join link. */
+  let createdTalkLink = $state<{ name: string; url: string } | null>(null)
+  let openingEvent = $state(false)
+
+  /** Resolve a Nextcloud account id (cached for the rest of the
+      session). Sets `error` and returns null if none configured. */
+  async function ensureNextcloudAccount(): Promise<string | null> {
+    if (ncAccountId) return ncAccountId
+    try {
+      const accounts = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
+      if (accounts.length === 0) {
+        error = 'Connect a Nextcloud account first (Settings → Nextcloud).'
+        return null
+      }
+      ncAccountId = accounts[0].id
+      return ncAccountId
+    } catch (e) {
+      error = formatError(e) || 'Failed to load Nextcloud accounts'
+      return null
+    }
+  }
+
+  async function openTalkModal() {
+    error = ''
+    const id = await ensureNextcloudAccount()
+    if (id) showTalkModal = true
+  }
+
+  /** Combined To + Cc list as bare/RFC-formatted address strings,
+      ready to seed CreateTalkRoomModal / EventEditor's attendee inputs. */
+  function recipients(): string[] {
+    return [...splitAddrs(to), ...splitAddrs(cc)]
+  }
+
+  function onTalkRoomCreated(room: TalkRoom) {
+    createdTalkLink = { name: room.display_name, url: room.web_url }
+    // Same "Join the Talk room" block shape that `initialBodyHtml`
+    // and `TalkView`'s share-link path produce — keeps the rendered
+    // mail consistent across every entry point.
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const block =
+      `<p><strong>Join the Talk room:</strong></p>` +
+      `<p>💬 <a href="${room.web_url}">${esc(room.display_name)}</a></p>`
+    editorApi?.appendHtml(block)
+  }
+
+  async function openEventEditor() {
+    error = ''
+    openingEvent = true
+    try {
+      // Calendars come from every connected Nextcloud account so the
+      // user can drop the event into any of their calendars — same
+      // aggregation CalendarView does on its own load.
+      const accounts = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
+      if (accounts.length === 0) {
+        error = 'Connect a Nextcloud account first (Settings → Nextcloud).'
+        return
+      }
+      const all: CalendarSummary[] = []
+      for (const acc of accounts) {
+        try {
+          const cs = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId: acc.id })
+          all.push(...cs)
+        } catch (e) {
+          console.warn('get_cached_calendars failed:', e)
+        }
+      }
+      calendars = all
+      if (all.length === 0) {
+        error = 'No calendars cached yet. Open the Calendar tab once to sync.'
+        return
+      }
+      showEventEditor = true
+    } finally {
+      openingEvent = false
+    }
+  }
+
+  /** Build the create-mode draft passed to EventEditor. Default time
+      window is the next half-hour for one hour — same behaviour the
+      grid's "+ New event" button uses. Subject, attendees, and the
+      Talk URL (if a room was just created) seed the editor so the
+      user only has to confirm the time. */
+  function eventDraft() {
+    const start = new Date()
+    // Round up to the next 30-minute mark so the prefilled slot is
+    // visually clean (no "10:13" oddities).
+    const minute = start.getMinutes()
+    const bump = (30 - (minute % 30)) % 30 || 30
+    start.setMinutes(minute + bump, 0, 0)
+    const end = new Date(start)
+    end.setHours(end.getHours() + 1)
+    return {
+      calendarId: calendars[0]?.id ?? '',
+      start,
+      end,
+      summary: subject,
+      attendees: recipients(),
+      url: createdTalkLink?.url ?? '',
+    }
+  }
+
+  /** After the EventEditor saves, append a short "📅 Meeting" block
+      so the recipients see the date/time in the email body. The Talk
+      link block (if any) was already injected when the room was
+      created, so we don't repeat it here. */
+  function onEventSaved(saved?: SavedEvent) {
+    if (!saved) return
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const start = new Date(saved.start)
+    const end = new Date(saved.end)
+    const sameDay =
+      start.getFullYear() === end.getFullYear() &&
+      start.getMonth() === end.getMonth() &&
+      start.getDate() === end.getDate()
+    const dateStr = start.toLocaleDateString(undefined, {
+      weekday: 'short',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    })
+    const timeFmt: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' }
+    const when = sameDay
+      ? `${dateStr}, ${start.toLocaleTimeString(undefined, timeFmt)}–${end.toLocaleTimeString(undefined, timeFmt)}`
+      : `${start.toLocaleString(undefined, { ...timeFmt, dateStyle: 'medium' } as Intl.DateTimeFormatOptions)} – ${end.toLocaleString(undefined, { ...timeFmt, dateStyle: 'medium' } as Intl.DateTimeFormatOptions)}`
+    const title = esc(saved.summary || '(untitled)')
+    const block =
+      `<p><strong>📅 Meeting:</strong> ${title}</p>` +
+      `<p>When: ${esc(when)}</p>`
+    editorApi?.appendHtml(block)
+  }
 
   // Autosave draft whenever the user edits a field.
   $effect(() => {
@@ -317,6 +481,19 @@
         class="btn preset-outlined-surface-500"
         onclick={() => (showNcPicker = true)}
       >☁️ From Nextcloud</button>
+      <button
+        type="button"
+        class="btn preset-outlined-surface-500"
+        title="Create a Nextcloud Talk room with the current recipients and add the join link to this email"
+        onclick={openTalkModal}
+      >💬 Talk room</button>
+      <button
+        type="button"
+        class="btn preset-outlined-surface-500"
+        disabled={openingEvent}
+        title="Create a calendar event with the current recipients as attendees{createdTalkLink ? ' (Talk link prefilled)' : ''}"
+        onclick={openEventEditor}
+      >{openingEvent ? 'Loading…' : '📅 Add event'}</button>
       <button class="btn preset-outlined-surface-500" onclick={saveDraft}>Save draft</button>
       {#if savedHint}
         <span class="text-xs text-surface-500">{savedHint}</span>
@@ -347,5 +524,25 @@
       editorApi?.appendHtml(block)
     }}
     onclose={() => (showNcPicker = false)}
+  />
+{/if}
+
+{#if showTalkModal && ncAccountId}
+  <CreateTalkRoomModal
+    ncId={ncAccountId}
+    initialName={subject}
+    initialParticipants={recipients()}
+    onclose={() => (showTalkModal = false)}
+    oncreated={onTalkRoomCreated}
+  />
+{/if}
+
+{#if showEventEditor}
+  <EventEditor
+    mode="create"
+    {calendars}
+    draft={eventDraft()}
+    onclose={() => (showEventEditor = false)}
+    onsaved={onEventSaved}
   />
 {/if}
