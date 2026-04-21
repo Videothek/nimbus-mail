@@ -9,7 +9,10 @@
 //! - **Capability detection** (`capabilities`) — asks the server which
 //!   apps (Talk, Files, CalDAV, CardDAV) are installed so the UI can
 //!   show or hide features accordingly.
-//! - **Talk / Files** (stubs for now) — filled in as their own issues.
+//! - **Files** (`files`) — WebDAV browse / download for "attach from
+//!   Nextcloud". Public shares (`shares`) for "send as link".
+//! - **Talk** (`talk`) — list, create, and add participants to Talk
+//!   rooms. The "create Talk room from email thread" flow lives here.
 
 pub mod auth;
 pub mod capabilities;
@@ -22,3 +25,4 @@ pub use auth::{LoginFlowInit, LoginFlowResult, poll_login, start_login};
 pub use capabilities::fetch_capabilities;
 pub use files::{FileEntry, create_directory, download_file, list_directory, upload_file};
 pub use shares::{PublicShare, create_public_share};
+pub use talk::{ParticipantSource, RoomType, TalkRoom, add_participant, create_room, list_rooms};

@@ -44,6 +44,12 @@
         with link" action — the same shape the in-Compose picker
         produces via `appendHtml`. */
     nextcloudLinks?: { filename: string; url: string }[]
+    /** Nextcloud Talk room link to render into the body as a
+        "Join the Talk room" block. Used by `TalkView`'s "Share link"
+        action and by `MailView`'s "Create Talk room from this thread"
+        action — the latter creates the room first and then opens
+        Compose to invite the participants. */
+    talkLink?: { name: string; url: string }
   }
 
   interface Props {
@@ -96,13 +102,21 @@
       its `onlinks` callback fires. */
   function initialBodyHtml(): string {
     let html = textToHtml(body)
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     if (initial?.nextcloudLinks && initial.nextcloudLinks.length > 0) {
-      const esc = (s: string) =>
-        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const items = initial.nextcloudLinks
         .map((l) => `<p>📎 <a href="${l.url}">${esc(l.filename)}</a></p>`)
         .join('')
       html += `<p><strong>Shared via Nextcloud:</strong></p>${items}`
+    }
+    if (initial?.talkLink) {
+      // Same block shape as the share-link block — keeps the rendered
+      // mail consistent across "Share file" and "Share Talk room"
+      // entry points.
+      html +=
+        `<p><strong>Join the Talk room:</strong></p>` +
+        `<p>💬 <a href="${initial.talkLink.url}">${esc(initial.talkLink.name)}</a></p>`
     }
     return html
   }
