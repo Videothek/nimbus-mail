@@ -82,6 +82,10 @@
     start: string
     end: string
     url: string | null
+    /** Bare-address list of everyone invited to the event — Compose
+        uses this to merge any newly added addresses back into the
+        email's To field so the invite and the mail stay in sync. */
+    attendees: string[]
   }
 
   interface Props {
@@ -384,6 +388,7 @@
           start: input.start,
           end: input.end,
           url: input.url,
+          attendees: input.attendees.map((a) => a.email),
         })
       } else if (event) {
         await invoke('update_calendar_event', { eventId: event.id, input })
