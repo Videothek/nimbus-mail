@@ -15,7 +15,10 @@ pub mod auth;
 pub mod capabilities;
 pub mod client;
 pub mod files;
+pub mod shares;
 pub mod talk;
 
 pub use auth::{LoginFlowInit, LoginFlowResult, poll_login, start_login};
 pub use capabilities::fetch_capabilities;
+pub use files::{FileEntry, create_directory, download_file, list_directory, upload_file};
+pub use shares::{PublicShare, create_public_share};

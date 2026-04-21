@@ -25,6 +25,10 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 # Rust side so JS can `sendNotification` through the capability-gated
 # IPC; Rust itself only emits events — the frontend owns formatting.
 tauri-plugin-notification = "2"
+# Native "Save As" / "Open" file dialogs. Used by the attachment
+# Download action so the user can pick where to save the file instead
+# of it landing in the default Downloads folder silently.
+tauri-plugin-dialog = "2"
 # Opens a URL in the system default browser. Used by the Nextcloud
 # Login Flow v2 command to bounce the user out to their NC login page.
 open = { workspace = true }

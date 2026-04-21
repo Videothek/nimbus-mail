@@ -432,12 +432,17 @@ impl Cache {
         // Vec<String> can only fail if allocation fails.
         let to_json = serde_json::to_string(&email.to).unwrap_or_else(|_| "[]".into());
         let cc_json = serde_json::to_string(&email.cc).unwrap_or_else(|_| "[]".into());
+        // Attachment metadata as JSON — one record per attachment,
+        // with the stable `part_id` the IMAP re-fetch uses. See v5 → v6.
+        let attachments_json =
+            serde_json::to_string(&email.attachments).unwrap_or_else(|_| "[]".into());
 
         tx.execute(
             "INSERT INTO message_bodies
                 (account_id, folder, uid, body_text, body_html,
-                 has_attachments, raw_size, cached_at, to_addrs, cc_addrs)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 has_attachments, raw_size, cached_at, to_addrs, cc_addrs,
+                 attachments)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT (account_id, folder, uid) DO UPDATE SET
                 body_text       = excluded.body_text,
                 body_html       = excluded.body_html,
@@ -445,7 +450,8 @@ impl Cache {
                 raw_size        = excluded.raw_size,
                 cached_at       = excluded.cached_at,
                 to_addrs        = excluded.to_addrs,
-                cc_addrs        = excluded.cc_addrs",
+                cc_addrs        = excluded.cc_addrs,
+                attachments     = excluded.attachments",
             params![
                 email.account_id,
                 email.folder,
@@ -457,6 +463,7 @@ impl Cache {
                 now,
                 to_json,
                 cc_json,
+                attachments_json,
             ],
         )?;
         tx.commit()?;
@@ -490,7 +497,7 @@ impl Cache {
                 "SELECT m.from_addr, m.subject, m.internal_date,
                         m.is_read, m.is_starred,
                         b.body_text, b.body_html, b.has_attachments,
-                        b.to_addrs, b.cc_addrs
+                        b.to_addrs, b.cc_addrs, b.attachments
                  FROM messages m
                  INNER JOIN message_bodies b USING (account_id, folder, uid)
                  WHERE m.account_id = ?1 AND m.folder = ?2 AND m.uid = ?3",
@@ -500,6 +507,7 @@ impl Cache {
                     let date = Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now);
                     let to_json: String = r.get(8)?;
                     let cc_json: String = r.get(9)?;
+                    let attachments_json: String = r.get(10)?;
                     Ok(Email {
                         id: format!("{folder}:{uid}"),
                         account_id: account_id.to_string(),
@@ -514,6 +522,8 @@ impl Cache {
                         is_read: r.get::<_, i64>(3)? != 0,
                         is_starred: r.get::<_, i64>(4)? != 0,
                         has_attachments: r.get::<_, i64>(7)? != 0,
+                        attachments: serde_json::from_str(&attachments_json)
+                            .unwrap_or_default(),
                     })
                 },
             )
@@ -722,6 +732,7 @@ mod tests {
             is_read: false,
             is_starred: false,
             has_attachments: true,
+            attachments: vec![],
         }
     }
 

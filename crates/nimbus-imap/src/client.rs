@@ -6,9 +6,9 @@ use async_native_tls::TlsStream;
 use async_std::net::TcpStream;
 use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
-use mail_parser::MessageParser;
+use mail_parser::{MessageParser, MimeHeaders};
 use nimbus_core::error::NimbusError;
-use nimbus_core::models::{Email, EmailEnvelope, Folder};
+use nimbus_core::models::{Email, EmailAttachment, EmailEnvelope, Folder};
 use tracing::{debug, info, warn};
 
 /// An authenticated IMAP session, ready to interact with mailboxes.
@@ -427,6 +427,45 @@ impl ImapClient {
 
         let has_attachments = parsed.attachment_count() > 0;
 
+        // Metadata for each attachment. We store only name/type/size
+        // here — the bytes are left on the server and fetched on demand
+        // when the user clicks "Download" or "Save to Nextcloud". This
+        // keeps the message payload (and its cache row) small even for
+        // messages with 20 MB of PDFs.
+        let attachments: Vec<EmailAttachment> = parsed
+            .attachments()
+            .enumerate()
+            .map(|(idx, part)| {
+                let part_id = idx as u32;
+                let filename = part
+                    .attachment_name()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "attachment".to_string());
+                // `content_type()` returns a structured ContentType;
+                // rebuild the `type/subtype` string for the UI icon lookup.
+                let content_type = part
+                    .content_type()
+                    .map(|ct| {
+                        let ctype = ct.ctype();
+                        match ct.subtype() {
+                            Some(sub) => format!("{ctype}/{sub}"),
+                            None => ctype.to_string(),
+                        }
+                    })
+                    .unwrap_or_else(|| "application/octet-stream".to_string());
+                // Decoded contents length. mail-parser has already
+                // resolved base64/QP by the time we see `contents()`,
+                // so this matches what the user will actually download.
+                let size = Some(part.contents().len() as u64);
+                EmailAttachment {
+                    filename,
+                    content_type,
+                    size,
+                    part_id,
+                }
+            })
+            .collect();
+
         let date = parsed
             .date()
             .and_then(|d| {
@@ -468,7 +507,85 @@ impl ImapClient {
             is_read,
             is_starred,
             has_attachments,
+            attachments,
         })
+    }
+
+    /// Fetch the raw decoded bytes of a single attachment.
+    ///
+    /// We re-fetch the whole message body (BODY.PEEK[]) and re-parse it
+    /// to extract the attachment at `part_id`. That's simpler than
+    /// issuing a targeted BODYSTRUCTURE + BODY[part] pair, which would
+    /// mean teaching the UI about MIME section numbers — and re-fetching
+    /// is cheap enough for the "user clicked Download" case. BODY.PEEK[]
+    /// keeps the message unread.
+    pub async fn fetch_attachment(
+        &mut self,
+        folder: &str,
+        uid: u32,
+        part_id: u32,
+    ) -> Result<(EmailAttachment, Vec<u8>), NimbusError> {
+        let _ = self.select_folder(folder).await?;
+
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        let fetches: Vec<_> = session
+            .uid_fetch(uid.to_string(), "(BODY.PEEK[])")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID FETCH failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read UID FETCH: {e}")))?;
+
+        let fetch = fetches
+            .into_iter()
+            .next()
+            .ok_or_else(|| NimbusError::Protocol(format!("No message with UID {uid}")))?;
+
+        let raw = fetch
+            .body()
+            .ok_or_else(|| NimbusError::Protocol("FETCH returned no body".into()))?;
+
+        let parsed = MessageParser::default()
+            .parse(raw)
+            .ok_or_else(|| NimbusError::Protocol("Failed to parse message".into()))?;
+
+        let part = parsed.attachment(part_id).ok_or_else(|| {
+            NimbusError::Protocol(format!(
+                "Message UID {uid} has no attachment #{part_id}"
+            ))
+        })?;
+
+        let filename = part
+            .attachment_name()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "attachment".to_string());
+        let content_type = part
+            .content_type()
+            .map(|ct| {
+                let ctype = ct.ctype();
+                match ct.subtype() {
+                    Some(sub) => format!("{ctype}/{sub}"),
+                    None => ctype.to_string(),
+                }
+            })
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+
+        let data = part.contents().to_vec();
+        let size = Some(data.len() as u64);
+
+        Ok((
+            EmailAttachment {
+                filename,
+                content_type,
+                size,
+                part_id,
+            },
+            data,
+        ))
     }
 
     /// Mark a message as read by setting the `\Seen` flag on the server.

@@ -94,6 +94,47 @@ pub struct Email {
     pub is_read: bool,
     pub is_starred: bool,
     pub has_attachments: bool,
+    /// Metadata for each attachment on the message — no bytes. Kept
+    /// empty when `has_attachments` is false. The bytes are fetched on
+    /// demand via a separate command so opening a message with a 50 MB
+    /// attachment is still snappy.
+    ///
+    /// `#[serde(default)]` keeps older cached payloads (written before
+    /// this field existed) deserialising cleanly — they come back as an
+    /// empty list, which lines up with `has_attachments=false` for
+    /// messages from before the attachment metadata landed.
+    #[serde(default)]
+    pub attachments: Vec<EmailAttachment>,
+}
+
+/// Metadata for one attachment on a received email.
+///
+/// The bytes are NOT carried here — they can be many megabytes and
+/// would make every message fetch/cache hit that size. Instead we
+/// expose enough to render an attachment chip and to later request the
+/// bytes via `download_email_attachment` using `(folder, uid, part_id)`.
+///
+/// `part_id` is the index of this attachment among the message's
+/// attachments (0, 1, 2, …) as `mail-parser` orders them. It's stable
+/// for a given raw message — we re-parse on download and pick the same
+/// index. Storing an opaque index rather than a MIME part path keeps
+/// this JSON-friendly and avoids leaking parser internals.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailAttachment {
+    /// Display filename (from `Content-Disposition: filename` or
+    /// `Content-Type: name`). Defaults to `"attachment"` if the server
+    /// sent neither — we'd rather show a label than hide the file.
+    pub filename: String,
+    /// MIME type, e.g. `"application/pdf"`. Defaults to
+    /// `"application/octet-stream"` when missing.
+    pub content_type: String,
+    /// Decoded size in bytes. `None` if the parser couldn't determine
+    /// it (rare — most attachments are base64/quoted-printable with a
+    /// deterministic decoded length).
+    pub size: Option<u64>,
+    /// Zero-based index into the parsed message's attachment list.
+    /// Used as a stable handle for re-fetching the bytes on demand.
+    pub part_id: u32,
 }
 
 /// Represents an IMAP mailbox folder.

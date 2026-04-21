@@ -466,6 +466,7 @@ mod tests {
             is_read: false,
             is_starred: false,
             has_attachments: false,
+            attachments: vec![],
         }
     }
 
