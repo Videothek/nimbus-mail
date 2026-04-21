@@ -27,10 +27,14 @@
 //!   participants (Nextcloud users *and* email-only invitees).
 //! - [`add_participant`] — used internally by `create_room`, but
 //!   exposed so callers can also extend an existing room.
+//! - [`rename_room`] — used by the Compose "Add Event" flow so the
+//!   Talk room created up-front (with the email subject as a
+//!   placeholder name) can be renamed to match the final event title
+//!   the user typed in the editor.
 //!
-//! Editing room settings (rename / set password / promote moderator)
-//! is left to a future issue — the existing Talk web UI handles those
-//! and Nimbus opens rooms in the browser anyway.
+//! Editing the rest of room settings (set password / promote
+//! moderator) is left to a future issue — the Talk web UI handles
+//! those and Nimbus opens rooms in the browser anyway.
 
 use serde::{Deserialize, Serialize};
 
@@ -291,6 +295,41 @@ pub async fn add_participant(
     // Discard the participant payload — we just need the meta-level
     // success signal to know the add stuck.
     let _: serde_json::Value = parse_ocs_data(&body, "talk add participant")?;
+    Ok(())
+}
+
+/// Rename an existing Talk room. Used by the Compose "Add Event"
+/// flow: we create the room up-front (so its URL can prefill the
+/// event editor's URL field) using the email subject as a placeholder
+/// name, then rename the room to the final event title once the user
+/// saves the event. The endpoint is the same `PUT /room/{token}` the
+/// Talk web UI hits when editing the room name.
+pub async fn rename_room(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    room_token: &str,
+    new_name: &str,
+) -> Result<(), NimbusError> {
+    let server = client::normalize_server_url(server_url);
+    let url = format!("{server}/ocs/v2.php/apps/spreed/api/v4/room/{room_token}?format=json");
+
+    tracing::debug!("PUT {url} (new_name={new_name:?})");
+    let http = client::build()?;
+    let resp = http
+        .put(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(username, Some(app_password))
+        .form(&[("roomName", new_name)])
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("talk rename request failed: {e}")))?;
+
+    let body = ocs_text(resp, "talk rename room").await?;
+    // Discard the updated-room payload — we already track the room
+    // locally and a rename doesn't change anything else we care about.
+    let _: serde_json::Value = parse_ocs_data(&body, "talk rename room")?;
     Ok(())
 }
 

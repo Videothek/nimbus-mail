@@ -457,6 +457,27 @@ async fn add_talk_participant(
     .await
 }
 
+/// Rename an existing Talk room. Used by the Compose "Add Event"
+/// flow to keep the auto-created Talk room's name in sync with the
+/// final event title once the user saves the event.
+#[tauri::command]
+async fn rename_talk_room(
+    nc_id: String,
+    room_token: String,
+    new_name: String,
+) -> Result<(), NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::rename_room(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &room_token,
+        &new_name,
+    )
+    .await
+}
+
 // ── CardDAV contacts ────────────────────────────────────────────
 //
 // Contact sync is driven from a single entry point: the UI calls
@@ -2519,6 +2540,7 @@ fn main() {
             list_talk_rooms,
             create_talk_room,
             add_talk_participant,
+            rename_talk_room,
             upload_to_nextcloud,
             save_bytes_to_path,
             sync_nextcloud_contacts,
