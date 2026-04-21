@@ -413,6 +413,31 @@
       linkLine
     editorApi?.appendHtml(block)
 
+    // Rename the auto-created Talk room to match the final event
+    // title. The room was created up-front (see `createTalkRoomSilently`)
+    // with the email subject as a placeholder name so we could prefill
+    // its URL into the event editor; once the user has typed an actual
+    // event title we rename the room so the Talk web UI shows
+    // something sensible.
+    if (
+      talkRoomToken &&
+      ncAccountId &&
+      createdTalkLink &&
+      saved.summary &&
+      saved.summary !== createdTalkLink.name
+    ) {
+      try {
+        await invoke('rename_talk_room', {
+          ncId: ncAccountId,
+          roomToken: talkRoomToken,
+          newName: saved.summary,
+        })
+        createdTalkLink = { ...createdTalkLink, name: saved.summary }
+      } catch (e) {
+        console.warn('Failed to rename Talk room:', e)
+      }
+    }
+
     if (talkRoomToken && ncAccountId) {
       for (const addr of saved.attendees) {
         const key = addr.toLowerCase()

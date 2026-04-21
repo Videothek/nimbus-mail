@@ -25,4 +25,6 @@ pub use auth::{LoginFlowInit, LoginFlowResult, poll_login, start_login};
 pub use capabilities::fetch_capabilities;
 pub use files::{FileEntry, create_directory, download_file, list_directory, upload_file};
 pub use shares::{PublicShare, create_public_share};
-pub use talk::{ParticipantSource, RoomType, TalkRoom, add_participant, create_room, list_rooms};
+pub use talk::{
+    ParticipantSource, RoomType, TalkRoom, add_participant, create_room, list_rooms, rename_room,
+};
