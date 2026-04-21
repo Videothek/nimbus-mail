@@ -1164,6 +1164,35 @@ fn calendar_event_to_row(
     }
 }
 
+/// Derive the (email, display name) we surface as `ORGANIZER` on
+/// outbound VEVENTs. Nextcloud's CalDAV plugin (Sabre/DAV) returns
+/// `403 Forbidden` on a PUT that has any `ATTENDEE` but no
+/// `ORGANIZER`, so we always need *something* to put on that line
+/// when attendees are present.
+///
+/// The Nextcloud account model only carries `username` (which often
+/// is — but isn't required to be — an email). We use it directly
+/// when it parses as one, and otherwise synthesise `username@host`
+/// from the server URL. The synthetic value is opaque to the CalDAV
+/// validator (it just needs a syntactically valid `mailto:`), and
+/// for the user's own calendar it doesn't trigger iTIP delivery.
+fn organizer_for(account: &NextcloudAccount) -> (String, Option<String>) {
+    let email = if account.username.contains('@') {
+        account.username.clone()
+    } else {
+        let host = account
+            .server_url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .split('/')
+            .next()
+            .unwrap_or("nextcloud.local");
+        format!("{}@{}", account.username, host)
+    };
+    (email, account.display_name.clone())
+}
+
 /// Create a new VEVENT in the given calendar.
 ///
 /// Generates a fresh UUID for the UID so callers don't have to.
@@ -1189,7 +1218,12 @@ async fn create_calendar_event(
 
     let uid = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     let event = input_to_calendar_event(&uid, &input);
-    let ics = caldav_build_ics(&event);
+    let (organizer_email, organizer_name) = organizer_for(&account);
+    let ics = caldav_build_ics(
+        &event,
+        Some(&organizer_email),
+        organizer_name.as_deref(),
+    );
 
     // `calendar_path` from the cache is already an absolute URL —
     // `nimbus-caldav::discovery` resolves it via `absolute_url` before
@@ -1236,7 +1270,12 @@ async fn update_calendar_event(
     // would silently demote a recurring series back to a singleton.
     event.recurrence_id = handle.recurrence_id;
 
-    let ics = caldav_build_ics(&event);
+    let (organizer_email, organizer_name) = organizer_for(&account);
+    let ics = caldav_build_ics(
+        &event,
+        Some(&organizer_email),
+        organizer_name.as_deref(),
+    );
     let outcome = caldav_update_event(
         &handle.href,
         &account.username,

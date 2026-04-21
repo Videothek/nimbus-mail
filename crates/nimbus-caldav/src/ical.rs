@@ -522,7 +522,21 @@ fn unescape_text(s: &str) -> String {
 /// requires (RFC 5545 §3.1) — most servers tolerate longer lines but
 /// Apple Calendar refuses unfolded files outright, and Nextcloud
 /// re-folds on read either way.
-pub fn build_ics(event: &CalendarEvent) -> String {
+/// Render `event` as a CRLF-folded VCALENDAR/VEVENT body suitable for
+/// PUTing to a CalDAV server.
+///
+/// `organizer_email` / `organizer_name` populate the VEVENT's
+/// `ORGANIZER` property. RFC 5545 §3.6.1 makes ORGANIZER **required**
+/// whenever any `ATTENDEE` is present, and Nextcloud's CalDAV layer
+/// (Sabre/DAV) enforces this strictly — a PUT with attendees but no
+/// organizer is rejected with `403 Forbidden`. Callers that don't have
+/// an account context can pass `None`/`None`; the line is then only
+/// omitted when there are no attendees.
+pub fn build_ics(
+    event: &CalendarEvent,
+    organizer_email: Option<&str>,
+    organizer_name: Option<&str>,
+) -> String {
     let mut lines: Vec<String> = Vec::new();
     lines.push("BEGIN:VCALENDAR".into());
     lines.push("VERSION:2.0".into());
@@ -587,6 +601,15 @@ pub fn build_ics(event: &CalendarEvent) -> String {
     }
     if let Some(rid) = event.recurrence_id {
         lines.push(format!("RECURRENCE-ID:{}", format_utc_dt(&rid)));
+    }
+    if !event.attendees.is_empty() {
+        if let Some(email) = organizer_email {
+            let mut params = String::new();
+            if let Some(cn) = organizer_name {
+                params.push_str(&format!(";CN={cn}"));
+            }
+            lines.push(format!("ORGANIZER{params}:mailto:{email}"));
+        }
     }
     for att in &event.attendees {
         let mut params = String::new();
