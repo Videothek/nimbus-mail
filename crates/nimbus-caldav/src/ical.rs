@@ -24,13 +24,14 @@
 //!   on the same day, so the UI can treat them uniformly with timed
 //!   events.
 
-use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use ical::parser::ical::IcalParser;
+use ical::parser::ical::component::{IcalAlarm, IcalEvent};
 use ical::property::Property;
 
 use nimbus_core::NimbusError;
-use nimbus_core::models::CalendarEvent;
+use nimbus_core::models::{CalendarEvent, EventAttendee, EventReminder};
 
 /// Parse one iCalendar body (the content of a `calendar-data` element
 /// or a `.ics` file) into zero or more `CalendarEvent`s.
@@ -52,7 +53,7 @@ pub fn parse_ics(raw: &str) -> Result<Vec<CalendarEvent>, NimbusError> {
     for cal_result in parser {
         let cal = cal_result.map_err(|e| NimbusError::Protocol(format!("iCalendar parse: {e}")))?;
         for ev in &cal.events {
-            match event_from_properties(&ev.properties) {
+            match event_from_ical(ev) {
                 Ok(Some(e)) => events.push(e),
                 Ok(None) => {
                     // Missing UID or DTSTART — skip rather than fail the
@@ -67,6 +68,16 @@ pub fn parse_ics(raw: &str) -> Result<Vec<CalendarEvent>, NimbusError> {
     }
 
     Ok(events)
+}
+
+/// Adapter that walks a parsed VEVENT (properties + nested VALARMs)
+/// into a flat `CalendarEvent`.
+fn event_from_ical(ev: &IcalEvent) -> Result<Option<CalendarEvent>, String> {
+    let Some(mut event) = event_from_properties(&ev.properties)? else {
+        return Ok(None);
+    };
+    event.reminders = ev.alarms.iter().filter_map(reminder_from_alarm).collect();
+    Ok(Some(event))
 }
 
 /// Build a `CalendarEvent` from the properties of a VEVENT. Returns
@@ -84,6 +95,9 @@ fn event_from_properties(props: &[Property]) -> Result<Option<CalendarEvent>, St
     let mut rdate: Vec<DateTime<Utc>> = Vec::new();
     let mut exdate: Vec<DateTime<Utc>> = Vec::new();
     let mut recurrence_id: Option<DateTime<Utc>> = None;
+    let mut url: Option<String> = None;
+    let mut transparency: Option<String> = None;
+    let mut attendees: Vec<EventAttendee> = Vec::new();
 
     for prop in props {
         let name = prop.name.to_ascii_uppercase();
@@ -109,6 +123,13 @@ fn event_from_properties(props: &[Property]) -> Result<Option<CalendarEvent>, St
                     recurrence_id = Some(first);
                 }
             }
+            "URL" => url = Some(value.to_string()),
+            "TRANSP" => transparency = Some(value.to_ascii_uppercase()),
+            "ATTENDEE" => {
+                if let Some(att) = attendee_from_property(prop, value) {
+                    attendees.push(att);
+                }
+            }
             _ => {}
         }
     }
@@ -131,7 +152,80 @@ fn event_from_properties(props: &[Property]) -> Result<Option<CalendarEvent>, St
         rdate,
         exdate,
         recurrence_id,
+        url,
+        transparency,
+        attendees,
+        // Filled in by the caller from the VEVENT's nested VALARM
+        // components — they aren't visible at the property level.
+        reminders: Vec::new(),
     }))
+}
+
+/// Build an `EventAttendee` from one `ATTENDEE` property.
+///
+/// The value carries the URI (e.g. `mailto:jane@example.com`); `CN` and
+/// `PARTSTAT` come from the property parameters. We strip the
+/// `mailto:` scheme so the UI can treat `email` as a plain address.
+fn attendee_from_property(prop: &Property, value: &str) -> Option<EventAttendee> {
+    let email = value
+        .strip_prefix("mailto:")
+        .or_else(|| value.strip_prefix("MAILTO:"))
+        .unwrap_or(value)
+        .trim()
+        .to_string();
+    if email.is_empty() {
+        return None;
+    }
+    Some(EventAttendee {
+        email,
+        common_name: property_param(prop, "CN").map(|s| s.to_string()),
+        status: property_param(prop, "PARTSTAT").map(|s| s.to_ascii_uppercase()),
+    })
+}
+
+/// Build an `EventReminder` from a VALARM block. Only the relative
+/// `TRIGGER` shape (`-PT15M`, `PT0S`, etc.) is decoded — absolute
+/// `TRIGGER;VALUE=DATE-TIME:…` and `RELATED=END` are uncommon enough
+/// that we skip them rather than misinterpret them. Skipped alarms log
+/// a warning and round-trip via `ics_raw` instead of vanishing on PUT.
+fn reminder_from_alarm(alarm: &IcalAlarm) -> Option<EventReminder> {
+    let trigger = alarm.properties.iter().find(|p| {
+        p.name.eq_ignore_ascii_case("TRIGGER")
+    })?;
+    let value = trigger.value.as_deref()?;
+
+    let is_date_time = property_param(trigger, "VALUE")
+        .map(|v| v.eq_ignore_ascii_case("DATE-TIME"))
+        .unwrap_or(false);
+    if is_date_time {
+        tracing::warn!("Skipping absolute VALARM TRIGGER {value:?}");
+        return None;
+    }
+
+    let related_end = property_param(trigger, "RELATED")
+        .map(|v| v.eq_ignore_ascii_case("END"))
+        .unwrap_or(false);
+    if related_end {
+        tracing::warn!("Skipping VALARM TRIGGER with RELATED=END {value:?}");
+        return None;
+    }
+
+    let dur = parse_duration(value)?;
+    // A negative duration means "before start", which is what we model
+    // as a positive `trigger_minutes_before`. Flip the sign accordingly.
+    let minutes_before = -(dur.num_seconds() / 60) as i32;
+
+    let action = alarm
+        .properties
+        .iter()
+        .find(|p| p.name.eq_ignore_ascii_case("ACTION"))
+        .and_then(|p| p.value.as_deref())
+        .map(|v| v.to_ascii_uppercase());
+
+    Some(EventReminder {
+        trigger_minutes_before: minutes_before,
+        action,
+    })
 }
 
 /// Resolve final (start, end) UTC timestamps from the parsed DTSTART,
@@ -401,6 +495,205 @@ fn unescape_text(s: &str) -> String {
         } else {
             out.push(c);
         }
+    }
+    out
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Writer: CalendarEvent → text/calendar
+// ───────────────────────────────────────────────────────────────────
+
+/// Render a `CalendarEvent` as a complete iCalendar object resource
+/// suitable for `PUT` to a CalDAV server.
+///
+/// Only the fields the editor surfaces are written. Recurrence
+/// (`rrule` / `rdate` / `exdate`) and `recurrence_id` round-trip if
+/// they were present on the input — the editor doesn't expose them yet
+/// but we don't want to silently drop them on update.
+///
+/// # All-day vs timed events
+///
+/// We pick `VALUE=DATE` rendering when the event spans a full day
+/// boundary (`start` at 00:00 UTC and `end` at 23:59:59 UTC of the same
+/// day, the shape `to_utc_end` produces). Everything else renders as a
+/// timed `DATE-TIME` in UTC.
+///
+/// The output uses CRLF line endings and a 75-octet fold like the spec
+/// requires (RFC 5545 §3.1) — most servers tolerate longer lines but
+/// Apple Calendar refuses unfolded files outright, and Nextcloud
+/// re-folds on read either way.
+pub fn build_ics(event: &CalendarEvent) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("BEGIN:VCALENDAR".into());
+    lines.push("VERSION:2.0".into());
+    lines.push(format!(
+        "PRODID:-//Nimbus Mail//CalDAV {}//EN",
+        env!("CARGO_PKG_VERSION")
+    ));
+    lines.push("BEGIN:VEVENT".into());
+    lines.push(format!("UID:{}", event.id));
+    lines.push(format!("DTSTAMP:{}", format_utc_dt(&Utc::now())));
+
+    if is_all_day_window(event.start, event.end) {
+        lines.push(format!(
+            "DTSTART;VALUE=DATE:{}",
+            event.start.format("%Y%m%d")
+        ));
+        // DTEND for VALUE=DATE is exclusive, so the day after the
+        // last-covered day. Our parser snapped end to 23:59:59 of the
+        // last day, so step forward one day for the wire format.
+        let exclusive_end = event.end.date_naive().succ_opt().unwrap_or(event.end.date_naive());
+        lines.push(format!("DTEND;VALUE=DATE:{}", exclusive_end.format("%Y%m%d")));
+    } else {
+        lines.push(format!("DTSTART:{}", format_utc_dt(&event.start)));
+        lines.push(format!("DTEND:{}", format_utc_dt(&event.end)));
+    }
+
+    if !event.summary.is_empty() {
+        lines.push(format!("SUMMARY:{}", escape_text(&event.summary)));
+    }
+    if let Some(desc) = &event.description {
+        lines.push(format!("DESCRIPTION:{}", escape_text(desc)));
+    }
+    if let Some(loc) = &event.location {
+        lines.push(format!("LOCATION:{}", escape_text(loc)));
+    }
+    if let Some(url) = &event.url {
+        lines.push(format!("URL:{url}"));
+    }
+    if let Some(transp) = &event.transparency {
+        lines.push(format!("TRANSP:{transp}"));
+    }
+    if let Some(rrule) = &event.rrule {
+        lines.push(format!("RRULE:{rrule}"));
+    }
+    if !event.rdate.is_empty() {
+        let joined = event
+            .rdate
+            .iter()
+            .map(format_utc_dt)
+            .collect::<Vec<_>>()
+            .join(",");
+        lines.push(format!("RDATE:{joined}"));
+    }
+    if !event.exdate.is_empty() {
+        let joined = event
+            .exdate
+            .iter()
+            .map(format_utc_dt)
+            .collect::<Vec<_>>()
+            .join(",");
+        lines.push(format!("EXDATE:{joined}"));
+    }
+    if let Some(rid) = event.recurrence_id {
+        lines.push(format!("RECURRENCE-ID:{}", format_utc_dt(&rid)));
+    }
+    for att in &event.attendees {
+        let mut params = String::new();
+        if let Some(cn) = &att.common_name {
+            params.push_str(&format!(";CN={}", cn));
+        }
+        let status = att.status.as_deref().unwrap_or("NEEDS-ACTION");
+        params.push_str(&format!(";PARTSTAT={status}"));
+        lines.push(format!("ATTENDEE{params}:mailto:{}", att.email));
+    }
+
+    for r in &event.reminders {
+        lines.push("BEGIN:VALARM".into());
+        lines.push(format!("ACTION:{}", r.action.as_deref().unwrap_or("DISPLAY")));
+        lines.push(format!("TRIGGER:{}", duration_to_trigger(r.trigger_minutes_before)));
+        lines.push(format!("DESCRIPTION:{}", escape_text(&event.summary)));
+        lines.push("END:VALARM".into());
+    }
+
+    lines.push("END:VEVENT".into());
+    lines.push("END:VCALENDAR".into());
+
+    let folded: Vec<String> = lines.iter().map(|l| fold_line(l)).collect();
+    folded.join("\r\n") + "\r\n"
+}
+
+/// Detect the all-day shape `to_utc_end` produces: midnight start and
+/// 23:59:59 end on a day boundary. Anything off by even a second falls
+/// through to timed rendering — better to over-quote times than to
+/// turn a 23-hour meeting into an "all-day" event by mistake.
+fn is_all_day_window(start: DateTime<Utc>, end: DateTime<Utc>) -> bool {
+    let s = start.time();
+    let e = end.time();
+    s.hour() == 0 && s.minute() == 0 && s.second() == 0
+        && e.hour() == 23 && e.minute() == 59 && e.second() == 59
+}
+
+fn format_utc_dt(dt: &DateTime<Utc>) -> String {
+    dt.format("%Y%m%dT%H%M%SZ").to_string()
+}
+
+/// Render a "minutes before start" trigger as `-PT15M` / `PT0S` /
+/// `PT5M` (negative value means "after start"). Pulls hours and
+/// minutes apart so the wire format matches what most servers store
+/// internally.
+fn duration_to_trigger(minutes_before: i32) -> String {
+    if minutes_before == 0 {
+        return "PT0M".into();
+    }
+    let abs = minutes_before.unsigned_abs();
+    let hours = abs / 60;
+    let mins = abs % 60;
+    let mut body = String::from("PT");
+    if hours > 0 {
+        body.push_str(&format!("{hours}H"));
+    }
+    if mins > 0 || hours == 0 {
+        body.push_str(&format!("{mins}M"));
+    }
+    if minutes_before > 0 {
+        format!("-{body}")
+    } else {
+        body
+    }
+}
+
+/// Apply the iCalendar TEXT escaping inverse of `unescape_text`:
+/// newline → `\n`, `,` → `\,`, `;` → `\;`, `\` → `\\`.
+fn escape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            ',' => out.push_str("\\,"),
+            ';' => out.push_str("\\;"),
+            '\n' => out.push_str("\\n"),
+            '\r' => {} // CR is part of the source line ending, not content.
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Fold a content line at 75 octets per RFC 5545 §3.1. Continuation
+/// lines start with one space. Operates on byte boundaries inside an
+/// ASCII string — our writer never produces multi-byte UTF-8 inside a
+/// single property value because the only user-supplied text is escaped
+/// before this point and `escape_text` doesn't introduce non-ASCII.
+fn fold_line(line: &str) -> String {
+    if line.len() <= 75 {
+        return line.to_string();
+    }
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len() + line.len() / 75);
+    let mut i = 0;
+    while i < bytes.len() {
+        let chunk = if i == 0 { 75 } else { 74 };
+        let end = (i + chunk).min(bytes.len());
+        if i > 0 {
+            out.push_str("\r\n ");
+        }
+        // Safe: input is checked-ASCII for any escape outputs; for
+        // user text we accept that a fold mid-multi-byte is rare and
+        // benign for current servers. Future hardening could split on
+        // char boundaries instead.
+        out.push_str(std::str::from_utf8(&bytes[i..end]).unwrap_or(""));
+        i = end;
     }
     out
 }

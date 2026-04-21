@@ -244,6 +244,10 @@ mod tests {
             rdate: vec![],
             exdate: vec![],
             recurrence_id: None,
+            url: None,
+            transparency: None,
+            attendees: vec![],
+            reminders: vec![],
         }
     }
 
@@ -343,6 +347,10 @@ mod tests {
             rdate: vec![],
             exdate: vec![],
             recurrence_id: Some(rid),
+            url: None,
+            transparency: None,
+            attendees: vec![],
+            reminders: vec![],
         };
 
         let out = expand_event(
@@ -382,6 +390,10 @@ mod tests {
             rdate: vec![],
             exdate: vec![],
             recurrence_id: Some(rid),
+            url: None,
+            transparency: None,
+            attendees: vec![],
+            reminders: vec![],
         };
 
         // Window only covers May.

@@ -32,6 +32,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import EventEditor from './EventEditor.svelte'
 
   interface Props {
     onclose: () => void
@@ -52,6 +53,15 @@
     color: string | null
     last_synced_at: string | null
   }
+  interface EventAttendee {
+    email: string
+    common_name?: string | null
+    status?: string | null
+  }
+  interface EventReminder {
+    trigger_minutes_before: number
+    action?: string | null
+  }
   interface CalendarEvent {
     id: string
     summary: string
@@ -63,6 +73,10 @@
     rdate: string[]
     exdate: string[]
     recurrence_id: string | null
+    url?: string | null
+    transparency?: string | null
+    attendees?: EventAttendee[]
+    reminders?: EventReminder[]
   }
 
   // ── Layout constants ────────────────────────────────────────
@@ -119,6 +133,32 @@
   // newly-discovered calendars default to visible without needing a
   // separate "show new calendars" workflow.
   let hiddenCalendarIds = $state<Set<string>>(new Set())
+
+  // ── Event editor state ──────────────────────────────────────
+  // The editor is mounted lazily — only when one of these holds a
+  // non-null value. Only one is ever set at a time (see openEditor /
+  // openCreate / closeEditor). This keeps the modal a single thing on
+  // screen no matter how it was triggered.
+  let editingEvent = $state<CalendarEvent | null>(null)
+  let creatingDraft = $state<{
+    calendarId: string
+    start: Date
+    end: Date
+    allDay?: boolean
+  } | null>(null)
+
+  // ── Click-and-drag-to-create state ──────────────────────────
+  // Tracks an in-progress drag inside one of the day columns. While a
+  // drag is active we render a translucent overlay block that follows
+  // the pointer, and on mouseup we open the editor with the swept
+  // range as the draft. Confined to a single day — multi-day drags are
+  // a follow-up.
+  type DragState = {
+    dayKey: string
+    startMinute: number
+    currentMinute: number
+  }
+  let drag = $state<DragState | null>(null)
 
   // Derived: calendar id → colour (for the coloured stripe on each
   // event block and the all-day pills).
@@ -484,6 +524,23 @@
     )
   }
 
+  /**
+   * True for any calendar day strictly before today (in the user's local
+   * timezone). Used to grey out past columns so the user can tell at a
+   * glance which part of the week has already happened.
+   *
+   * Why local time, not UTC: the visible grid is rendered in local time
+   * — a Tuesday column shows the user's local Tuesday, even if the user
+   * is east of UTC and the day starts as Monday in UTC. The "past day"
+   * decision needs to match what the user sees.
+   */
+  function isPast(d: Date): boolean {
+    const now = new Date()
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const day = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+    return day.getTime() < today.getTime()
+  }
+
   function eventCalendarId(ev: CalendarEvent): string {
     // Event ids come out of the store as `{nc_id}::{cal_path}::{uid}`
     // or the expanded `{…}::occ::{epoch}` form. Calendar ids are the
@@ -518,6 +575,124 @@
   }
   function allDayOverflow(list: CalendarEvent[]): number {
     return Math.max(0, list.length - ALL_DAY_VISIBLE_ROWS)
+  }
+
+  // ── Editor open / close ─────────────────────────────────────
+  /** Pick a sensible default calendar for a fresh `+ New event` —
+      the first non-hidden one, falling back to the first overall. */
+  function defaultCalendarId(): string {
+    for (const c of calendars) {
+      if (!hiddenCalendarIds.has(c.id)) return c.id
+    }
+    return calendars[0]?.id ?? ''
+  }
+
+  function openCreateBlank() {
+    if (calendars.length === 0) return
+    const start = new Date()
+    // Round to the next half-hour so the prefilled time looks
+    // intentional rather than "11:37".
+    start.setMinutes(start.getMinutes() < 30 ? 30 : 60, 0, 0)
+    const end = new Date(start)
+    end.setHours(end.getHours() + 1)
+    creatingDraft = {
+      calendarId: defaultCalendarId(),
+      start,
+      end,
+    }
+    editingEvent = null
+  }
+
+  function openEditor(ev: CalendarEvent) {
+    editingEvent = ev
+    creatingDraft = null
+  }
+
+  function closeEditor() {
+    editingEvent = null
+    creatingDraft = null
+  }
+
+  async function onEditorSaved() {
+    // Easiest correct refresh: re-query the same window. The cache
+    // upsert/delete the backend already did is now visible.
+    await reloadFromCache(loadedRangeStart, loadedRangeEnd)
+  }
+
+  // ── Click-and-drag in the time grid ─────────────────────────
+  /** Map a vertical pixel offset inside a day column to a minute of
+      the day, snapped to 15-minute increments so dragged events line
+      up with the visual half-hour grid. */
+  function pxToMinuteSnapped(yPx: number): number {
+    const raw = Math.max(0, Math.min(24 * 60, yPx / PX_PER_MINUTE))
+    return Math.round(raw / 15) * 15
+  }
+
+  function onDayMouseDown(ev: MouseEvent, bucket: WeekBucket) {
+    // Left-click on empty space only. If the user clicked an existing
+    // event block, that block's own click handler runs and stops
+    // propagation — so a missed click here always means "blank area".
+    if (ev.button !== 0) return
+    const target = ev.currentTarget as HTMLElement
+    const rect = target.getBoundingClientRect()
+    const minute = pxToMinuteSnapped(ev.clientY - rect.top)
+    drag = {
+      dayKey: bucket.dayKey,
+      startMinute: minute,
+      currentMinute: minute,
+    }
+  }
+
+  function onDayMouseMove(ev: MouseEvent, bucket: WeekBucket) {
+    if (!drag || drag.dayKey !== bucket.dayKey) return
+    const target = ev.currentTarget as HTMLElement
+    const rect = target.getBoundingClientRect()
+    drag = {
+      ...drag,
+      currentMinute: pxToMinuteSnapped(ev.clientY - rect.top),
+    }
+  }
+
+  function onDayMouseUp(_ev: MouseEvent, bucket: WeekBucket) {
+    if (!drag || drag.dayKey !== bucket.dayKey) return
+    const a = Math.min(drag.startMinute, drag.currentMinute)
+    const b = Math.max(drag.startMinute, drag.currentMinute)
+    // Treat a bare click (no movement) as a 1-hour event starting at
+    // the click point. A real drag uses whatever the user swept,
+    // floored to a 15-minute minimum so a tiny accidental drag still
+    // produces a clickable block in the editor.
+    const startMinute = a
+    const endMinute = b - a < 15 ? a + 60 : b
+    const start = new Date(bucket.date)
+    start.setHours(0, startMinute, 0, 0)
+    const end = new Date(bucket.date)
+    end.setHours(0, endMinute, 0, 0)
+    drag = null
+    creatingDraft = {
+      calendarId: defaultCalendarId(),
+      start,
+      end,
+    }
+    editingEvent = null
+  }
+
+  function onDayMouseLeave() {
+    // Cancel an in-flight drag if the cursor leaves the column —
+    // otherwise mouseup over the sidebar would create an event in the
+    // last column the user touched, which is surprising.
+    drag = null
+  }
+
+  /** Geometry for the in-progress drag overlay rendered on the
+      currently-active day column. */
+  function dragOverlay(bucket: WeekBucket): { topPx: number; heightPx: number } | null {
+    if (!drag || drag.dayKey !== bucket.dayKey) return null
+    const a = Math.min(drag.startMinute, drag.currentMinute)
+    const b = Math.max(drag.startMinute, drag.currentMinute)
+    return {
+      topPx: a * PX_PER_MINUTE,
+      heightPx: Math.max(2, (b - a) * PX_PER_MINUTE),
+    }
   }
 </script>
 
@@ -556,6 +731,13 @@
       {/if}
     </div>
     <div class="flex items-center gap-2">
+      <button
+        class="btn preset-filled-primary-500 text-sm"
+        disabled={calendars.length === 0}
+        onclick={openCreateBlank}
+      >
+        + New event
+      </button>
       <button
         class="btn preset-tonal-surface text-sm"
         disabled={syncing}
@@ -638,33 +820,56 @@
           >
             <div></div>
             {#each weekBuckets as b (b.dayKey)}
+              {@const today = isToday(b.date)}
+              {@const past = isPast(b.date)}
               <div
                 class="px-2 py-2 text-center text-xs font-medium border-l border-surface-200 dark:border-surface-700 flex flex-col gap-1"
-                class:bg-primary-50={isToday(b.date)}
-                class:dark:bg-primary-950={isToday(b.date)}
               >
                 <div
-                  class="uppercase tracking-wider text-surface-500"
-                  class:text-primary-600={isToday(b.date)}
+                  class="uppercase tracking-wider"
+                  class:text-surface-500={!past}
+                  class:text-surface-400={past}
                 >
                   {b.date.toLocaleDateString(undefined, { weekday: 'short' })}
                 </div>
-                <div
-                  class="text-lg font-semibold leading-none"
-                  class:text-primary-600={isToday(b.date)}
-                >
-                  {b.date.getDate()}
+                <!--
+                  Today's date number sits inside a red circle (Outlook /
+                  Google Calendar convention). For past and future days we
+                  drop the badge — past days additionally get a muted text
+                  colour so the visited-vs-upcoming split is obvious at a
+                  glance. We render the digit inside an inline-flex'd span
+                  with fixed dimensions so the badge stays a perfect circle
+                  regardless of digit width (1 vs 31).
+                -->
+                <div class="flex justify-center leading-none">
+                  {#if today}
+                    <span
+                      class="inline-flex items-center justify-center w-7 h-7 rounded-full bg-red-500 text-white text-base font-semibold"
+                      aria-label="Today"
+                    >
+                      {b.date.getDate()}
+                    </span>
+                  {:else}
+                    <span
+                      class="text-lg font-semibold"
+                      class:text-surface-400={past}
+                    >
+                      {b.date.getDate()}
+                    </span>
+                  {/if}
                 </div>
                 {#if b.allDay.length > 0}
                   <div class="flex flex-col gap-0.5 mt-1 text-left">
                     {#each allDayVisible(b.allDay) as ev (ev.id)}
-                      <div
-                        class="text-[11px] truncate rounded px-1.5 text-white"
+                      <button
+                        type="button"
+                        class="text-[11px] truncate rounded px-1.5 text-white text-left"
                         style="background-color: {eventColor(ev)}; height: {ALL_DAY_ROW_HEIGHT_PX}px; line-height: {ALL_DAY_ROW_HEIGHT_PX}px;"
-                        title={ev.summary}
+                        title={`${ev.summary || '(no title)'} — All-day${ev.location ? ` @ ${ev.location}` : ''}`}
+                        onclick={() => openEditor(ev)}
                       >
                         {ev.summary || '(no title)'}
-                      </div>
+                      </button>
                     {/each}
                     {#if allDayOverflow(b.allDay) > 0}
                       <div class="text-[10px] text-surface-500">
@@ -698,10 +903,16 @@
                  so event blocks can absolutely-position against the
                  24-hour axis without interfering with each other. -->
             {#each weekBuckets as b (b.dayKey)}
+              {@const overlay = dragOverlay(b)}
               <div
-                class="relative border-l border-surface-200 dark:border-surface-700"
-                class:bg-primary-50={isToday(b.date)}
-                class:dark:bg-primary-950={isToday(b.date)}
+                class="relative border-l border-surface-200 dark:border-surface-700 cursor-crosshair select-none"
+                class:bg-surface-100={isPast(b.date)}
+                class:dark:bg-surface-800={isPast(b.date)}
+                onmousedown={(ev) => onDayMouseDown(ev, b)}
+                onmousemove={(ev) => onDayMouseMove(ev, b)}
+                onmouseup={(ev) => onDayMouseUp(ev, b)}
+                onmouseleave={onDayMouseLeave}
+                role="presentation"
               >
                 <!-- Hour gridlines — pure visual rhythm. -->
                 {#each Array.from({ length: 24 }, (_, i) => i) as h}
@@ -711,20 +922,57 @@
                   ></div>
                 {/each}
 
-                <!-- Event blocks. -->
-                {#each b.timed as p (p.event.id)}
+                <!-- In-progress drag overlay — translucent rectangle
+                     that follows the pointer between mousedown and
+                     mouseup so the user can see the range they're
+                     about to create. -->
+                {#if overlay}
                   <div
-                    class="absolute rounded-md text-[11px] text-white overflow-hidden px-1.5 py-1 shadow-sm cursor-default"
+                    class="absolute left-0.5 right-0.5 rounded-md bg-primary-500/40 border border-primary-500 pointer-events-none"
+                    style="top: {overlay.topPx}px; height: {overlay.heightPx}px;"
+                  ></div>
+                {/if}
+
+                <!--
+                  Event blocks. We keep the title (`<title>` tooltip) in
+                  a "Name — HH:MM–HH:MM" shape so the time range is always
+                  one hover away even when the block is short or the lane
+                  is narrow. The visible label wraps onto multiple lines
+                  (`break-words` + `whitespace-normal`) and we cap the
+                  number of visible lines to whatever the block height
+                  comfortably allows — short blocks get 1 line, taller
+                  blocks get 2-3 — so the title shows as much as it can
+                  without overflowing the block.
+                -->
+                {#each b.timed as p (p.event.id)}
+                  {@const titleLineCap = p.heightPx >= 80
+                    ? 4
+                    : p.heightPx >= 50
+                      ? 2
+                      : 1}
+                  {@const showLocationInline = p.event.location && p.heightPx > 80}
+                  <div
+                    class="absolute rounded-md text-[11px] text-white overflow-hidden px-1.5 py-1 shadow-sm cursor-pointer leading-tight"
                     style="top: {p.topPx}px; height: {p.heightPx}px; left: calc({(p.lane / p.laneCount) * 100}% + 2px); width: calc({(1 / p.laneCount) * 100}% - 4px); background-color: {eventColor(p.event)};"
-                    title={p.event.summary + (p.event.location ? ' — ' + p.event.location : '')}
+                    title={`${p.event.summary || '(no title)'} — ${fmtTime(p.event.start)}–${fmtTime(p.event.end)}${p.event.location ? ` @ ${p.event.location}` : ''}`}
+                    onmousedown={(ev) => ev.stopPropagation()}
+                    onclick={(ev) => { ev.stopPropagation(); openEditor(p.event) }}
+                    role="button"
+                    tabindex="0"
+                    onkeydown={(ev) => { if (ev.key === 'Enter') openEditor(p.event) }}
                   >
-                    <div class="font-medium truncate">
+                    <div
+                      class="font-medium wrap-break-word"
+                      style="display: -webkit-box; -webkit-line-clamp: {titleLineCap}; -webkit-box-orient: vertical; overflow: hidden;"
+                    >
                       {p.event.summary || '(no title)'}
                     </div>
-                    <div class="opacity-90 truncate">
-                      {fmtTime(p.event.start)} – {fmtTime(p.event.end)}
-                    </div>
-                    {#if p.event.location && p.heightPx > 60}
+                    {#if p.heightPx > 32}
+                      <div class="opacity-90 truncate">
+                        {fmtTime(p.event.start)} – {fmtTime(p.event.end)}
+                      </div>
+                    {/if}
+                    {#if showLocationInline}
                       <div class="opacity-90 truncate">{p.event.location}</div>
                     {/if}
                   </div>
@@ -750,3 +998,21 @@
     </div>
   {/if}
 </div>
+
+{#if creatingDraft}
+  <EventEditor
+    mode="create"
+    {calendars}
+    draft={creatingDraft}
+    onclose={closeEditor}
+    onsaved={onEditorSaved}
+  />
+{:else if editingEvent}
+  <EventEditor
+    mode="edit"
+    {calendars}
+    event={editingEvent}
+    onclose={closeEditor}
+    onsaved={onEditorSaved}
+  />
+{/if}
