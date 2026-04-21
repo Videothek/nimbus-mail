@@ -211,8 +211,12 @@
     return [...splitAddrs(to), ...splitAddrs(cc)]
   }
 
-  function onTalkRoomCreated(room: TalkRoom) {
+  function onTalkRoomCreated(room: TalkRoom, participants: string[]) {
     createdTalkLink = { name: room.display_name, url: room.web_url }
+    // Keep the mail recipients in sync with the Talk invite: any
+    // address the user typed into the modal that wasn't already on
+    // To/Cc/Bcc gets added to To.
+    mergeIntoRecipients(participants)
     // Same "Join the Talk room" block shape that `initialBodyHtml`
     // and `TalkView`'s share-link path produce — keeps the rendered
     // mail consistent across every entry point.
@@ -281,11 +285,12 @@
   }
 
   /** After the EventEditor saves, append a short "📅 Meeting" block
-      so the recipients see the date/time in the email body. The Talk
-      link block (if any) was already injected when the room was
-      created, so we don't repeat it here. */
+      (title, when, and the event URL — typically the Talk room link)
+      and sync any newly added attendees back into the mail's To field
+      so the invite and the email line up in both directions. */
   function onEventSaved(saved?: SavedEvent) {
     if (!saved) return
+    mergeIntoRecipients(saved.attendees)
     const esc = (s: string) =>
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     const start = new Date(saved.start)
@@ -305,9 +310,20 @@
       ? `${dateStr}, ${start.toLocaleTimeString(undefined, timeFmt)}–${end.toLocaleTimeString(undefined, timeFmt)}`
       : `${start.toLocaleString(undefined, { ...timeFmt, dateStyle: 'medium' } as Intl.DateTimeFormatOptions)} – ${end.toLocaleString(undefined, { ...timeFmt, dateStyle: 'medium' } as Intl.DateTimeFormatOptions)}`
     const title = esc(saved.summary || '(untitled)')
+    // Label the link as "Talk room" when the URL matches the one we
+    // just created from the Talk button, otherwise call it "Meeting
+    // link" so a user who just types a URL by hand doesn't get a
+    // misleading "Talk room" label.
+    const isTalkLink =
+      !!saved.url && createdTalkLink?.url === saved.url
+    const linkLabel = isTalkLink ? 'Talk room' : 'Meeting link'
+    const linkLine = saved.url
+      ? `<p>${linkLabel}: <a href="${saved.url}">${esc(saved.url)}</a></p>`
+      : ''
     const block =
       `<p><strong>📅 Meeting:</strong> ${title}</p>` +
-      `<p>When: ${esc(when)}</p>`
+      `<p>When: ${esc(when)}</p>` +
+      linkLine
     editorApi?.appendHtml(block)
   }
 
@@ -350,6 +366,44 @@
       .split(/[,;]/)
       .map((a) => a.trim())
       .filter(Boolean)
+  }
+
+  /** Strip an `"Name" <addr>` wrapper down to the bare address. Same
+      parser shape the EventEditor / CreateTalkRoomModal use. */
+  function bareAddr(piece: string): string {
+    const trimmed = piece.trim()
+    if (!trimmed) return ''
+    const m = trimmed.match(/^\s*(?:"[^"]*"|[^<]*?)\s*<([^>]+)>\s*$/)
+    return m ? m[1].trim() : trimmed
+  }
+
+  /**
+   * Merge newly invited addresses back into the email's To field.
+   * Used by both the Talk-room-created and calendar-event-saved
+   * callbacks so adding someone in either modal also adds them to
+   * the mail recipients — keeping the invite and the email aligned.
+   * Deduplication is case-insensitive on the bare address, and we
+   * skip addresses that are already on To/Cc/Bcc so the user never
+   * gets surprised by a recipient jumping from Cc back to To.
+   */
+  function mergeIntoRecipients(addresses: string[]) {
+    const have = new Set<string>()
+    for (const field of [to, cc, bcc]) {
+      for (const a of splitAddrs(field)) {
+        const bare = bareAddr(a).toLowerCase()
+        if (bare) have.add(bare)
+      }
+    }
+    const additions: string[] = []
+    for (const a of addresses) {
+      const bare = bareAddr(a).toLowerCase()
+      if (!bare || have.has(bare)) continue
+      have.add(bare)
+      additions.push(a)
+    }
+    if (additions.length === 0) return
+    const current = splitAddrs(to)
+    to = [...current, ...additions].join(', ')
   }
 
   async function onPickFiles(e: Event) {

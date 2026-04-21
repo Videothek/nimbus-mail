@@ -48,10 +48,12 @@
     onclose: () => void
     /**
      * Fires once the room is created. Carries the freshly minted room
-     * so the caller can refresh its list and/or open Compose with
-     * the room link pre-filled.
+     * plus the final bare-address list of participants the user asked
+     * Talk to invite. Compose uses the participant list to copy any
+     * new addresses back into the email's To field so the invite and
+     * the room stay in sync both ways.
      */
-    oncreated: (room: TalkRoom) => void
+    oncreated: (room: TalkRoom, participantEmails: string[]) => void
   }
   const { ncId, initialName = '', initialParticipants = [], onclose, oncreated }: Props = $props()
 
@@ -101,12 +103,13 @@
     }
     creating = true
     try {
+      const participants = buildParticipants()
       const room = await invoke<TalkRoom>('create_talk_room', {
         ncId,
         roomName: name,
-        participants: buildParticipants(),
+        participants,
       })
-      oncreated(room)
+      oncreated(room, participants.map((p) => p.value))
       onclose()
     } catch (e) {
       error = formatError(e) || 'Failed to create Talk room'
