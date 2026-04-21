@@ -476,6 +476,12 @@ impl JmapClient {
             is_read,
             is_starred,
             has_attachments,
+            // JMAP's Email/get returns attachment metadata under
+            // `bodyValues`/`attachments`, but we don't fetch that
+            // payload today — mirror the empty-list behaviour the
+            // cache uses for older rows. Wiring up JMAP attachments
+            // is its own issue once the IMAP side is proven.
+            attachments: Vec::new(),
         })
     }
 

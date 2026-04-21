@@ -18,8 +18,9 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
-  import RichTextEditor from './RichTextEditor.svelte'
+  import RichTextEditor, { type EditorApi } from './RichTextEditor.svelte'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
+  import NextcloudFilePicker from './NextcloudFilePicker.svelte'
 
   interface Attachment {
     filename: string
@@ -65,6 +66,14 @@
   // svelte-ignore state_referenced_locally
   let body = $state(initial?.body ?? saved?.body ?? '')
   let attachments = $state<Attachment[]>([])
+  // Whether the Nextcloud file picker modal is mounted. Picker is lazy
+  // so we don't hit `get_nextcloud_accounts` / PROPFIND until the user
+  // actually clicks "Attach from Nextcloud".
+  let showNcPicker = $state(false)
+  // Imperative handle into the rich-text editor — populated once the
+  // editor mounts. We use it to append Nextcloud share links into the
+  // body without disturbing the user's cursor or undo history.
+  let editorApi: EditorApi | null = null
   // The editor content as HTML — kept in sync via the RichTextEditor's
   // onchange callback. The initial body (from reply/forward/draft) is
   // plain text, so we convert newlines to <br> for the WYSIWYG view.
@@ -235,6 +244,7 @@
       <RichTextEditor
         content={bodyHtml}
         onchange={(html) => { bodyHtml = html }}
+        onready={(api) => { editorApi = api }}
       />
 
       {#if attachments.length > 0}
@@ -261,6 +271,11 @@
         📎 Attach
         <input type="file" multiple class="hidden" onchange={onPickFiles} />
       </label>
+      <button
+        type="button"
+        class="btn preset-outlined-surface-500"
+        onclick={() => (showNcPicker = true)}
+      >☁️ From Nextcloud</button>
       <button class="btn preset-outlined-surface-500" onclick={saveDraft}>Save draft</button>
       {#if savedHint}
         <span class="text-xs text-surface-500">{savedHint}</span>
@@ -270,3 +285,26 @@
     </footer>
   </div>
 </div>
+
+{#if showNcPicker}
+  <NextcloudFilePicker
+    onpicked={(picked) => { attachments = [...attachments, ...picked] }}
+    onlinks={(links) => {
+      // Drop a small "Shared via Nextcloud" block at the end of the
+      // message body. Each link is its own paragraph so it survives
+      // mail clients that strip styling. We escape the filename text
+      // (URLs themselves only need href-quoting, not body-escaping).
+      const esc = (s: string) =>
+        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      const items = links
+        .map(
+          (l) =>
+            `<p>📎 <a href="${l.url}">${esc(l.filename)}</a></p>`,
+        )
+        .join('')
+      const block = `<p><strong>Shared via Nextcloud:</strong></p>${items}`
+      editorApi?.appendHtml(block)
+    }}
+    onclose={() => (showNcPicker = false)}
+  />
+{/if}

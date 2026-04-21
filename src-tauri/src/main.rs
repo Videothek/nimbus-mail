@@ -25,7 +25,7 @@ use nimbus_core::models::{
 use nimbus_imap::ImapClient;
 use nimbus_jmap::JmapClient;
 use nimbus_nextcloud::{
-    LoginFlowInit, LoginFlowResult, fetch_capabilities, poll_login, start_login,
+    FileEntry, LoginFlowInit, LoginFlowResult, fetch_capabilities, poll_login, start_login,
 };
 use nimbus_smtp::SmtpClient;
 use nimbus_store::cache::{
@@ -244,6 +244,149 @@ fn remove_nextcloud_account(id: String, cache: State<'_, Cache>) -> Result<(), N
 #[tauri::command]
 fn open_url(url: String) -> Result<(), NimbusError> {
     open::that(&url).map_err(|e| NimbusError::Other(format!("failed to open '{url}': {e}")))
+}
+
+// ── Nextcloud Files (browse + download) ────────────────────────
+//
+// WebDAV is stateless and per-folder: the UI asks for the children of
+// a path, gets a listing, and asks again when the user navigates. We
+// don't cache the tree — Nextcloud's PROPFIND is cheap, and cached
+// listings go stale the moment a co-worker drops a new file in a
+// shared folder. The picker lives entirely in memory.
+
+/// List the immediate children of a folder in the user's Nextcloud.
+///
+/// `path` is relative to the user's root (e.g. `/` or `/Documents`).
+/// Returns directories and files mixed, in the order the server sent
+/// them — the UI sorts if it wants a particular display order.
+#[tauri::command]
+async fn list_nextcloud_files(
+    nc_id: String,
+    path: String,
+) -> Result<Vec<FileEntry>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::list_directory(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &path,
+    )
+    .await
+}
+
+/// Download a single file from Nextcloud.
+///
+/// Returns the raw bytes for the UI to stuff into a compose attachment
+/// (or save wherever the caller needs). Large files are held in memory
+/// for now — matches how locally-picked attachments work. A streaming
+/// path is a separate future issue once compose itself streams.
+#[tauri::command]
+async fn download_nextcloud_file(
+    nc_id: String,
+    path: String,
+) -> Result<Vec<u8>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::download_file(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &path,
+    )
+    .await
+}
+
+/// Create a public share link for a Nextcloud file and return the URL.
+///
+/// The compose UI uses this to insert a "click here to download" link
+/// into the email body — a lighter alternative to attaching the bytes
+/// for big files or files the recipient might want to re-download.
+///
+/// The share is read-only with no password and no expiry; per-share
+/// options can be added as a separate command (`update_nextcloud_share`)
+/// once the UI grows controls for them.
+#[tauri::command]
+async fn create_nextcloud_share(
+    nc_id: String,
+    path: String,
+) -> Result<String, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let share = nimbus_nextcloud::create_public_share(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &path,
+    )
+    .await?;
+    Ok(share.url)
+}
+
+/// Write raw bytes to a local file.
+///
+/// Used by the attachment Download flow: the frontend opens a native
+/// "Save As" dialog (via `tauri-plugin-dialog`), the user picks a
+/// destination, and the chosen absolute path + the attachment bytes
+/// come back here. We use `std::fs::write` which truncates any file
+/// already at that path — the native save dialog already asked the
+/// user about overwrites, so we don't need a second confirmation.
+#[tauri::command]
+async fn save_bytes_to_path(path: String, data: Vec<u8>) -> Result<(), NimbusError> {
+    // `write` is synchronous and the payload is typically a few MB — the
+    // Tauri command runtime already runs us on a worker thread, so we
+    // don't need to spawn_blocking.
+    std::fs::write(&path, &data)
+        .map_err(|e| NimbusError::Other(format!("Failed to write {path}: {e}")))
+}
+
+/// Upload raw bytes to a file in the user's Nextcloud.
+///
+/// The "Save to Nextcloud" action on a received email attachment calls
+/// this with `path = <chosen folder>/<attachment filename>`. Existing
+/// files at the same path are overwritten — the UI confirms with the
+/// user before calling when that might be surprising.
+#[tauri::command]
+async fn upload_to_nextcloud(
+    nc_id: String,
+    path: String,
+    data: Vec<u8>,
+    content_type: Option<String>,
+) -> Result<String, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::upload_file(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &path,
+        data,
+        content_type.as_deref(),
+    )
+    .await
+}
+
+/// Create a new (empty) folder in the user's Nextcloud.
+///
+/// `path` is the full path of the folder to create, relative to the
+/// user's root (e.g. `/Documents/New Folder`). The parent must already
+/// exist. The file picker calls this when the user clicks "New folder"
+/// inside the currently-open directory; on success the picker re-lists
+/// the parent so the new entry shows up.
+#[tauri::command]
+async fn create_nextcloud_directory(
+    nc_id: String,
+    path: String,
+) -> Result<(), NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::create_directory(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &path,
+    )
+    .await
 }
 
 // ── CardDAV contacts ────────────────────────────────────────────
@@ -1197,6 +1340,38 @@ async fn fetch_message_inner(
     Ok(email)
 }
 
+/// Download the decoded bytes of a single attachment on a message.
+///
+/// The UI renders attachment metadata from the (cached or freshly
+/// fetched) `Email.attachments` list, but the bytes are never shipped
+/// inline — a user with a 20 MB PDF on a message would otherwise pay
+/// that cost every time they open the mail. Instead the UI calls this
+/// command only when the user actually clicks "Download" or
+/// "Save to Nextcloud".
+///
+/// IMAP path: re-FETCHes the raw message body (PEEK, so unread stays
+/// unread) and extracts the attachment at `part_id`. JMAP isn't
+/// plumbed through yet — callers on JMAP accounts get an explicit
+/// `Protocol` error instead of silently returning empty bytes.
+#[tauri::command]
+async fn download_email_attachment(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    part_id: u32,
+) -> Result<Vec<u8>, NimbusError> {
+    let account = load_account(&account_id)?;
+    if uses_jmap(&account) {
+        return Err(NimbusError::Protocol(
+            "JMAP attachment download is not implemented yet".into(),
+        ));
+    }
+    let mut client = connect_imap(&account).await?;
+    let (_meta, data) = client.fetch_attachment(&folder, uid, part_id).await?;
+    let _ = client.logout().await;
+    Ok(data)
+}
+
 /// Mark a message as read on the server and in the local cache.
 ///
 /// Cache first so the UI sees the change immediately; then the network
@@ -1843,6 +2018,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(cache)
         .manage(shared_settings)
         .register_uri_scheme_protocol("contact-photo", contact_photo_protocol)
@@ -1984,6 +2160,7 @@ fn main() {
             test_connection,
             fetch_envelopes,
             fetch_message,
+            download_email_attachment,
             fetch_folders,
             mark_as_read,
             send_email,
@@ -1999,6 +2176,12 @@ fn main() {
             get_nextcloud_accounts,
             remove_nextcloud_account,
             open_url,
+            list_nextcloud_files,
+            download_nextcloud_file,
+            create_nextcloud_share,
+            create_nextcloud_directory,
+            upload_to_nextcloud,
+            save_bytes_to_path,
             sync_nextcloud_contacts,
             get_contacts,
             search_contacts,

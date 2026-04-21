@@ -12,6 +12,7 @@
 
   import { onDestroy } from 'svelte'
   import { createEditor, EditorContent } from 'svelte-tiptap'
+  import { mergeAttributes } from '@tiptap/core'
   import StarterKit from '@tiptap/starter-kit'
   import Underline from '@tiptap/extension-underline'
   import Link from '@tiptap/extension-link'
@@ -26,6 +27,19 @@
   import TableCell from '@tiptap/extension-table-cell'
   import TableHeader from '@tiptap/extension-table-header'
 
+  /**
+   * Imperative handle the parent gets via `onready`. Tiptap is
+   * stateful and managed inside this component, so the parent can't
+   * just reassign `content` and expect the editor to follow. Instead
+   * we hand back targeted operations the parent might need.
+   */
+  export interface EditorApi {
+    /** Append raw HTML to the end of the document. Used by Compose
+     *  to drop in Nextcloud share links without disturbing the user's
+     *  cursor or undo history. */
+    appendHtml: (html: string) => void
+  }
+
   interface Props {
     /** Initial HTML content (e.g. quoted reply body). */
     content?: string
@@ -33,11 +47,15 @@
     placeholder?: string
     /** Fires on every content change with the current HTML. */
     onchange?: (html: string) => void
+    /** Fires once the editor instance is ready, handing over a small
+     *  imperative API for operations the parent can't drive via props. */
+    onready?: (api: EditorApi) => void
   }
   let {
     content = '',
     placeholder = 'Write your message\u2026',
     onchange,
+    onready,
   }: Props = $props()
 
   // svelte-ignore state_referenced_locally
@@ -47,7 +65,26 @@
         heading: { levels: [1, 2, 3] },
       }),
       Underline,
-      Link.configure({
+      // Extend the Link mark so every rendered <a> carries a `title`
+      // attribute equal to its href. Browsers show `title` as a native
+      // tooltip on hover, which lets the user preview where a link
+      // actually leads — important both for reviewing what we just
+      // pasted and for spotting phishing-style "click here" anchors
+      // whose visible text differs from the real destination.
+      Link.extend({
+        renderHTML({ HTMLAttributes }) {
+          const href = (HTMLAttributes as { href?: string }).href
+          return [
+            'a',
+            mergeAttributes(
+              this.options.HTMLAttributes,
+              HTMLAttributes,
+              href ? { title: href } : {},
+            ),
+            0,
+          ]
+        },
+      }).configure({
         openOnClick: false,
         HTMLAttributes: { target: '_blank', rel: 'noopener noreferrer' },
       }),
@@ -72,6 +109,24 @@
 
   onDestroy(() => {
     $editor?.destroy()
+  })
+
+  // Hand the parent a small imperative API once the editor is live.
+  // Tiptap's createEditor returns a Readable store that publishes the
+  // instance asynchronously (after the DOM mounts), so we wait for the
+  // first non-null value before firing onready.
+  $effect(() => {
+    const ed = $editor
+    if (ed && onready) {
+      onready({
+        appendHtml: (html: string) => {
+          // `insertContentAt(end)` keeps the user's selection where it
+          // is — appending a paragraph at the document end is the
+          // expected gesture for "append" rather than "insert here".
+          ed.chain().insertContentAt(ed.state.doc.content.size, html).run()
+        },
+      })
+    }
   })
 
   // ── Toolbar helpers ─────────────────────────────────────────

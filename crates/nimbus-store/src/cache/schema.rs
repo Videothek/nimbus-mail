@@ -415,6 +415,33 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX calendar_events_by_href
         ON calendar_events (calendar_id, href);
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v5 → v6: cache attachment metadata for received messages.
+    //
+    // Before this migration the cache only remembered "does this
+    // message have attachments?" as a bool. That's fine for the mail
+    // list paperclip icon, but MailView now renders a proper
+    // attachment list with filename / size / mime — which needs one
+    // record per attachment.
+    //
+    // Shape: JSON-encoded `Vec<EmailAttachment>` on the
+    // `message_bodies` row. We go with a blob column rather than a
+    // separate table because:
+    //   - Attachments never leave their message; there's no need to
+    //     query across them or join from elsewhere.
+    //   - We already treat `to_addrs` / `cc_addrs` the same way, so
+    //     the pattern is established.
+    //   - A cached `Email` deserialises straight back by feeding the
+    //     text through `serde_json` — no per-attachment rehydration.
+    //
+    // NOT NULL with a '[]' default so older rows (written before this
+    // column existed) decode to an empty list. That lines up with
+    // `has_attachments = 0` on those rows.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE message_bodies
+        ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
