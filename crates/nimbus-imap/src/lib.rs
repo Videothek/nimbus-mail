@@ -4,5 +4,6 @@
 //! syncing, and managing mailboxes.
 
 mod client;
+mod mutf7;
 
 pub use client::{EnvelopeBatch, ImapClient};
