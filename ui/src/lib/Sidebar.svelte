@@ -152,11 +152,29 @@
     { name: 'Nextcloud Files', icon: '\u{1F4C1}' },// 📁
   ]
 
-  // Re-fetch whenever accountId or refreshToken changes.
+  // Full reload (cache + network `STATUS` per folder) on mount and
+  // whenever the active account switches. We deliberately do *not*
+  // tie this to `refreshToken`: that token also bumps on mark-as-read
+  // and new-mail signals, and a STATUS round-trip per folder there
+  // would (a) swamp the IMAP server on every read and (b) race with
+  // our cache decrement — STATUS may return the pre-`\Seen` count if
+  // the server hasn't finished propagating it, then `upsert_folders`
+  // would overwrite our just-decremented cache count and the badge
+  // would visibly snap back to the old number.
   $effect(() => {
-    // Touch refreshToken so Svelte re-runs this effect when it's bumped.
-    refreshToken
     void load(accountId)
+  })
+
+  // Cache-only reload on every other refresh signal. The cache stays
+  // correct via `mark_envelope_read` (decrements on read) and
+  // `bump_folder_unread` (increments on poll), so re-reading from the
+  // cache picks up those changes without a network round-trip. Manual
+  // "refresh" requests (where the user does want fresh server state)
+  // come in via the explicit refresh button below, which calls the
+  // full `load(accountId)` path directly.
+  $effect(() => {
+    refreshToken
+    void reloadCachedFolders(accountId)
   })
 
   // Talk-unread polling lives in its own lifecycle: started once on
@@ -313,7 +331,15 @@
           title="Refresh"
           aria-label="Refresh"
           disabled={refreshing}
-          onclick={() => onrefresh?.()}
+          onclick={() => {
+            // Manual refresh: do the full network reload locally so
+            // the user gets fresh STATUS counts. Notify the parent so
+            // it can refresh sibling views (mail list etc.) — but the
+            // `refreshToken` it bumps now triggers cache-only reloads
+            // here, which is why we need this explicit `load()`.
+            void load(accountId)
+            onrefresh?.()
+          }}
         >
           &#x21bb;
         </button>

@@ -161,10 +161,11 @@
   /** Build the editor's starting HTML — the body (plain text or
       already-HTML draft) with any pre-rendered Nextcloud share-link
       block appended. Same shape as the in-Compose picker emits when
-      its `onlinks` callback fires. The signature is appended only for
-      brand-new messages (no `initial`, no rehydrated draft) — replies
-      and forwards already carry the user's intended body, and a draft
-      already includes whatever signature was present when it was saved. */
+      its `onlinks` callback fires. The signature is *not* added here:
+      it's appended via the `$effect` below once both `editorApi` and
+      `fromAccount` are settled, because `fromAccount` is a `$derived`
+      that may not have a value yet at the time this `$state` initializer
+      runs. */
   function initialBodyHtml(): string {
     let html = textToHtml(body)
     const esc = (s: string) =>
@@ -183,12 +184,32 @@
         `<p><strong>Join the Talk room:</strong></p>` +
         `<p>💬 <a href="${initial.talkLink.url}">${esc(initial.talkLink.name)}</a></p>`
     }
-    if (!isReplyOrForward(initial) && !saved) {
-      const sig = signatureBlock(fromAccount?.signature)
-      if (sig) html += sig
-    }
     return html
   }
+
+  /** Whether the signature has already been inserted for this compose
+      session. Guards against the `$effect` re-running and stacking
+      duplicate signatures if `fromAccount` changes (e.g. user picks
+      a different From: account). */
+  let signatureApplied = false
+
+  /** Insert the active account's signature once the editor is live.
+      Done in an effect rather than baked into `initialBodyHtml` because
+      `fromAccount` is a `$derived` that may evaluate to `undefined`
+      during the `$state(initialBodyHtml())` synchronous init — the
+      effect runs after that, by which time the props have flowed
+      through and `fromAccount` carries the real account row (with its
+      `signature` field). Skipped for replies / forwards / restored
+      drafts: those already carry their intended body content. */
+  $effect(() => {
+    if (signatureApplied) return
+    if (isReplyOrForward(initial) || saved) return
+    if (!editorApi || !fromAccount) return
+    const sig = signatureBlock(fromAccount.signature)
+    if (!sig) return
+    editorApi.appendHtml(sig)
+    signatureApplied = true
+  })
 
   /** Render a per-account signature as the standard `-- ` separator
       followed by the user's lines. Returns `''` when there's no
