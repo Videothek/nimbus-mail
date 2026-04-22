@@ -283,6 +283,30 @@
   // came back to the inbox view, even though `accounts` had refreshed.
   // Reading inline lets Svelte's per-call dependency tracking pick up
   // changes the moment the prop updates.
+  /** True when an IMAP folder is the trash (`\Trash` / `\Deleted`)
+      or junk/spam (`\Junk`) bin. Used both for icon selection and
+      for hiding the unread-count badge — those folders are
+      typically full of stuff the user doesn't want surfaced as
+      "unread to read", so a count there is just visual noise. */
+  function isTrashOrJunk(f: Folder): boolean {
+    const name = f.name.toLowerCase()
+    const attrs = f.attributes.map((a) => a.toLowerCase())
+    const has = (k: string) => attrs.some((a) => a.includes(k))
+    return (
+      has('trash') ||
+      has('deleted') ||
+      has('junk') ||
+      has('spam') ||
+      // Name-based fallback for servers that don't tag with the
+      // special-use attributes — many German hosters return
+      // "Trash" / "Spam" / "Papierkorb" without flags.
+      name === 'trash' ||
+      name === 'spam' ||
+      name === 'junk' ||
+      name === 'papierkorb'
+    )
+  }
+
   function folderIcon(f: Folder): string {
     const name = f.name.toLowerCase()
     const attrs = f.attributes.map((a) => a.toLowerCase())
@@ -291,8 +315,8 @@
     if (name === 'inbox' || has('inbox')) return '\u{1F4E5}' // 📥
     if (has('sent')) return '\u{1F4E4}' // 📤
     if (has('draft')) return '\u{1F4DD}' // 📝
-    if (has('trash') || has('deleted')) return '\u{1F5D1}' // 🗑️
-    if (has('junk') || has('spam')) return '\u{1F6AB}' // 🚫
+    if (has('trash') || has('deleted') || name === 'trash' || name === 'papierkorb') return '\u{1F5D1}' // 🗑️
+    if (has('junk') || has('spam') || name === 'spam' || name === 'junk') return '\u{1F6AB}' // 🚫
     if (has('flagged') || has('starred')) return '\u{2B50}' // ⭐
     if (has('archive')) return '\u{1F5C3}' // 🗃️
 
@@ -300,10 +324,24 @@
     // hierarchical names like "INBOX/Bank" also match a "bank"
     // keyword. First match wins — order in the settings list is
     // the user's stated priority.
-    const rules = accounts.find((a) => a.id === accountId)?.folder_icons ?? []
+    const account = accounts.find((a) => a.id === accountId)
+    const rules = account?.folder_icons ?? []
     for (const rule of rules) {
       const kw = rule.keyword.trim().toLowerCase()
       if (kw && name.includes(kw)) return rule.icon
+    }
+
+    // Diagnostic log — kept only until we're certain the rules
+    // pipeline is solid; remove once #63 fully verified in the wild.
+    if (rules.length === 0 && import.meta.env.DEV) {
+      console.debug(
+        '[folderIcon] no custom rules for account',
+        accountId,
+        '— accounts had:',
+        accounts.length,
+        'entries; matching account:',
+        account ? { id: account.id, hasIcons: 'folder_icons' in account, raw: account.folder_icons } : 'none',
+      )
     }
 
     return '\u{1F4C1}' // 📁
@@ -412,7 +450,7 @@
         >
           <span>{folderIcon(folder)}</span>
           <span class="flex-1 text-left truncate">{displayName(folder)}</span>
-          {#if folder.unread_count && folder.unread_count > 0}
+          {#if folder.unread_count && folder.unread_count > 0 && !isTrashOrJunk(folder)}
             <span class="badge preset-filled-primary-500 text-xs">{folder.unread_count}</span>
           {/if}
         </button>
