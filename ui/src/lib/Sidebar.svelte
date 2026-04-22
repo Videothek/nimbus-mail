@@ -100,12 +100,33 @@
       const { listen } = await import('@tauri-apps/api/event')
       unlisten = await listen('unread-count-updated', () => {
         void refreshUnifiedUnread()
+        // Per-folder badges read from the cached `folders` table,
+        // which `mark_envelope_read` and `bump_folder_unread` keep in
+        // sync with mail activity. Re-read the cache here so the
+        // sidebar picks up those changes the moment Rust signals
+        // them — without re-running `fetch_folders` (which would do
+        // one IMAP `STATUS` round-trip per folder on every mark-as-
+        // read, swamping the server).
+        void reloadCachedFolders(accountId)
       })
     })()
     return () => {
       unlisten?.()
     }
   })
+
+  /** Lightweight cache-only re-read used by the unread-count event
+      listener. The full `load()` also kicks off `fetch_folders`,
+      which is expensive — that's reserved for explicit refresh
+      paths (mount, account switch, refresh button). */
+  async function reloadCachedFolders(id: string) {
+    try {
+      const cached = await invoke<Folder[]>('get_cached_folders', { accountId: id })
+      if (id === accountId) folders = cached
+    } catch (e) {
+      console.warn('reloadCachedFolders failed:', e)
+    }
+  }
 
   /** The picker's `<select>` value: the account id, or the sentinel
       `"__all__"` when unified mode is active. Kept derived so the

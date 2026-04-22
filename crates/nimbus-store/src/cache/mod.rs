@@ -387,23 +387,81 @@ impl Cache {
         Ok(out)
     }
 
-    /// Mark a cached envelope as read (sets `is_read = 1`).
+    /// Mark a cached envelope as read (sets `is_read = 1`) and keep
+    /// the folder's `unread_count` in sync by decrementing it iff the
+    /// message was previously unread.
     ///
     /// Used by the "mark as read when opened" path: we flip the local
     /// cache immediately so the UI reflects the change without waiting
     /// for the network round-trip to the IMAP server. If the row isn't
-    /// cached yet (message was never listed), this is a no-op.
+    /// cached yet (message was never listed), the message-table UPDATE
+    /// is a no-op and we don't decrement the folder count — there's
+    /// nothing to subtract from.
+    ///
+    /// Wrapped in a transaction so the message flip and the folder
+    /// count adjustment land atomically; an interrupted call can never
+    /// leave `is_read = 1` next to an unchanged `unread_count`.
     pub fn mark_envelope_read(
         &self,
         account_id: &str,
         folder: &str,
         uid: u32,
     ) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
-        conn.execute(
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+
+        let was_unread: bool = tx
+            .query_row(
+                "SELECT is_read = 0 FROM messages
+                 WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+                params![account_id, folder, uid as i64],
+                |r| r.get::<_, i64>(0).map(|v| v != 0),
+            )
+            .unwrap_or(false);
+
+        tx.execute(
             "UPDATE messages SET is_read = 1
              WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
             params![account_id, folder, uid as i64],
+        )?;
+
+        if was_unread {
+            // `MAX(unread_count - 1, 0)` guards against an off-by-one
+            // dropping below zero when the cached folder count is
+            // already stale (e.g. another client read the message,
+            // a background poll lowered `unread_count`, then we read
+            // it ourselves).
+            tx.execute(
+                "UPDATE folders
+                 SET unread_count = MAX(COALESCE(unread_count, 0) - 1, 0)
+                 WHERE account_id = ?1 AND name = ?2",
+                params![account_id, folder],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Bump a folder's `unread_count` by `delta` (positive to add,
+    /// negative to subtract). Treats a `NULL` stored count as `0`.
+    /// Used by the poll path to credit newly-arrived unread mail
+    /// against the badge without waiting for a fresh `STATUS` round-trip.
+    pub fn bump_folder_unread(
+        &self,
+        account_id: &str,
+        folder: &str,
+        delta: i64,
+    ) -> Result<(), CacheError> {
+        if delta == 0 {
+            return Ok(());
+        }
+        let conn = self.pool.get()?;
+        conn.execute(
+            "UPDATE folders
+             SET unread_count = MAX(COALESCE(unread_count, 0) + ?3, 0)
+             WHERE account_id = ?1 AND name = ?2",
+            params![account_id, folder, delta],
         )?;
         Ok(())
     }

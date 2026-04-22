@@ -116,8 +116,22 @@
   // try to rehydrate a locally saved draft so the user doesn't lose
   // work when they accidentally close the window. Props are snapshotted
   // at mount — the modal is remounted when the parent opens a new one.
+  //
+  // We discriminate "this is a reply/forward" by the presence of `body`
+  // or `in_reply_to` rather than by `!initial`, because `openCompose()`
+  // defaults `initial` to `{}` (truthy) for blank composes — a plain
+  // `!initial` check would mis-classify every blank compose as a reply
+  // and skip both draft restoration and signature insertion.
   // svelte-ignore state_referenced_locally
-  const saved = !initial ? loadDraft() : null
+  const saved = !isReplyOrForward(initial) ? loadDraft() : null
+
+  /** Does this initial prefill carry quoted reply / forward content?
+      Other prefills (FilesView attachments, TalkView links) leave the
+      body empty, so the user is effectively starting a blank compose
+      with extras and should still get their saved draft + signature. */
+  function isReplyOrForward(init?: ComposeInitial): boolean {
+    return !!(init && (init.body || init.in_reply_to))
+  }
   // svelte-ignore state_referenced_locally
   let to = $state(initial?.to ?? saved?.to ?? '')
   // svelte-ignore state_referenced_locally
@@ -169,7 +183,7 @@
         `<p><strong>Join the Talk room:</strong></p>` +
         `<p>💬 <a href="${initial.talkLink.url}">${esc(initial.talkLink.name)}</a></p>`
     }
-    if (!initial && !saved) {
+    if (!isReplyOrForward(initial) && !saved) {
       const sig = signatureBlock(fromAccount?.signature)
       if (sig) html += sig
     }
@@ -507,9 +521,13 @@
     }
   }
 
-  // Autosave draft whenever the user edits a field.
+  // Autosave draft whenever the user edits a field. Skip the write
+  // for replies/forwards because `loadDraft()` only restores blank
+  // composes — autosaving a reply here would otherwise leak its
+  // body into the next blank-compose's draft slot for this account.
   $effect(() => {
     const draft = { to, cc, bcc, subject, body: bodyHtml }
+    if (isReplyOrForward(initial)) return
     try {
       localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
     } catch {

@@ -623,6 +623,51 @@ impl ImapClient {
         Ok(())
     }
 
+    /// Append a raw RFC 822 message to a folder via IMAP `APPEND`.
+    ///
+    /// Used by the "save sent mail to Sent folder" path: SMTP delivers
+    /// the message to recipients, then we APPEND a copy here so the
+    /// user can see what they sent. `flags` is the literal IMAP flag
+    /// list (e.g. `&["\\Seen"]` — pre-marked read because the user
+    /// just wrote it themselves).
+    ///
+    /// `raw` must already be properly CRLF-terminated RFC 822 bytes —
+    /// `lettre::Message::formatted()` produces exactly that.
+    pub async fn append_message(
+        &mut self,
+        folder: &str,
+        raw: &[u8],
+        flags: &[&str],
+    ) -> Result<(), NimbusError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        // async-imap 0.10's `append` takes the flag list as a single
+        // pre-formatted parenthesised IMAP atom. We pass `\Seen` so
+        // the appended copy doesn't add to the unread badge — the
+        // user wrote it themselves and has already "read" it.
+        let flag_atom = if flags.is_empty() {
+            None
+        } else {
+            Some(format!("({})", flags.join(" ")))
+        };
+        debug!(
+            "APPEND {} bytes to '{folder}' (flags: {})",
+            raw.len(),
+            flag_atom.as_deref().unwrap_or("(none)"),
+        );
+
+        session
+            .append(folder, flag_atom.as_deref(), None, raw)
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("APPEND to '{folder}' failed: {e}")))?;
+
+        info!("Appended {} bytes to '{folder}'", raw.len());
+        Ok(())
+    }
+
     /// Server-side search fallback for messages that aren't cached locally.
     ///
     /// Runs `UID SEARCH` on the given folder with a criterion built from

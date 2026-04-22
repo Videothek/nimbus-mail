@@ -86,56 +86,8 @@ impl SmtpClient {
             "Sending email"
         );
 
-        // Parse the sender address into a Mailbox.
-        let from_mailbox: Mailbox = email.from.parse().map_err(|e| {
-            NimbusError::Protocol(format!("Invalid 'from' address '{}': {e}", email.from))
-        })?;
+        let message = build_outgoing_message(email)?;
 
-        // Start building the message with From and Subject.
-        let mut builder: MessageBuilder = Message::builder()
-            .from(from_mailbox)
-            .subject(&email.subject);
-
-        // Add recipients (To, CC, BCC).
-        for addr in &email.to {
-            let mailbox: Mailbox = addr.parse().map_err(|e| {
-                NimbusError::Protocol(format!("Invalid 'to' address '{addr}': {e}"))
-            })?;
-            builder = builder.to(mailbox);
-        }
-        for addr in &email.cc {
-            let mailbox: Mailbox = addr.parse().map_err(|e| {
-                NimbusError::Protocol(format!("Invalid 'cc' address '{addr}': {e}"))
-            })?;
-            builder = builder.cc(mailbox);
-        }
-        for addr in &email.bcc {
-            let mailbox: Mailbox = addr.parse().map_err(|e| {
-                NimbusError::Protocol(format!("Invalid 'bcc' address '{addr}': {e}"))
-            })?;
-            builder = builder.bcc(mailbox);
-        }
-
-        // Optional Reply-To header.
-        if let Some(reply_to) = &email.reply_to {
-            let mailbox: Mailbox = reply_to.parse().map_err(|e| {
-                NimbusError::Protocol(format!("Invalid 'reply-to' address '{reply_to}': {e}"))
-            })?;
-            builder = builder.reply_to(mailbox);
-        }
-
-        // Build the email body.
-        // If there are attachments, we need a mixed multipart message.
-        // If there's both text and HTML, we use alternative multipart.
-        let message = if email.attachments.is_empty() {
-            // No attachments — just the body.
-            build_body_only(builder, email)?
-        } else {
-            // Attachments present — build a mixed multipart.
-            build_with_attachments(builder, email)?
-        };
-
-        // Send it!
         self.transport
             .send(message)
             .await
@@ -143,6 +95,54 @@ impl SmtpClient {
 
         info!("Email sent successfully to {:?}", email.to);
         Ok(())
+    }
+}
+
+/// Build the lettre `Message` for an outgoing email *without* sending it.
+///
+/// Exposed so callers (e.g. `main.rs`) can build the message once, send
+/// it via SMTP, and then take the formatted RFC 822 bytes from
+/// `message.formatted()` to `APPEND` a copy into the IMAP Sent folder
+/// — without re-running the (potentially expensive) MIME serialization.
+pub fn build_outgoing_message(email: &OutgoingEmail) -> Result<Message, NimbusError> {
+    let from_mailbox: Mailbox = email.from.parse().map_err(|e| {
+        NimbusError::Protocol(format!("Invalid 'from' address '{}': {e}", email.from))
+    })?;
+
+    let mut builder: MessageBuilder = Message::builder()
+        .from(from_mailbox)
+        .subject(&email.subject);
+
+    for addr in &email.to {
+        let mailbox: Mailbox = addr
+            .parse()
+            .map_err(|e| NimbusError::Protocol(format!("Invalid 'to' address '{addr}': {e}")))?;
+        builder = builder.to(mailbox);
+    }
+    for addr in &email.cc {
+        let mailbox: Mailbox = addr
+            .parse()
+            .map_err(|e| NimbusError::Protocol(format!("Invalid 'cc' address '{addr}': {e}")))?;
+        builder = builder.cc(mailbox);
+    }
+    for addr in &email.bcc {
+        let mailbox: Mailbox = addr
+            .parse()
+            .map_err(|e| NimbusError::Protocol(format!("Invalid 'bcc' address '{addr}': {e}")))?;
+        builder = builder.bcc(mailbox);
+    }
+
+    if let Some(reply_to) = &email.reply_to {
+        let mailbox: Mailbox = reply_to.parse().map_err(|e| {
+            NimbusError::Protocol(format!("Invalid 'reply-to' address '{reply_to}': {e}"))
+        })?;
+        builder = builder.reply_to(mailbox);
+    }
+
+    if email.attachments.is_empty() {
+        build_body_only(builder, email)
+    } else {
+        build_with_attachments(builder, email)
     }
 }
 

@@ -29,7 +29,7 @@ use nimbus_jmap::JmapClient;
 use nimbus_nextcloud::{
     FileEntry, LoginFlowInit, LoginFlowResult, fetch_capabilities, poll_login, start_login,
 };
-use nimbus_smtp::SmtpClient;
+use nimbus_smtp::{SmtpClient, build_outgoing_message};
 use nimbus_store::cache::{
     CalendarEventRow, CalendarEventServerHandle, CalendarRow, ContactRow, ContactServerHandle,
     SearchFilters, SearchHit, SearchScope, SyncState,
@@ -1588,6 +1588,15 @@ async fn poll_folder(
             .cloned()
             .collect();
 
+        // Credit any newly-arrived unread envelopes against the
+        // folder's badge so the sidebar count moves immediately on
+        // the next read — without waiting for a fresh `STATUS` round
+        // trip from `fetch_folders`.
+        let new_unread = new_envelopes.iter().filter(|e| !e.is_read).count() as i64;
+        if let Err(e) = cache.bump_folder_unread(account_id, folder, new_unread) {
+            tracing::warn!("cache.bump_folder_unread (JMAP) failed: {e}");
+        }
+
         // Bookmark UPDATE: JMAP has no UIDVALIDITY; we only track the
         // highest UID so background polls can diff.
         let new_highest = envelopes
@@ -1652,6 +1661,15 @@ async fn poll_folder(
             .cloned()
             .collect()
     };
+
+    // Same idea as the JMAP path — bump the folder badge by the count
+    // of newly-arrived unread envelopes so the sidebar reflects new
+    // mail without a `STATUS` round trip. After a UIDVALIDITY rotation
+    // `new_envelopes` is empty so `delta` is 0 and this is a no-op.
+    let new_unread = new_envelopes.iter().filter(|e| !e.is_read).count() as i64;
+    if let Err(e) = cache.bump_folder_unread(account_id, folder, new_unread) {
+        tracing::warn!("cache.bump_folder_unread failed: {e}");
+    }
 
     let new_highest = batch
         .envelopes
@@ -1795,26 +1813,117 @@ async fn mark_as_read(
 /// The `from` field on `email` is authoritative — the UI sets it from
 /// the active account so Compose-from-alias can be added later without
 /// backend changes.
+///
+/// After SMTP delivery, the message is appended to the IMAP Sent folder
+/// so the user has a visible record. JMAP handles this server-side.
 #[tauri::command]
-async fn send_email(account_id: String, email: OutgoingEmail) -> Result<(), NimbusError> {
+async fn send_email(
+    account_id: String,
+    email: OutgoingEmail,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
     let account = load_account(&account_id)?;
 
-    // JMAP handles sending server-side via EmailSubmission — no separate
-    // SMTP connection needed.
+    // JMAP handles sending server-side via EmailSubmission and writes
+    // a copy to Sent itself — no separate SMTP/APPEND needed.
     if uses_jmap(&account) {
         let client = connect_jmap(&account).await?;
         return client.send_email(&email).await;
     }
 
+    // Build the lettre message once so the same bytes go to both the
+    // SMTP recipients and the IMAP `APPEND` to Sent. Avoids the body
+    // diverging between the two paths if MIME generation ever becomes
+    // non-deterministic.
+    let message = build_outgoing_message(&email)?;
+    let raw = message.formatted();
+
     let password = credentials::get_imap_password(&account.id)?;
-    let client = SmtpClient::connect(
+    let smtp = SmtpClient::connect(
         &account.smtp_host,
         account.smtp_port,
         &account.email,
         &password,
     )
     .await?;
-    client.send(&email).await
+    smtp.send(&email).await?;
+
+    // Best-effort APPEND to Sent. SMTP succeeded, so the recipients
+    // already have the mail — failing the whole command because we
+    // couldn't update the local Sent view would be worse UX than a
+    // missing copy. We log and move on; the next folder fetch will
+    // catch up if the server still received the SMTP-side delivery.
+    if let Err(e) = append_to_sent(&account, &raw, &cache).await {
+        tracing::warn!(
+            "Sent OK but failed to append a copy to Sent for account '{}': {e}",
+            account.id
+        );
+    }
+    Ok(())
+}
+
+/// Locate the account's Sent folder (via the IMAP `\Sent` attribute,
+/// or a name-based fallback) and `APPEND` the raw RFC 822 bytes there.
+/// Marked `\Seen` so it doesn't add to the unread badge.
+async fn append_to_sent(
+    account: &Account,
+    raw: &[u8],
+    cache: &Cache,
+) -> Result<(), NimbusError> {
+    let sent_folder = pick_sent_folder(&account.id, cache);
+    let Some(sent) = sent_folder else {
+        return Err(NimbusError::Other(
+            "no Sent folder found in cached folder list".into(),
+        ));
+    };
+
+    let password = credentials::get_imap_password(&account.id)?;
+    let mut client = ImapClient::connect(
+        &account.imap_host,
+        account.imap_port,
+        &account.email,
+        &password,
+    )
+    .await?;
+    let result = client.append_message(&sent, raw, &["\\Seen"]).await;
+    let _ = client.logout().await;
+    result
+}
+
+/// Pick the most likely Sent folder name from the cached folder list.
+/// Prefers folders flagged with the IMAP `\Sent` special-use attribute
+/// (the canonical, locale-independent answer) and falls back to common
+/// English / German / French names so accounts that haven't been
+/// re-synced after their first launch still get a copy filed somewhere
+/// sensible. Returns `None` if nothing matches — the caller surfaces
+/// that as a warning rather than an error.
+fn pick_sent_folder(account_id: &str, cache: &Cache) -> Option<String> {
+    let folders = cache.get_folders(account_id).ok()?;
+
+    if let Some(by_attr) = folders.iter().find(|f| {
+        f.attributes
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case("sent") || a.eq_ignore_ascii_case("\\sent"))
+    }) {
+        return Some(by_attr.name.clone());
+    }
+
+    const NAME_HINTS: &[&str] = &[
+        "sent",
+        "sent items",
+        "sent messages",
+        "sent mail",
+        "gesendet",
+        "gesendete elemente",
+        "envoyés",
+    ];
+    folders
+        .iter()
+        .find(|f| {
+            let lower = f.name.to_lowercase();
+            NAME_HINTS.iter().any(|h| lower.contains(h))
+        })
+        .map(|f| f.name.clone())
 }
 
 // ── Folder commands ─────────────────────────────────────────────
