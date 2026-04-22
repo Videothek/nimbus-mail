@@ -1,6 +1,22 @@
 @import 'tailwindcss';
 @import '@skeletonlabs/skeleton';
+
+/* Curated theme set. Adding a new theme = one import line here plus
+   one entry in `lib/theme.ts`'s `THEMES` list. */
 @import '@skeletonlabs/skeleton/themes/cerberus';
+@import '@skeletonlabs/skeleton/themes/modern';
+@import '@skeletonlabs/skeleton/themes/pine';
+@import '@skeletonlabs/skeleton/themes/rose';
+@import '@skeletonlabs/skeleton/themes/vintage';
+
+/* Tailwind v4's `dark:` variant defaults to `prefers-color-scheme`.
+   We override it to look at `data-mode="dark"` on the `<html>` element
+   so the JS layer (`lib/theme.ts`) can choose between following the
+   OS preference (System mode) or pinning Light / Dark explicitly. In
+   System mode the JS still listens to `prefers-color-scheme` and
+   flips `data-mode` itself, so the CSS only ever has to consult one
+   signal. */
+@custom-variant dark (&:where([data-mode='dark'], [data-mode='dark'] *));
 
 html,
 body {

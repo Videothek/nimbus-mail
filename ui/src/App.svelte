@@ -34,6 +34,7 @@
     type SearchFilters,
   } from './lib/SearchBar.svelte'
   import SearchResults from './lib/SearchResults.svelte'
+  import { applyTheme, installSystemModeListener, type ThemeMode } from './lib/theme'
 
   // ── View state ──────────────────────────────────────────────
   // Which view is currently shown. Starts as 'loading' until we
@@ -159,6 +160,8 @@
     background_sync_interval_secs: number
     notifications_enabled: boolean
     start_minimized: boolean
+    theme_name: string
+    theme_mode: ThemeMode
   }
 
   // Cached settings snapshot — refreshed when the settings command is
@@ -232,6 +235,17 @@
       console.warn('get_app_settings failed', err)
     }
   }
+
+  /** Re-apply the theme + (re)install the OS-mode listener whenever
+      the user's theme preferences change. The effect's cleanup
+      function tears down the previous listener before the next run
+      installs a new one, so we never leak `matchMedia` subscribers
+      when the user toggles between System / Light / Dark. */
+  $effect(() => {
+    if (!appPrefs) return
+    applyTheme(appPrefs.theme_name, appPrefs.theme_mode)
+    return installSystemModeListener(appPrefs.theme_mode, appPrefs.theme_name)
+  })
 
   $effect(() => {
     loadAppPrefs()
@@ -548,7 +562,11 @@
 
 <!-- Account settings -->
 {:else if currentView === 'settings'}
-  <AccountSettings onclose={goToInbox} onaddaccount={goToSetup} />
+  <AccountSettings
+    onclose={goToInbox}
+    onaddaccount={goToSetup}
+    onappprefschanged={(p) => (appPrefs = p)}
+  />
 
 <!-- Contacts view: sidebar stays put so the user can jump back to mail. -->
 {:else if currentView === 'contacts' && activeAccountId}

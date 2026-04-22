@@ -9,6 +9,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import NextcloudSettings from './NextcloudSettings.svelte'
+  import { THEMES, applyTheme, type ThemeMode } from './theme'
 
   // ── Types ───────────────────────────────────────────────────
   // Mirrors the Rust `Account` struct from nimbus-core
@@ -29,8 +30,13 @@
   interface Props {
     onclose: () => void         // Go back to the inbox view
     onaddaccount: () => void    // Switch to the setup wizard to add another account
+    /** Notify the parent (App.svelte) whenever app-wide preferences
+        change so it can keep its cached snapshot — and the theme
+        `$effect` it drives — in sync. Optional so callers that don't
+        care about live updates aren't forced to handle it. */
+    onappprefschanged?: (prefs: AppSettings) => void
   }
-  let { onclose, onaddaccount }: Props = $props()
+  let { onclose, onaddaccount, onappprefschanged }: Props = $props()
 
   // ── State ───────────────────────────────────────────────────
   let accounts = $state<Account[]>([])
@@ -47,6 +53,8 @@
     background_sync_interval_secs: number
     notifications_enabled: boolean
     start_minimized: boolean
+    theme_name: string
+    theme_mode: ThemeMode
   }
 
   let appSettings = $state<AppSettings>({
@@ -55,6 +63,8 @@
     background_sync_interval_secs: 300,
     notifications_enabled: true,
     start_minimized: false,
+    theme_name: 'cerberus',
+    theme_mode: 'system',
   })
   let prefsSaveStatus = $state<'' | 'saving' | 'saved' | 'error'>('')
   let checkNowBusy = $state(false)
@@ -81,6 +91,9 @@
   let saveTimer: ReturnType<typeof setTimeout> | null = null
   function scheduleSave() {
     prefsSaveStatus = 'saving'
+    // Tell the parent immediately so its derived state (notification
+    // toggle, theme `$effect`) reacts without waiting for the debounce.
+    onappprefschanged?.({ ...appSettings })
     if (saveTimer) clearTimeout(saveTimer)
     saveTimer = setTimeout(async () => {
       try {
@@ -94,6 +107,17 @@
         prefsSaveStatus = 'error'
       }
     }, 400)
+  }
+
+  /** Theme picker handler — apply the change to the DOM immediately
+      so the user sees it before the debounced save fires. We still go
+      through `scheduleSave` so the persistence + parent-notify path
+      is unchanged. */
+  function onThemeChange(name: string, mode: ThemeMode) {
+    appSettings.theme_name = name
+    appSettings.theme_mode = mode
+    applyTheme(name, mode)
+    scheduleSave()
   }
 
   async function runCheckMailNow() {
@@ -256,6 +280,56 @@
           />
           <span>Start minimized to tray</span>
         </label>
+      </div>
+    </div>
+
+    <!-- Appearance (Issue #17) — theme + light/dark mode picker.
+         Changes apply live via `onThemeChange` so the user sees the
+         result before navigating away from settings. -->
+    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg mb-6">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-base font-semibold">Appearance</h2>
+      </div>
+
+      <div class="space-y-4 text-sm">
+        <div>
+          <p class="font-medium mb-2">Mode</p>
+          <div class="flex gap-2">
+            {#each ['system', 'light', 'dark'] as const as mode}
+              <button
+                type="button"
+                class="btn btn-sm {appSettings.theme_mode === mode
+                  ? 'preset-filled-primary-500'
+                  : 'preset-outlined-surface-500'}"
+                onclick={() => onThemeChange(appSettings.theme_name, mode)}
+              >
+                {mode === 'system' ? 'Follow OS' : mode === 'light' ? 'Light' : 'Dark'}
+              </button>
+            {/each}
+          </div>
+          <p class="text-xs text-surface-400 mt-1">
+            "Follow OS" tracks your system light/dark preference live.
+          </p>
+        </div>
+
+        <div>
+          <p class="font-medium mb-2">Theme</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {#each THEMES as theme (theme.id)}
+              <button
+                type="button"
+                class="text-left p-3 rounded-md border transition-colors {appSettings.theme_name ===
+                theme.id
+                  ? 'border-primary-500 bg-primary-500/10'
+                  : 'border-surface-300 dark:border-surface-700 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+                onclick={() => onThemeChange(theme.id, appSettings.theme_mode)}
+              >
+                <div class="font-medium">{theme.label}</div>
+                <div class="text-xs text-surface-500 mt-0.5">{theme.description}</div>
+              </button>
+            {/each}
+          </div>
+        </div>
       </div>
     </div>
 

@@ -253,7 +253,7 @@
     float: left;
     pointer-events: none;
     height: 0;
-    color: #9ca3af;
+    color: var(--color-surface-400);
   }
   /* Basic table styling so it's visible in the editor. */
   :global(.tiptap table) {
@@ -263,29 +263,43 @@
   }
   :global(.tiptap th),
   :global(.tiptap td) {
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-surface-300);
     padding: 0.375rem 0.625rem;
     text-align: left;
     min-width: 80px;
   }
+  :global([data-mode='dark'] .tiptap th),
+  :global([data-mode='dark'] .tiptap td) {
+    border-color: var(--color-surface-700);
+  }
   :global(.tiptap th) {
-    background: #f3f4f6;
+    background: var(--color-surface-100);
     font-weight: 600;
+  }
+  :global([data-mode='dark'] .tiptap th) {
+    background: var(--color-surface-800);
   }
   :global(.tiptap img) {
     max-width: 100%;
     height: auto;
   }
   :global(.tiptap blockquote) {
-    border-left: 3px solid #d1d5db;
+    border-left: 3px solid var(--color-surface-300);
     padding-left: 0.75rem;
     margin: 0.5rem 0;
-    color: #6b7280;
+    color: var(--color-surface-600);
+  }
+  :global([data-mode='dark'] .tiptap blockquote) {
+    border-left-color: var(--color-surface-700);
+    color: var(--color-surface-400);
   }
   :global(.tiptap hr) {
     border: none;
-    border-top: 1px solid #d1d5db;
+    border-top: 1px solid var(--color-surface-300);
     margin: 1rem 0;
+  }
+  :global([data-mode='dark'] .tiptap hr) {
+    border-top-color: var(--color-surface-700);
   }
   :global(.tiptap ul),
   :global(.tiptap ol) {
@@ -294,7 +308,7 @@
   }
   :global(.tiptap ul) { list-style-type: disc; }
   :global(.tiptap ol) { list-style-type: decimal; }
-  :global(.tiptap a) { color: #3b82f6; text-decoration: underline; }
+  :global(.tiptap a) { color: var(--color-primary-500); text-decoration: underline; }
 </style>
 
 {#if $editor}
@@ -433,7 +447,7 @@
   </div>
 
   <!-- Editor area -->
-  <div class="border border-surface-200 dark:border-surface-700 rounded-b-md bg-white dark:bg-surface-950 overflow-y-auto" style="max-height: 360px;">
+  <div class="border border-surface-200 dark:border-surface-700 rounded-b-md bg-surface-50 dark:bg-surface-950 overflow-y-auto" style="max-height: 360px;">
     <EditorContent editor={$editor} />
   </div>
 {/if}

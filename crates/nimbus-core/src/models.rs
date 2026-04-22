@@ -25,6 +25,31 @@ pub struct AppSettings {
     pub notifications_enabled: bool,
     /// Launch hidden to tray on app start.
     pub start_minimized: bool,
+    /// Skeleton UI theme name (e.g. `"cerberus"`, `"modern"`,
+    /// `"pine"`). The frontend keeps the canonical list of themes
+    /// it knows how to render; this value is the user's selection
+    /// and is set on `<html data-theme="…">` at startup.
+    pub theme_name: String,
+    /// Whether the UI follows the OS light/dark preference, or
+    /// is pinned to one. Applied via `<html data-mode="…">`.
+    pub theme_mode: ThemeMode,
+}
+
+/// Light/dark mode selection. `System` follows the OS preference
+/// (`prefers-color-scheme`) and reacts live when the user changes
+/// their OS theme; `Light` / `Dark` pin the mode regardless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    System,
+    Light,
+    Dark,
+}
+
+impl Default for ThemeMode {
+    fn default() -> Self {
+        Self::System
+    }
 }
 
 impl Default for AppSettings {
@@ -35,6 +60,8 @@ impl Default for AppSettings {
             background_sync_interval_secs: 300,
             notifications_enabled: true,
             start_minimized: false,
+            theme_name: "cerberus".to_string(),
+            theme_mode: ThemeMode::System,
         }
     }
 }
