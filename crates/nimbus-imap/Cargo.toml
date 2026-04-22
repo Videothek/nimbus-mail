@@ -14,3 +14,6 @@ async-std.workspace = true
 futures.workspace = true
 mail-parser.workspace = true
 chrono.workspace = true
+# Base64 with custom-alphabet support — IMAP's Modified UTF-7 swaps
+# `/` for `,` in the alphabet and omits padding. Used by `mutf7.rs`.
+base64.workspace = true

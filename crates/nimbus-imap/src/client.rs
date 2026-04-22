@@ -9,6 +9,16 @@ use futures::TryStreamExt;
 use mail_parser::{MessageParser, MimeHeaders};
 use nimbus_core::error::NimbusError;
 use nimbus_core::models::{Email, EmailAttachment, EmailEnvelope, Folder};
+
+use crate::mutf7;
+
+/// Encode a UTF-8 mailbox name into the IMAP Modified UTF-7 form that
+/// `SELECT` / `EXAMINE` / `STATUS` / `APPEND` etc. expect on the wire.
+/// Pure ASCII names round-trip unchanged so this is a no-op for the
+/// common case (`INBOX`, `Sent`, `Drafts`, …).
+fn to_wire(name: &str) -> String {
+    mutf7::encode(name)
+}
 use tracing::{debug, info, warn};
 
 /// An authenticated IMAP session, ready to interact with mailboxes.
@@ -109,6 +119,11 @@ impl ImapClient {
             .map_err(|e| NimbusError::Protocol(format!("Failed to read folder list: {e}")))?;
 
         // Build folder list, then query each folder for its unread count.
+        // Mailbox names come over the wire in IMAP Modified UTF-7
+        // (RFC 3501 §5.1.3) — decode them to plain UTF-8 here so the
+        // cache and the UI never see the encoded form. We re-encode
+        // when sending names back to the server (`STATUS`, `SELECT`,
+        // `APPEND`, etc.) via `to_wire`.
         let mut folders: Vec<Folder> = mailboxes
             .iter()
             .map(|mailbox| {
@@ -119,7 +134,7 @@ impl ImapClient {
                     .collect();
 
                 Folder {
-                    name: mailbox.name().to_string(),
+                    name: mutf7::decode(mailbox.name()),
                     delimiter: mailbox.delimiter().map(|d| d.to_string()),
                     attributes,
                     unread_count: None,
@@ -131,7 +146,8 @@ impl ImapClient {
         // STATUS returns the *number* of unseen messages (unlike SELECT/EXAMINE
         // where `unseen` is the sequence number of the first unseen message).
         for folder in &mut folders {
-            match session.status(&folder.name, "(UNSEEN)").await {
+            let wire_name = to_wire(&folder.name);
+            match session.status(&wire_name, "(UNSEEN)").await {
                 Ok(mailbox_status) => {
                     folder.unread_count = mailbox_status.unseen;
                     debug!(
@@ -169,7 +185,7 @@ impl ImapClient {
             .as_mut()
             .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
 
-        let mailbox = session.examine(folder).await.map_err(|e| {
+        let mailbox = session.examine(to_wire(folder)).await.map_err(|e| {
             NimbusError::Protocol(format!("Failed to select folder '{folder}': {e}"))
         })?;
 
@@ -601,7 +617,7 @@ impl ImapClient {
             .as_mut()
             .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
 
-        session.select(folder).await.map_err(|e| {
+        session.select(to_wire(folder)).await.map_err(|e| {
             NimbusError::Protocol(format!("Failed to select folder '{folder}': {e}"))
         })?;
 
@@ -629,7 +645,7 @@ impl ImapClient {
             .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
 
         // Read-write SELECT so the server accepts the STORE.
-        session.select(folder).await.map_err(|e| {
+        session.select(to_wire(folder)).await.map_err(|e| {
             NimbusError::Protocol(format!("Failed to select folder '{folder}': {e}"))
         })?;
 
@@ -684,7 +700,7 @@ impl ImapClient {
         );
 
         session
-            .append(folder, flag_atom.as_deref(), None, raw)
+            .append(to_wire(folder), flag_atom.as_deref(), None, raw)
             .await
             .map_err(|e| NimbusError::Protocol(format!("APPEND to '{folder}' failed: {e}")))?;
 

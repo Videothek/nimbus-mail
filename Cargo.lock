@@ -2855,6 +2855,7 @@ dependencies = [
  "async-imap",
  "async-native-tls",
  "async-std",
+ "base64 0.22.1",
  "chrono",
  "futures",
  "mail-parser",
