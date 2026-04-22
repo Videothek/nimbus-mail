@@ -143,6 +143,7 @@ mod tests {
             smtp_port: 587,
             use_jmap: false,
             jmap_url: None,
+            signature: None,
         }
     }
 

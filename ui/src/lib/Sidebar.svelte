@@ -21,6 +21,14 @@
     unread_count: number | null
   }
 
+  /** Slim account row for the picker — matches the Rust `Account`
+      struct's public fields that the switcher needs. */
+  interface Account {
+    id: string
+    display_name: string
+    email: string
+  }
+
   /** Slim shape of a Talk room — only the fields we need for the
       aggregate unread badge. Avoids importing TalkView's type so the
       sidebar stays decoupled from the Talk view. */
@@ -30,12 +38,23 @@
   }
 
   interface Props {
+    /** All configured mail accounts. Drives the account picker at the
+        top of the sidebar; the picker is hidden when the list has
+        fewer than two entries. */
+    accounts?: Account[]
     accountId: string
     selectedFolder: string
     /** Bumped by the parent to force a network re-fetch (manual refresh). */
     refreshToken?: number
     /** Which integration tab (if any) is currently active. */
     activeIntegration?: string | null
+    /** Whether the unified inbox is currently active. When true, the
+        per-account folder list is hidden and a single "All Inboxes"
+        entry takes its place. */
+    unified?: boolean
+    /** Called with a real account id to switch to that account, or with
+        the sentinel `"__all__"` to enable unified-inbox mode. */
+    onselectaccount?: (id: string) => void
     onselectfolder: (name: string) => void
     onsettings: () => void
     onrefresh?: () => void
@@ -43,10 +62,13 @@
     onselectintegration?: (name: string) => void
   }
   let {
+    accounts = [],
     accountId,
     selectedFolder,
     refreshToken = 0,
     activeIntegration = null,
+    unified = false,
+    onselectaccount,
     onselectfolder,
     onsettings,
     onrefresh,
@@ -58,6 +80,37 @@
   let loading = $state(true)
   let refreshing = $state(false)
   let error = $state('')
+
+  // Total unread across every account's INBOX — used as the badge on
+  // the "All Inboxes" entry when unified mode is on. The number is the
+  // same one the tray icon shows; an `unread-count-updated` event from
+  // Rust nudges us to re-read it whenever a poll changes it.
+  let unifiedUnread = $state(0)
+  async function refreshUnifiedUnread() {
+    try {
+      unifiedUnread = await invoke<number>('get_total_unread')
+    } catch (e) {
+      console.warn('get_total_unread failed:', e)
+    }
+  }
+  $effect(() => {
+    void refreshUnifiedUnread()
+    let unlisten: (() => void) | null = null
+    ;(async () => {
+      const { listen } = await import('@tauri-apps/api/event')
+      unlisten = await listen('unread-count-updated', () => {
+        void refreshUnifiedUnread()
+      })
+    })()
+    return () => {
+      unlisten?.()
+    }
+  })
+
+  /** The picker's `<select>` value: the account id, or the sentinel
+      `"__all__"` when unified mode is active. Kept derived so the
+      dropdown follows whatever the parent thinks is selected. */
+  const pickerValue = $derived(unified ? '__all__' : accountId)
 
   // Aggregate unread state across all Talk rooms on the user's first
   // Nextcloud account. Drives the badge on the "Nextcloud Talk"
@@ -199,6 +252,26 @@
     <h1 class="text-lg font-bold text-primary-500">Nimbus Mail</h1>
   </div>
 
+  <!-- Account picker: only rendered when the user has more than one
+       account. With a single account the dropdown is pure chrome, so
+       we hide it to keep the sidebar clean. -->
+  {#if accounts.length > 1}
+    <div class="px-3 pt-3">
+      <label class="sr-only" for="sidebar-account-picker">Account</label>
+      <select
+        id="sidebar-account-picker"
+        class="select w-full text-sm px-2 py-1.5 rounded-md"
+        value={pickerValue}
+        onchange={(e) => onselectaccount?.((e.currentTarget as HTMLSelectElement).value)}
+      >
+        <option value="__all__">All inboxes</option>
+        {#each accounts as a (a.id)}
+          <option value={a.id}>{a.display_name || a.email}</option>
+        {/each}
+      </select>
+    </div>
+  {/if}
+
   <!-- Compose button -->
   <div class="p-3">
     <button class="btn preset-filled-primary-500 w-full" onclick={() => oncompose?.()}>
@@ -226,7 +299,22 @@
       </div>
     </div>
 
-    {#if loading}
+    {#if unified}
+      <!-- Unified mode: only INBOX is meaningful (the per-account
+           folder tree doesn't compose across accounts), so collapse
+           the list to a single highlighted entry. The badge mirrors
+           the tray's total-unread count. -->
+      <button
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm bg-primary-500/10 text-primary-500 font-medium"
+        onclick={() => onselectfolder('INBOX')}
+      >
+        <span>📥</span>
+        <span class="flex-1 text-left truncate">All Inboxes</span>
+        {#if unifiedUnread > 0}
+          <span class="badge preset-filled-primary-500 text-xs">{unifiedUnread}</span>
+        {/if}
+      </button>
+    {:else if loading}
       <p class="px-3 py-2 text-xs text-surface-500">Loading folders…</p>
     {:else if error}
       <p class="px-3 py-2 text-xs text-red-500">{error}</p>

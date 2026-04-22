@@ -57,6 +57,11 @@ pub struct Account {
     /// during account setup if the server supports `.well-known/jmap`.
     #[serde(default)]
     pub jmap_url: Option<String>,
+    /// Optional plain-text signature appended below new messages
+    /// composed from this account. Empty/None = no signature. The
+    /// frontend renders the standard `-- ` separator before it.
+    #[serde(default)]
+    pub signature: Option<String>,
 }
 
 /// Lightweight email metadata for list views.
@@ -76,6 +81,16 @@ pub struct EmailEnvelope {
     pub date: DateTime<Utc>,
     pub is_read: bool,
     pub is_starred: bool,
+    /// Owning account id. Populated when envelopes are read out of the
+    /// cache (where `account_id` is a column on every row) so the UI
+    /// can render an account label in unified-inbox mode and route the
+    /// "open message" click to the right account. IMAP/JMAP clients
+    /// don't know their own account id, so they leave this empty —
+    /// the cache write-through stamps it from the call site, and the
+    /// cache read paths fill it back in. `#[serde(default)]` keeps
+    /// older cached payloads parsing cleanly.
+    #[serde(default)]
+    pub account_id: String,
 }
 
 /// Represents an email message.

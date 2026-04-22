@@ -40,6 +40,10 @@
   let smtpHost = $state('')
   let smtpPort = $state(587)    // 587 = standard SMTP submission port
   let useJmap = $state(false)
+  // Optional plain-text signature appended below new messages from
+  // this account. Empty string = no signature; the backend stores it
+  // as Option<String>.
+  let signature = $state('')
 
   // ── Step navigation ─────────────────────────────────────────
   const totalSteps = 3
@@ -114,6 +118,7 @@
           smtp_host: smtpHost.trim(),
           smtp_port: smtpPort,
           use_jmap: useJmap,
+          signature: signature.trim() || null,
         },
         password,
       })
@@ -250,6 +255,19 @@
             <input type="checkbox" bind:checked={useJmap} class="checkbox" />
             <span class="text-sm text-surface-700 dark:text-surface-300">
               Use JMAP instead of IMAP (if supported by your provider)
+            </span>
+          </label>
+
+          <label class="block mb-4">
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Signature (optional)</span>
+            <textarea
+              bind:value={signature}
+              rows="4"
+              placeholder={`Jane Doe\nProduct Manager · Example Corp\n+1 555 0100`}
+              class="input w-full mt-1 px-3 py-2 rounded-md font-mono text-sm"
+            ></textarea>
+            <span class="block text-xs text-surface-500 mt-1">
+              Appended to new messages sent from this account. You can change it later in Settings.
             </span>
           </label>
         </div>

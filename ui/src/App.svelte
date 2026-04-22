@@ -56,11 +56,32 @@
   let activeIntegration = $state<string | null>(null)
 
   // ── Inbox state ─────────────────────────────────────────────
-  // The active account (first configured one for now — multi-account
-  // switching comes later) and the currently selected message UID.
-  // Kept at the App level so MailList and MailView stay in sync.
+  // All configured mail accounts and which one the user is currently
+  // looking at. Kept at the App level so Sidebar / MailList / MailView
+  // stay in sync when the user switches accounts. `activeAccountEmail`
+  // is derived from the list so it stays consistent if an account's
+  // email is edited in settings.
+  interface Account {
+    id: string
+    display_name: string
+    email: string
+  }
+  let accounts = $state<Account[]>([])
   let activeAccountId = $state<string | null>(null)
-  let activeAccountEmail = $state<string>('')
+  const activeAccountEmail = $derived(
+    accounts.find((a) => a.id === activeAccountId)?.email ?? '',
+  )
+  // Unified-inbox mode: when on, MailList aggregates INBOX across all
+  // accounts. `activeAccountId` stays pointed at a real account so the
+  // sidebar's folder tree, integrations, and default Compose-from
+  // continue to have a sensible "current account" — the unified view
+  // is an overlay on top, not a replacement for the active account.
+  let unifiedMode = $state(false)
+  // The account a clicked message belongs to. In single-account mode
+  // this just shadows `activeAccountId`; in unified mode it's set from
+  // the row's `account_id` so MailView opens the right message even
+  // though the folder picker isn't pointing at that account.
+  let selectedMessageAccountId = $state<string | null>(null)
   // Compose modal: `null` = closed. When open, carries a (possibly empty)
   // initial prefill for reply / reply-all / forward.
   let composeInitial = $state<ComposeInitial | null>(null)
@@ -233,17 +254,26 @@
 
   async function checkAccounts() {
     try {
-      const accounts = await invoke<Array<{ id: string; email: string }>>('get_accounts')
-      if (accounts.length > 0) {
-        activeAccountId = accounts[0].id
-        activeAccountEmail = accounts[0].email
+      const list = await invoke<Account[]>('get_accounts')
+      accounts = list
+      if (list.length > 0) {
+        // Keep the current selection if it still exists (e.g. after
+        // adding another account); otherwise fall back to the first.
+        // This also handles the "active account was just removed"
+        // case from AccountSettings.
+        if (!activeAccountId || !list.some((a) => a.id === activeAccountId)) {
+          activeAccountId = list[0].id
+        }
         currentView = 'inbox'
       } else {
+        activeAccountId = null
         currentView = 'setup'
       }
     } catch {
       // If we can't load accounts (e.g. first launch, file doesn't exist),
       // show the setup wizard
+      accounts = []
+      activeAccountId = null
       currentView = 'setup'
     }
   }
@@ -252,6 +282,49 @@
   function goToInbox() {
     currentView = 'inbox'
     activeIntegration = null
+    // The user may have added / removed accounts in settings; re-read
+    // the list so the sidebar switcher and the active selection reflect
+    // the current state.
+    void checkAccounts()
+  }
+
+  /**
+   * Switch the app to a different mail account. Called by the Sidebar
+   * account picker. IMAP UIDs are per-account so keeping `selectedUid`
+   * would point at a message that doesn't exist in the new account;
+   * resetting folder → INBOX keeps the landing experience predictable.
+   * Also clears search state because the query was scoped to the old
+   * account.
+   *
+   * The sentinel `"__all__"` toggles `unifiedMode` instead of changing
+   * the active account — `activeAccountId` stays pointed at whatever
+   * the user had before so the sidebar folder tree and integrations
+   * still have a sensible default. Pinging back into a real account
+   * id automatically turns unified mode off.
+   */
+  function selectAccount(id: string) {
+    if (id === '__all__') {
+      if (unifiedMode) return
+      unifiedMode = true
+      selectedFolder = 'INBOX'
+      selectedUid = null
+      selectedMessageAccountId = null
+      searchQuery = ''
+      searchScope = {}
+      searchFilters = {}
+      refreshToken++
+      return
+    }
+    if (!unifiedMode && id === activeAccountId) return
+    unifiedMode = false
+    activeAccountId = id
+    selectedFolder = 'INBOX'
+    selectedUid = null
+    selectedMessageAccountId = null
+    searchQuery = ''
+    searchScope = {}
+    searchFilters = {}
+    refreshToken++
   }
 
   function goToSetup() {
@@ -288,8 +361,12 @@
     currentView = 'inbox'
   }
 
-  function selectMessage(uid: number) {
+  function selectMessage(uid: number, accountId?: string) {
     selectedUid = uid
+    // Unified mode: each row carries its owning account id so MailView
+    // can fetch from the right account. Outside unified mode, the
+    // active account is implicit.
+    selectedMessageAccountId = accountId ?? null
   }
 
   // Changing the folder resets the open message — the UID that was
@@ -477,10 +554,12 @@
 {:else if currentView === 'contacts' && activeAccountId}
   <div class="h-full flex">
     <Sidebar
+      accounts={accounts}
       accountId={activeAccountId}
       selectedFolder={selectedFolder}
       refreshToken={refreshToken}
       activeIntegration={activeIntegration}
+      onselectaccount={selectAccount}
       onselectfolder={(f) => {
         selectFolder(f)
         goToInbox()
@@ -500,10 +579,12 @@
 {:else if currentView === 'calendar' && activeAccountId}
   <div class="h-full flex">
     <Sidebar
+      accounts={accounts}
       accountId={activeAccountId}
       selectedFolder={selectedFolder}
       refreshToken={refreshToken}
       activeIntegration={activeIntegration}
+      onselectaccount={selectAccount}
       onselectfolder={(f) => {
         selectFolder(f)
         goToInbox()
@@ -526,10 +607,12 @@
 {:else if currentView === 'files' && activeAccountId}
   <div class="h-full flex">
     <Sidebar
+      accounts={accounts}
       accountId={activeAccountId}
       selectedFolder={selectedFolder}
       refreshToken={refreshToken}
       activeIntegration={activeIntegration}
+      onselectaccount={selectAccount}
       onselectfolder={(f) => {
         selectFolder(f)
         goToInbox()
@@ -544,8 +627,8 @@
     </div>
     {#if composeInitial !== null}
       <Compose
+        accounts={accounts}
         accountId={activeAccountId}
-        fromAddress={activeAccountEmail}
         initial={composeInitial}
         onclose={closeCompose}
       />
@@ -558,10 +641,12 @@
 {:else if currentView === 'talk' && activeAccountId}
   <div class="h-full flex">
     <Sidebar
+      accounts={accounts}
       accountId={activeAccountId}
       selectedFolder={selectedFolder}
       refreshToken={refreshToken}
       activeIntegration={activeIntegration}
+      onselectaccount={selectAccount}
       onselectfolder={(f) => {
         selectFolder(f)
         goToInbox()
@@ -576,8 +661,8 @@
     </div>
     {#if composeInitial !== null}
       <Compose
+        accounts={accounts}
         accountId={activeAccountId}
-        fromAddress={activeAccountEmail}
         initial={composeInitial}
         onclose={closeCompose}
       />
@@ -588,10 +673,13 @@
 {:else if activeAccountId}
   <div class="h-full flex">
     <Sidebar
+      accounts={accounts}
       accountId={activeAccountId}
       selectedFolder={selectedFolder}
       refreshToken={refreshToken}
       activeIntegration={activeIntegration}
+      unified={unifiedMode}
+      onselectaccount={selectAccount}
       onselectfolder={selectFolder}
       onsettings={goToSettings}
       onrefresh={refreshAll}
@@ -599,7 +687,10 @@
       onselectintegration={onSelectIntegration}
     />
     <!-- Mail-list column: SearchBar on top, then either MailList
-         or SearchResults depending on whether the user is searching. -->
+         or SearchResults depending on whether the user is searching.
+         Search isn't wired for unified mode yet — searching while
+         unified is enabled scopes back to the active account, which
+         is the safer default than silently returning nothing. -->
     <div class="flex flex-col w-80 shrink-0 border-r border-surface-200 dark:border-surface-700">
       <SearchBar
         accountId={activeAccountId}
@@ -619,8 +710,10 @@
           />
         {:else}
           <MailList
+            accounts={accounts}
             accountId={activeAccountId}
             folder={selectedFolder}
+            unified={unifiedMode}
             selectedUid={selectedUid}
             refreshToken={refreshToken}
             onselect={selectMessage}
@@ -629,7 +722,7 @@
       </div>
     </div>
     <MailView
-      accountId={activeAccountId}
+      accountId={selectedMessageAccountId ?? activeAccountId}
       folder={selectedFolder}
       uid={selectedUid}
       onread={onMessageRead}
@@ -640,8 +733,8 @@
     />
     {#if composeInitial !== null}
       <Compose
+        accounts={accounts}
         accountId={activeAccountId}
-        fromAddress={activeAccountEmail}
         initial={composeInitial}
         onclose={closeCompose}
       />
