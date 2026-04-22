@@ -217,18 +217,22 @@ impl Cache {
 
     /// Read the cached folder list for an account.
     ///
-    /// Returns folders in the order they were inserted — the server's
-    /// native order, which is usually alphabetical or provider-specific.
-    /// Attributes are stored as a JSON array string and parsed back into
-    /// a `Vec<String>` here so callers see the same shape as the live
-    /// `list_folders` response.
+    /// Returns folders in the order they were inserted — i.e. the
+    /// server's native order, which is what the user expects (INBOX
+    /// first, then the server's own ordering). `upsert_folders`
+    /// wipes-and-reinserts in a single transaction, so SQLite's
+    /// monotonically-assigned `rowid` matches the input iteration
+    /// order exactly. Sorting by `name` instead — as we used to —
+    /// alphabetised by ASCII code, which puts all-caps `INBOX`
+    /// behind names like `Drafts` and made the sidebar look
+    /// scrambled compared to every other mail client.
     pub fn get_folders(&self, account_id: &str) -> Result<Vec<Folder>, CacheError> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
             "SELECT name, delimiter, attributes, unread_count
              FROM folders
              WHERE account_id = ?1
-             ORDER BY name",
+             ORDER BY rowid",
         )?;
         let rows = stmt.query_map(params![account_id], |r| {
             let attrs_json: String = r.get(2)?;
@@ -930,7 +934,7 @@ mod tests {
 
         let got = cache.get_folders("acc").unwrap();
         assert_eq!(got.len(), 2);
-        // Ordered alphabetically: INBOX, Sent.
+        // Insertion order is preserved (server's native order).
         assert_eq!(got[0].name, "INBOX");
         assert_eq!(got[0].unread_count, Some(3));
         assert_eq!(got[1].name, "Sent");
@@ -951,6 +955,32 @@ mod tests {
         let got = cache.get_folders("acc").unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].name, "Archive");
+    }
+
+    /// Regression test for #63: `ORDER BY name` would put `Drafts`
+    /// ahead of `INBOX` (uppercase 'I' (0x49) sorts before lowercase
+    /// 'r' (0x72), but only against same-case neighbours — once mixed
+    /// with mixed-case names ASCII order shuffles things). Insertion
+    /// order from `upsert_folders` should be preserved verbatim.
+    #[test]
+    fn folders_preserve_server_order() {
+        let cache = open_test_cache();
+        let server_order = vec![
+            Folder { name: "INBOX".into(), delimiter: None, attributes: vec![], unread_count: None },
+            Folder { name: "Drafts".into(), delimiter: None, attributes: vec![], unread_count: None },
+            Folder { name: "Sent".into(), delimiter: None, attributes: vec![], unread_count: None },
+            Folder { name: "Archive".into(), delimiter: None, attributes: vec![], unread_count: None },
+            Folder { name: "Trash".into(), delimiter: None, attributes: vec![], unread_count: None },
+        ];
+        cache.upsert_folders("acc", &server_order).unwrap();
+
+        let got: Vec<String> = cache
+            .get_folders("acc")
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(got, vec!["INBOX", "Drafts", "Sent", "Archive", "Trash"]);
     }
 
     #[test]

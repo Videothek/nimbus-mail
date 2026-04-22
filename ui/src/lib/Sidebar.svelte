@@ -21,12 +21,23 @@
     unread_count: number | null
   }
 
+  /** One "folder name contains X → use icon Y" rule, mirror of the
+      Rust `FolderIconRule` struct. Carried inside `Account` so the
+      sidebar can apply per-account theming without a separate fetch. */
+  interface FolderIconRule {
+    keyword: string
+    icon: string
+  }
+
   /** Slim account row for the picker — matches the Rust `Account`
-      struct's public fields that the switcher needs. */
+      struct's public fields that the switcher needs. Includes the
+      user's custom folder-icon rules so the sidebar can apply them
+      to the active account's folder list. */
   interface Account {
     id: string
     display_name: string
     email: string
+    folder_icons?: FolderIconRule[]
   }
 
   /** Slim shape of a Talk room — only the fields we need for the
@@ -256,10 +267,24 @@
     }
   }
 
+  /** Active account's user-defined folder-icon rules. The `Account`
+      props carry them so we can apply per-account theming without a
+      separate fetch. Empty when no account is selected (loading
+      state) or when the user hasn't configured any rules. */
+  const customFolderIcons = $derived<FolderIconRule[]>(
+    accounts.find((a) => a.id === accountId)?.folder_icons ?? [],
+  )
+
   // Map IMAP folder attributes (\Sent, \Drafts, \Trash, etc.) to an
   // emoji. Falls back to a plain folder icon. Attribute names come from
   // async-imap's Debug formatting, so they look like `Sent`, `Drafts`,
   // etc. — we match case-insensitively.
+  //
+  // User-defined rules from the account's `folder_icons` are checked
+  // *before* the built-in heuristics so a rule like "Bank → 🏦" wins
+  // over the generic 📁 fallback. We don't let custom rules override
+  // INBOX/Sent/etc. on purpose: the special-use icons are part of the
+  // app's visual language and overriding them would confuse navigation.
   function folderIcon(f: Folder): string {
     const name = f.name.toLowerCase()
     const attrs = f.attributes.map((a) => a.toLowerCase())
@@ -272,6 +297,16 @@
     if (has('junk') || has('spam')) return '\u{1F6AB}' // 🚫
     if (has('flagged') || has('starred')) return '\u{2B50}' // ⭐
     if (has('archive')) return '\u{1F5C3}' // 🗃️
+
+    // User-defined rules. Match against the full folder name so
+    // hierarchical names like "INBOX/Bank" also match a "bank"
+    // keyword. First match wins — order in the settings list is
+    // the user's stated priority.
+    for (const rule of customFolderIcons) {
+      const kw = rule.keyword.trim().toLowerCase()
+      if (kw && name.includes(kw)) return rule.icon
+    }
+
     return '\u{1F4C1}' // 📁
   }
 

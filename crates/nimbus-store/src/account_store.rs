@@ -144,6 +144,7 @@ mod tests {
             use_jmap: false,
             jmap_url: None,
             signature: None,
+            folder_icons: Vec::new(),
         }
     }
 
