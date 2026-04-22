@@ -267,24 +267,22 @@
     }
   }
 
-  /** Active account's user-defined folder-icon rules. The `Account`
-      props carry them so we can apply per-account theming without a
-      separate fetch. Empty when no account is selected (loading
-      state) or when the user hasn't configured any rules. */
-  const customFolderIcons = $derived<FolderIconRule[]>(
-    accounts.find((a) => a.id === accountId)?.folder_icons ?? [],
-  )
-
   // Map IMAP folder attributes (\Sent, \Drafts, \Trash, etc.) to an
   // emoji. Falls back to a plain folder icon. Attribute names come from
   // async-imap's Debug formatting, so they look like `Sent`, `Drafts`,
   // etc. — we match case-insensitively.
   //
   // User-defined rules from the account's `folder_icons` are checked
-  // *before* the built-in heuristics so a rule like "Bank → 🏦" wins
-  // over the generic 📁 fallback. We don't let custom rules override
-  // INBOX/Sent/etc. on purpose: the special-use icons are part of the
-  // app's visual language and overriding them would confuse navigation.
+  // *after* the built-in heuristics so a rule like "Bank → 🏦" wins
+  // over the generic 📁 fallback but doesn't override INBOX/Sent/etc.
+  // (those are part of the app's navigation language).
+  //
+  // We read the active account's rules directly from the `accounts`
+  // prop on every call rather than going through a `$derived` — the
+  // derived was reading stale data after the user added a rule and
+  // came back to the inbox view, even though `accounts` had refreshed.
+  // Reading inline lets Svelte's per-call dependency tracking pick up
+  // changes the moment the prop updates.
   function folderIcon(f: Folder): string {
     const name = f.name.toLowerCase()
     const attrs = f.attributes.map((a) => a.toLowerCase())
@@ -302,7 +300,8 @@
     // hierarchical names like "INBOX/Bank" also match a "bank"
     // keyword. First match wins — order in the settings list is
     // the user's stated priority.
-    for (const rule of customFolderIcons) {
+    const rules = accounts.find((a) => a.id === accountId)?.folder_icons ?? []
+    for (const rule of rules) {
       const kw = rule.keyword.trim().toLowerCase()
       if (kw && name.includes(kw)) return rule.icon
     }

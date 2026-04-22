@@ -66,6 +66,10 @@
     id: string
     display_name: string
     email: string
+    /** User-defined folder icon rules. The Sidebar reads this off
+        the active account to apply per-account theming. Optional
+        because older `accounts.json` files predate the field. */
+    folder_icons?: { keyword: string; icon: string }[]
   }
   let accounts = $state<Account[]>([])
   let activeAccountId = $state<string | null>(null)
