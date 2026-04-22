@@ -267,27 +267,11 @@
     }
   }
 
-  // Map IMAP folder attributes (\Sent, \Drafts, \Trash, etc.) to an
-  // emoji. Falls back to a plain folder icon. Attribute names come from
-  // async-imap's Debug formatting, so they look like `Sent`, `Drafts`,
-  // etc. — we match case-insensitively.
-  //
-  // User-defined rules from the account's `folder_icons` are checked
-  // *after* the built-in heuristics so a rule like "Bank → 🏦" wins
-  // over the generic 📁 fallback but doesn't override INBOX/Sent/etc.
-  // (those are part of the app's navigation language).
-  //
-  // We read the active account's rules directly from the `accounts`
-  // prop on every call rather than going through a `$derived` — the
-  // derived was reading stale data after the user added a rule and
-  // came back to the inbox view, even though `accounts` had refreshed.
-  // Reading inline lets Svelte's per-call dependency tracking pick up
-  // changes the moment the prop updates.
-  /** True when an IMAP folder is the trash (`\Trash` / `\Deleted`)
-      or junk/spam (`\Junk`) bin. Used both for icon selection and
-      for hiding the unread-count badge — those folders are
-      typically full of stuff the user doesn't want surfaced as
-      "unread to read", so a count there is just visual noise. */
+  /** True when an IMAP folder is the trash or junk bin. Used both
+      for icon selection and for hiding the unread-count badge —
+      surfacing "unread" counts there is noise. Recognises the IMAP
+      special-use attributes and common name fallbacks (many German
+      hosters return `Trash` / `Spam` / `Papierkorb` without flags). */
   function isTrashOrJunk(f: Folder): boolean {
     const name = f.name.toLowerCase()
     const attrs = f.attributes.map((a) => a.toLowerCase())
@@ -297,9 +281,6 @@
       has('deleted') ||
       has('junk') ||
       has('spam') ||
-      // Name-based fallback for servers that don't tag with the
-      // special-use attributes — many German hosters return
-      // "Trash" / "Spam" / "Papierkorb" without flags.
       name === 'trash' ||
       name === 'spam' ||
       name === 'junk' ||
@@ -307,6 +288,10 @@
     )
   }
 
+  /** Pick an icon for a folder. Special-use attributes (and a few
+      name fallbacks) win first so INBOX/Sent/Drafts/etc. always show
+      their canonical icons; user-defined `folder_icons` rules then
+      apply to anything left over before the generic 📁 fallback. */
   function folderIcon(f: Folder): string {
     const name = f.name.toLowerCase()
     const attrs = f.attributes.map((a) => a.toLowerCase())
@@ -320,28 +305,10 @@
     if (has('flagged') || has('starred')) return '\u{2B50}' // ⭐
     if (has('archive')) return '\u{1F5C3}' // 🗃️
 
-    // User-defined rules. Match against the full folder name so
-    // hierarchical names like "INBOX/Bank" also match a "bank"
-    // keyword. First match wins — order in the settings list is
-    // the user's stated priority.
-    const account = accounts.find((a) => a.id === accountId)
-    const rules = account?.folder_icons ?? []
+    const rules = accounts.find((a) => a.id === accountId)?.folder_icons ?? []
     for (const rule of rules) {
       const kw = rule.keyword.trim().toLowerCase()
       if (kw && name.includes(kw)) return rule.icon
-    }
-
-    // Diagnostic log — kept only until we're certain the rules
-    // pipeline is solid; remove once #63 fully verified in the wild.
-    if (rules.length === 0 && import.meta.env.DEV) {
-      console.debug(
-        '[folderIcon] no custom rules for account',
-        accountId,
-        '— accounts had:',
-        accounts.length,
-        'entries; matching account:',
-        account ? { id: account.id, hasIcons: 'folder_icons' in account, raw: account.folder_icons } : 'none',
-      )
     }
 
     return '\u{1F4C1}' // 📁
