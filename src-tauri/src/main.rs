@@ -1517,6 +1517,26 @@ async fn fetch_envelopes_inner(
         .map_err(Into::into)
 }
 
+/// Unified-inbox version of `fetch_envelopes`: polls every configured
+/// account's `folder` (sequentially — keeps the SMTP/IMAP server load
+/// predictable) and then returns the merged newest-`limit` view from
+/// the cache. A poll failure on one account is logged and skipped so a
+/// single broken account doesn't blank the unified list.
+#[tauri::command]
+async fn fetch_unified_envelopes(
+    folder: String,
+    limit: u32,
+    cache: State<'_, Cache>,
+) -> Result<Vec<EmailEnvelope>, NimbusError> {
+    let accounts = account_store::load_accounts().unwrap_or_default();
+    for account in &accounts {
+        if let Err(e) = poll_folder(account, &folder, limit, &cache).await {
+            tracing::warn!("unified poll failed for '{}': {e}", account.id);
+        }
+    }
+    cache.get_unified_envelopes(&folder, limit).map_err(Into::into)
+}
+
 /// Outcome of polling a single folder — used by both the user-facing
 /// `fetch_envelopes` command and the background sync loop.
 ///
@@ -1853,6 +1873,18 @@ fn get_cached_envelopes(
     cache
         .get_envelopes(&account_id, &folder, limit)
         .map_err(Into::into)
+}
+
+/// Cache-only sibling of `fetch_unified_envelopes` — returns the merged
+/// newest-`limit` envelopes across all accounts without hitting the
+/// network. Powers the instant first-paint of the unified inbox.
+#[tauri::command]
+fn get_unified_cached_envelopes(
+    folder: String,
+    limit: u32,
+    cache: State<'_, Cache>,
+) -> Result<Vec<EmailEnvelope>, NimbusError> {
+    cache.get_unified_envelopes(&folder, limit).map_err(Into::into)
 }
 
 #[tauri::command]
@@ -2516,12 +2548,14 @@ fn main() {
             update_account,
             test_connection,
             fetch_envelopes,
+            fetch_unified_envelopes,
             fetch_message,
             download_email_attachment,
             fetch_folders,
             mark_as_read,
             send_email,
             get_cached_envelopes,
+            get_unified_cached_envelopes,
             get_cached_message,
             get_cached_folders,
             test_jmap_connection,

@@ -21,6 +21,8 @@
     smtp_host: string
     smtp_port: number
     use_jmap: boolean
+    jmap_url?: string | null
+    signature?: string | null
   }
 
   // ── Props ───────────────────────────────────────────────────
@@ -128,6 +130,40 @@
     } catch (e: any) {
       error = typeof e === 'string' ? e : e?.message ?? 'Failed to remove account'
     }
+  }
+
+  // ── Signature editing ───────────────────────────────────────
+  // The signature lives directly on the `Account` row. Edits are
+  // debounced like the app preferences so dragging through a long
+  // textarea doesn't write to disk on every keystroke.
+  const sigSaveTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const sigSaveStatus = $state<Record<string, '' | 'saving' | 'saved' | 'error'>>({})
+
+  function onSignatureChange(account: Account, next: string) {
+    account.signature = next
+    sigSaveStatus[account.id] = 'saving'
+    const existing = sigSaveTimers.get(account.id)
+    if (existing) clearTimeout(existing)
+    sigSaveTimers.set(
+      account.id,
+      setTimeout(async () => {
+        try {
+          // The Rust `update_account` takes the full Account record;
+          // sending the in-place edited copy is fine because we never
+          // mutate fields the user can't edit here (host/port/etc).
+          await invoke('update_account', {
+            account: { ...account, signature: next.trim() || null },
+          })
+          sigSaveStatus[account.id] = 'saved'
+          setTimeout(() => {
+            if (sigSaveStatus[account.id] === 'saved') sigSaveStatus[account.id] = ''
+          }, 1500)
+        } catch (e) {
+          console.warn('failed to save signature', e)
+          sigSaveStatus[account.id] = 'error'
+        }
+      }, 400),
+    )
   }
 </script>
 
@@ -242,25 +278,48 @@
     {:else}
       <!-- Account list -->
       <div class="space-y-4">
-        {#each accounts as account}
-          <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg flex items-start justify-between">
-            <div>
-              <p class="font-semibold">{account.display_name}</p>
-              <p class="text-sm text-surface-500">{account.email}</p>
-              <div class="text-xs text-surface-400 mt-2 space-y-0.5">
-                <p>IMAP: {account.imap_host}:{account.imap_port}</p>
-                <p>SMTP: {account.smtp_host}:{account.smtp_port}</p>
-                {#if account.use_jmap}
-                  <p class="text-primary-500">JMAP enabled</p>
+        {#each accounts as account (account.id)}
+          <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg">
+            <div class="flex items-start justify-between">
+              <div>
+                <p class="font-semibold">{account.display_name}</p>
+                <p class="text-sm text-surface-500">{account.email}</p>
+                <div class="text-xs text-surface-400 mt-2 space-y-0.5">
+                  <p>IMAP: {account.imap_host}:{account.imap_port}</p>
+                  <p>SMTP: {account.smtp_host}:{account.smtp_port}</p>
+                  {#if account.use_jmap}
+                    <p class="text-primary-500">JMAP enabled</p>
+                  {/if}
+                </div>
+              </div>
+              <button
+                class="btn btn-sm preset-outlined-error-500"
+                onclick={() => removeAccount(account.id, account.email)}
+              >
+                Remove
+              </button>
+            </div>
+
+            <div class="mt-4 pt-4 border-t border-surface-200 dark:border-surface-700">
+              <div class="flex items-center justify-between mb-1">
+                <label class="text-sm font-medium" for="sig-{account.id}">Signature</label>
+                {#if sigSaveStatus[account.id] === 'saving'}
+                  <span class="text-xs text-surface-400">Saving…</span>
+                {:else if sigSaveStatus[account.id] === 'saved'}
+                  <span class="text-xs text-success-500">Saved</span>
+                {:else if sigSaveStatus[account.id] === 'error'}
+                  <span class="text-xs text-error-500">Save failed</span>
                 {/if}
               </div>
+              <textarea
+                id="sig-{account.id}"
+                rows="4"
+                value={account.signature ?? ''}
+                oninput={(e) => onSignatureChange(account, (e.currentTarget as HTMLTextAreaElement).value)}
+                placeholder="Appended to new messages sent from this account."
+                class="input w-full px-3 py-2 rounded-md font-mono text-sm"
+              ></textarea>
             </div>
-            <button
-              class="btn btn-sm preset-outlined-error-500"
-              onclick={() => removeAccount(account.id, account.email)}
-            >
-              Remove
-            </button>
           </div>
         {/each}
       </div>

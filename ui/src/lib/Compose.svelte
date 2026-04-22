@@ -29,6 +29,14 @@
   interface NextcloudAccount {
     id: string
   }
+  /** Mail account row for the From: picker. Mirrors the public fields
+      of the Rust `Account` we actually consume here. */
+  interface MailAccount {
+    id: string
+    display_name: string
+    email: string
+    signature?: string | null
+  }
   /** Slim calendar summary — matches the Rust `CalendarSummary` Tauri
       return shape. We pass the full list to `EventEditor` so the user
       can pick which calendar the event lands in. */
@@ -71,13 +79,35 @@
   }
 
   interface Props {
+    /** Every configured mail account. Drives the From: picker; with
+        a single account the picker collapses to a static label. */
+    accounts: MailAccount[]
+    /** The account this draft starts in — usually the active inbox
+        account, or the receiving account for replies. The user can
+        switch via the From: picker before sending. */
     accountId: string
-    fromAddress: string
     initial?: ComposeInitial
     onclose: () => void
   }
-  let { accountId, fromAddress, initial, onclose }: Props = $props()
+  let { accounts, accountId, initial, onclose }: Props = $props()
 
+  // ── From: picker state ──────────────────────────────────────
+  // The id is the canonical handle (used for `send_email`); the rest
+  // of the form pulls the display name / email / signature from the
+  // selected account. We re-resolve through `accounts` so that an
+  // edit in settings (renamed account, updated signature) propagates
+  // without remounting the modal.
+  // svelte-ignore state_referenced_locally
+  let fromAccountId = $state(accountId)
+  const fromAccount = $derived(
+    accounts.find((a) => a.id === fromAccountId) ?? accounts[0],
+  )
+  const fromAddress = $derived(fromAccount?.email ?? '')
+
+  // Drafts are namespaced by the *initial* account so a reply draft
+  // doesn't collide with the new-mail draft sitting on a different
+  // account. Switching accounts mid-compose keeps using the same
+  // draft key — the saved draft was started from this account.
   // svelte-ignore state_referenced_locally
   const DRAFT_KEY = `nimbus-draft:${accountId}`
 
@@ -117,7 +147,10 @@
   /** Build the editor's starting HTML — the body (plain text or
       already-HTML draft) with any pre-rendered Nextcloud share-link
       block appended. Same shape as the in-Compose picker emits when
-      its `onlinks` callback fires. */
+      its `onlinks` callback fires. The signature is appended only for
+      brand-new messages (no `initial`, no rehydrated draft) — replies
+      and forwards already carry the user's intended body, and a draft
+      already includes whatever signature was present when it was saved. */
   function initialBodyHtml(): string {
     let html = textToHtml(body)
     const esc = (s: string) =>
@@ -136,7 +169,25 @@
         `<p><strong>Join the Talk room:</strong></p>` +
         `<p>💬 <a href="${initial.talkLink.url}">${esc(initial.talkLink.name)}</a></p>`
     }
+    if (!initial && !saved) {
+      const sig = signatureBlock(fromAccount?.signature)
+      if (sig) html += sig
+    }
     return html
+  }
+
+  /** Render a per-account signature as the standard `-- ` separator
+      followed by the user's lines. Returns `''` when there's no
+      signature configured so callers can append unconditionally. */
+  function signatureBlock(sig: string | null | undefined): string {
+    const text = (sig ?? '').trim()
+    if (!text) return ''
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const lines = text.split('\n').map(esc).join('<br>')
+    // The "-- " (with trailing space) prefix is the RFC 3676 signature
+    // delimiter — well-behaved mail clients hide it from quoted replies.
+    return `<p>-- <br>${lines}</p>`
   }
   // svelte-ignore state_referenced_locally
   let showCcBcc = $state(!!cc || !!bcc)
@@ -565,7 +616,7 @@
     sending = true
     try {
       await invoke('send_email', {
-        accountId,
+        accountId: fromAccountId,
         email: {
           from: fromAddress,
           to: toList,
@@ -601,6 +652,28 @@
     </header>
 
     <div class="flex-1 overflow-y-auto p-5 space-y-3">
+      <!-- From: picker. Shown as a real <select> when the user has
+           more than one account, otherwise collapsed to a static label
+           so single-account users see no extra chrome. -->
+      <div class="flex items-center gap-2">
+        <label class="text-xs w-14 text-surface-500" for="compose-from">From</label>
+        {#if accounts.length > 1}
+          <select
+            id="compose-from"
+            class="select flex-1 px-3 py-2 text-sm rounded-md"
+            bind:value={fromAccountId}
+          >
+            {#each accounts as a (a.id)}
+              <option value={a.id}>{a.display_name || a.email} &lt;{a.email}&gt;</option>
+            {/each}
+          </select>
+        {:else}
+          <span id="compose-from" class="text-sm text-surface-700 dark:text-surface-300">
+            {fromAccount?.display_name || ''} &lt;{fromAddress}&gt;
+          </span>
+        {/if}
+      </div>
+
       <div class="flex items-center gap-2">
         <label class="text-xs w-14 text-surface-500" for="compose-to">To</label>
         <AddressAutocomplete

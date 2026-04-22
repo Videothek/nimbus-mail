@@ -337,6 +337,46 @@ impl Cache {
                 date,
                 is_read: r.get::<_, i64>(5)? != 0,
                 is_starred: r.get::<_, i64>(6)? != 0,
+                account_id: account_id.to_string(),
+            })
+        })?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Return the newest `limit` envelopes in `folder` across **all**
+    /// accounts. Powers the unified-inbox view: each row carries its
+    /// owning `account_id` so the UI can render an account label and
+    /// route the "open message" click to the right account.
+    pub fn get_unified_envelopes(
+        &self,
+        folder: &str,
+        limit: u32,
+    ) -> Result<Vec<EmailEnvelope>, CacheError> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT account_id, uid, folder, from_addr, subject, internal_date, is_read, is_starred
+             FROM messages
+             WHERE folder = ?1
+             ORDER BY internal_date DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![folder, limit as i64], |r| {
+            let ts: i64 = r.get(5)?;
+            let date = Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now);
+            Ok(EmailEnvelope {
+                account_id: r.get(0)?,
+                uid: r.get::<_, i64>(1)? as u32,
+                folder: r.get(2)?,
+                from: r.get(3)?,
+                subject: r.get(4)?,
+                date,
+                is_read: r.get::<_, i64>(6)? != 0,
+                is_starred: r.get::<_, i64>(7)? != 0,
             })
         })?;
 
@@ -658,6 +698,7 @@ mod tests {
             date: Utc::now() - Duration::minutes(offset_min),
             is_read: false,
             is_starred: false,
+            account_id: String::new(),
         }
     }
 

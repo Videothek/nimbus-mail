@@ -343,6 +343,9 @@ impl JmapClient {
                     date,
                     is_read,
                     is_starred,
+                    // Stamped into the cache by the caller; left empty
+                    // here for the same reason as the IMAP path.
+                    account_id: String::new(),
                 }
             })
             .collect();

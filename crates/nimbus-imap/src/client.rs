@@ -305,6 +305,11 @@ impl ImapClient {
                     date,
                     is_read,
                     is_starred,
+                    // The IMAP client doesn't carry the account id; the
+                    // caller stamps it into the cache via
+                    // `upsert_envelopes_for_account`, and cache reads
+                    // populate the field on the way back out.
+                    account_id: String::new(),
                 })
             })
             .collect();
@@ -717,6 +722,7 @@ impl ImapClient {
                     date,
                     is_read,
                     is_starred,
+                    account_id: String::new(),
                 })
             })
             .collect();
