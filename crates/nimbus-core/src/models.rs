@@ -89,6 +89,27 @@ pub struct Account {
     /// frontend renders the standard `-- ` separator before it.
     #[serde(default)]
     pub signature: Option<String>,
+    /// User-defined "folder name contains X → use icon Y" rules.
+    /// The Sidebar applies these *before* its built-in icon
+    /// heuristics so a user can theme their own folders ("Bank",
+    /// "Amazon", a project name, …) without having to wait for the
+    /// app to ship a hard-coded mapping. Per-account so users with
+    /// different filing schemes on different mail accounts don't
+    /// have to share one global list.
+    #[serde(default)]
+    pub folder_icons: Vec<FolderIconRule>,
+}
+
+/// One "folder name contains keyword → show icon" rule. `keyword`
+/// is matched case-insensitively against the folder's name (and the
+/// last hierarchy segment, so `INBOX/Bank` and `Bank` both match
+/// `bank`). `icon` is whatever the user typed — a single emoji is
+/// the expected case but we don't enforce it; the sidebar just
+/// drops the string into the icon slot verbatim.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderIconRule {
+    pub keyword: String,
+    pub icon: String,
 }
 
 /// Lightweight email metadata for list views.

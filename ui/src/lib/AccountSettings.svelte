@@ -13,6 +13,10 @@
 
   // ── Types ───────────────────────────────────────────────────
   // Mirrors the Rust `Account` struct from nimbus-core
+  interface FolderIconRule {
+    keyword: string
+    icon: string
+  }
   interface Account {
     id: string
     display_name: string
@@ -24,6 +28,7 @@
     use_jmap: boolean
     jmap_url?: string | null
     signature?: string | null
+    folder_icons?: FolderIconRule[]
   }
 
   // ── Props ───────────────────────────────────────────────────
@@ -188,6 +193,59 @@
         }
       }, 400),
     )
+  }
+
+  // ── Custom folder icons (Issue #63) ─────────────────────────
+  // Each account carries a list of `{keyword, icon}` rules. The
+  // sidebar applies them before its built-in icon heuristics. Edits
+  // save immediately (no debounce) — the dataset is tiny and each
+  // change is the result of an explicit click, not keystroke spam.
+  const iconSaveStatus = $state<Record<string, '' | 'saving' | 'saved' | 'error'>>({})
+  // svelte-ignore state_referenced_locally
+  const iconDrafts = $state<Record<string, { keyword: string; icon: string }>>({})
+
+  /** Make sure every account has a stable draft slot before the
+      template tries to `bind:` to it — `bind:` requires a plain
+      MemberExpression, so the slot has to exist up-front. Runs as
+      an `$effect` so it covers both initial load and any later
+      account additions. */
+  $effect(() => {
+    for (const a of accounts) {
+      if (!iconDrafts[a.id]) iconDrafts[a.id] = { keyword: '', icon: '' }
+    }
+  })
+
+  async function persistIcons(account: Account, rules: FolderIconRule[]) {
+    iconSaveStatus[account.id] = 'saving'
+    account.folder_icons = rules
+    try {
+      await invoke('update_account', {
+        account: { ...account, folder_icons: rules },
+      })
+      iconSaveStatus[account.id] = 'saved'
+      setTimeout(() => {
+        if (iconSaveStatus[account.id] === 'saved') iconSaveStatus[account.id] = ''
+      }, 1500)
+    } catch (e) {
+      console.warn('failed to save folder icons', e)
+      iconSaveStatus[account.id] = 'error'
+    }
+  }
+
+  function addIconRule(account: Account) {
+    const draft = iconDrafts[account.id]
+    if (!draft) return
+    const keyword = draft.keyword.trim()
+    const icon = draft.icon.trim()
+    if (!keyword || !icon) return
+    const rules = [...(account.folder_icons ?? []), { keyword, icon }]
+    iconDrafts[account.id] = { keyword: '', icon: '' }
+    void persistIcons(account, rules)
+  }
+
+  function removeIconRule(account: Account, idx: number) {
+    const rules = (account.folder_icons ?? []).filter((_, i) => i !== idx)
+    void persistIcons(account, rules)
   }
 </script>
 
@@ -393,6 +451,72 @@
                 placeholder="Appended to new messages sent from this account."
                 class="input w-full px-3 py-2 rounded-md font-mono text-sm"
               ></textarea>
+            </div>
+
+            <!-- Folder icon rules (Issue #63). Match a folder name
+                 against a keyword and show the chosen icon next to
+                 it in the sidebar. Useful for personal categories
+                 ("Bank", "Amazon", a project name) where the IMAP
+                 special-use attributes don't help. -->
+            <div class="mt-4 pt-4 border-t border-surface-200 dark:border-surface-700">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-sm font-medium">Folder icons</span>
+                {#if iconSaveStatus[account.id] === 'saving'}
+                  <span class="text-xs text-surface-400">Saving…</span>
+                {:else if iconSaveStatus[account.id] === 'saved'}
+                  <span class="text-xs text-success-500">Saved</span>
+                {:else if iconSaveStatus[account.id] === 'error'}
+                  <span class="text-xs text-error-500">Save failed</span>
+                {/if}
+              </div>
+
+              {#if (account.folder_icons ?? []).length > 0}
+                <ul class="space-y-1 mb-2">
+                  {#each account.folder_icons ?? [] as rule, i (`${rule.keyword}:${i}`)}
+                    <li class="flex items-center gap-2 text-sm">
+                      <span class="text-lg w-6 text-center">{rule.icon}</span>
+                      <span class="text-surface-500">contains</span>
+                      <span class="font-mono">{rule.keyword}</span>
+                      <button
+                        type="button"
+                        class="ml-auto text-xs text-error-500 hover:underline"
+                        onclick={() => removeIconRule(account, i)}
+                      >Remove</button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+
+              {#if iconDrafts[account.id]}
+                <div class="flex gap-2 items-center">
+                  <input
+                    type="text"
+                    maxlength="4"
+                    placeholder="🏦"
+                    bind:value={iconDrafts[account.id].icon}
+                    class="input text-lg text-center w-14 px-2 py-1 rounded-md"
+                    aria-label="Icon"
+                  />
+                  <input
+                    type="text"
+                    placeholder="bank"
+                    bind:value={iconDrafts[account.id].keyword}
+                    onkeydown={(e) => e.key === 'Enter' && addIconRule(account)}
+                    class="input flex-1 text-sm px-3 py-1 rounded-md"
+                    aria-label="Folder name keyword"
+                  />
+                  <button
+                    type="button"
+                    class="btn btn-sm preset-outlined-primary-500"
+                    disabled={!iconDrafts[account.id].icon.trim() || !iconDrafts[account.id].keyword.trim()}
+                    onclick={() => addIconRule(account)}
+                  >Add</button>
+                </div>
+              {/if}
+              <p class="text-xs text-surface-400 mt-1">
+                Match is case-insensitive against any folder whose
+                name contains the keyword.
+              </p>
             </div>
           </div>
         {/each}
