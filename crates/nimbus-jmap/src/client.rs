@@ -488,6 +488,40 @@ impl JmapClient {
         })
     }
 
+    /// Clear the `$seen` keyword on a message — i.e. mark it unread.
+    /// Mirror of `mark_as_read`. JMAP keyword removal uses `null` in
+    /// the patch object.
+    pub async fn mark_as_unread(&self, folder: &str, uid: u32) -> Result<(), NimbusError> {
+        let jmap_id = self.resolve_jmap_id(folder, uid).await?;
+
+        let resp = self
+            .call(vec![MethodCall {
+                name: "Email/set".into(),
+                args: json!({
+                    "accountId": self.account_id,
+                    "update": {
+                        jmap_id.clone(): {
+                            "keywords/$seen": null,
+                        },
+                    },
+                }),
+                call_id: "unread0".into(),
+            }])
+            .await?;
+
+        let args = Self::find_response(&resp.method_responses, "unread0")?;
+        if let Some(errors) = args.get("notUpdated")
+            && let Some(err) = errors.get(&jmap_id)
+        {
+            return Err(NimbusError::Protocol(format!(
+                "Failed to mark as unread: {err}"
+            )));
+        }
+
+        info!("JMAP: cleared $seen on '{jmap_id}'");
+        Ok(())
+    }
+
     /// Mark a message as read by setting the `$seen` keyword.
     ///
     /// Uses `Email/set` with a keyword update — equivalent to IMAP's
