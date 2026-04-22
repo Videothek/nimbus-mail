@@ -38,6 +38,11 @@
      *  to drop in Nextcloud share links without disturbing the user's
      *  cursor or undo history. */
     appendHtml: (html: string) => void
+    /** Replace the entire document with the given HTML. Used by
+     *  Compose to swap the active signature when the user picks a
+     *  different From: account — caller is responsible for passing
+     *  the *full* new body, not a diff. */
+    setHtml: (html: string) => void
   }
 
   interface Props {
@@ -124,6 +129,13 @@
           // is — appending a paragraph at the document end is the
           // expected gesture for "append" rather than "insert here".
           ed.chain().insertContentAt(ed.state.doc.content.size, html).run()
+        },
+        setHtml: (html: string) => {
+          // `emitUpdate: false` skips the `onUpdate` callback — the
+          // caller already knows the new content (they passed it) and
+          // we don't want to round-trip back through `onchange` and
+          // re-trigger reactive effects watching `bodyHtml`.
+          ed.commands.setContent(html, { emitUpdate: false })
         },
       })
     }

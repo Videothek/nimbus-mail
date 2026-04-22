@@ -1781,24 +1781,54 @@ async fn mark_as_read(
     cache: State<'_, Cache>,
     app: AppHandle,
 ) -> Result<(), NimbusError> {
-    // Optimistic cache update — instant UI feedback.
-    if let Err(e) = cache.mark_envelope_read(&account_id, &folder, uid) {
-        tracing::warn!("cache.mark_envelope_read failed: {e}");
+    set_message_read(account_id, folder, uid, true, cache, app).await
+}
+
+/// Toggle the read state of a single message. Generalises
+/// `mark_as_read` so the UI can also mark messages as *unread*
+/// (the explicit "Mark as unread" affordance — toolbar button and
+/// MailList right-click menu).
+#[tauri::command]
+async fn set_message_read(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    read: bool,
+    cache: State<'_, Cache>,
+    app: AppHandle,
+) -> Result<(), NimbusError> {
+    // Optimistic cache update — instant UI feedback. Both the
+    // `mark_envelope_*` helpers also adjust `folders.unread_count`
+    // so the sidebar badge moves with the change.
+    let cache_result = if read {
+        cache.mark_envelope_read(&account_id, &folder, uid)
+    } else {
+        cache.mark_envelope_unread(&account_id, &folder, uid)
+    };
+    if let Err(e) = cache_result {
+        tracing::warn!("cache flag update failed: {e}");
     }
 
-    // Reading a message should immediately drop the tray/taskbar
-    // badge — the user's mental model is "I read it, the counter
-    // dropped" and a 5-minute sync wait would feel broken.
+    // The user's mental model is "I clicked it, the counter moved"
+    // — a 5-minute sync wait would feel broken.
     refresh_unread_badge(&app);
 
     let account = load_account(&account_id)?;
     if uses_jmap(&account) {
         let client = connect_jmap(&account).await?;
-        return client.mark_as_read(&folder, uid).await;
+        return if read {
+            client.mark_as_read(&folder, uid).await
+        } else {
+            client.mark_as_unread(&folder, uid).await
+        };
     }
 
     let mut client = connect_imap(&account).await?;
-    let result = client.mark_as_read(&folder, uid).await;
+    let result = if read {
+        client.mark_as_read(&folder, uid).await
+    } else {
+        client.mark_as_unread(&folder, uid).await
+    };
     let _ = client.logout().await;
     result
 }
@@ -2662,6 +2692,7 @@ fn main() {
             download_email_attachment,
             fetch_folders,
             mark_as_read,
+            set_message_read,
             send_email,
             get_cached_envelopes,
             get_unified_cached_envelopes,

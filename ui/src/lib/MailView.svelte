@@ -139,6 +139,28 @@
     }
   }
 
+  /** Toggle the read state from the toolbar. Optimistic: flip the
+      local flag so the button label flips immediately, then call the
+      backend; revert if it fails. The parent's `onread` callback also
+      fires so the mail list and sidebar badge update. */
+  async function toggleRead() {
+    if (!email || uid == null) return
+    const next = !email.is_read
+    email.is_read = next
+    try {
+      await invoke('set_message_read', {
+        accountId,
+        folder,
+        uid,
+        read: next,
+      })
+      onread?.(uid)
+    } catch (e: any) {
+      console.warn('set_message_read failed:', e)
+      if (email) email.is_read = !next
+    }
+  }
+
   function formatFullDate(iso: string): string {
     return new Date(iso).toLocaleString()
   }
@@ -370,6 +392,11 @@
           title="Create a Nextcloud Talk room with the participants of this thread"
         >💬 Talk</button>
       {/if}
+      <button
+        class="btn btn-sm preset-outlined-surface-500"
+        onclick={toggleRead}
+        title={email.is_read ? 'Mark this message as unread' : 'Mark this message as read'}
+      >{email.is_read ? 'Mark unread' : 'Mark read'}</button>
       <div class="flex-1"></div>
       <button class="btn btn-sm preset-outlined-surface-500">Archive</button>
       <button class="btn btn-sm preset-outlined-surface-500">Delete</button>

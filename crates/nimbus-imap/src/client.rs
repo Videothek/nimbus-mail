@@ -593,6 +593,30 @@ impl ImapClient {
         ))
     }
 
+    /// Clear the `\Seen` flag on a message — i.e. mark it unread.
+    /// Mirror of `mark_as_read`; uses `UID STORE -FLAGS (\Seen)`.
+    pub async fn mark_as_unread(&mut self, folder: &str, uid: u32) -> Result<(), NimbusError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        session.select(folder).await.map_err(|e| {
+            NimbusError::Protocol(format!("Failed to select folder '{folder}': {e}"))
+        })?;
+
+        let _updates: Vec<_> = session
+            .uid_store(uid.to_string(), "-FLAGS (\\Seen)")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID STORE failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read UID STORE: {e}")))?;
+
+        info!("Cleared \\Seen on UID {uid} in '{folder}'");
+        Ok(())
+    }
+
     /// Mark a message as read by setting the `\Seen` flag on the server.
     ///
     /// Uses `UID STORE <uid> +FLAGS (\Seen)` — idempotent, so calling it on

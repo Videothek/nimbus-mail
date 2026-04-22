@@ -443,6 +443,46 @@ impl Cache {
         Ok(())
     }
 
+    /// Mark a cached envelope as unread (sets `is_read = 0`) and keep
+    /// the folder's `unread_count` in sync by incrementing it iff the
+    /// message was previously read. Mirror of `mark_envelope_read`.
+    pub fn mark_envelope_unread(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+    ) -> Result<(), CacheError> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+
+        let was_read: bool = tx
+            .query_row(
+                "SELECT is_read = 1 FROM messages
+                 WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+                params![account_id, folder, uid as i64],
+                |r| r.get::<_, i64>(0).map(|v| v != 0),
+            )
+            .unwrap_or(false);
+
+        tx.execute(
+            "UPDATE messages SET is_read = 0
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64],
+        )?;
+
+        if was_read {
+            tx.execute(
+                "UPDATE folders
+                 SET unread_count = COALESCE(unread_count, 0) + 1
+                 WHERE account_id = ?1 AND name = ?2",
+                params![account_id, folder],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Bump a folder's `unread_count` by `delta` (positive to add,
     /// negative to subtract). Treats a `NULL` stored count as `0`.
     /// Used by the poll path to credit newly-arrived unread mail

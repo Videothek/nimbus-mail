@@ -187,28 +187,53 @@
     return html
   }
 
-  /** Whether the signature has already been inserted for this compose
-      session. Guards against the `$effect` re-running and stacking
-      duplicate signatures if `fromAccount` changes (e.g. user picks
-      a different From: account). */
-  let signatureApplied = false
+  /** The exact signature HTML we last inserted into the editor.
+      `null` means we haven't inserted anything yet (first run, or
+      reply/forward/draft branches that skip the insertion entirely).
+      Tracked so the From: picker can swap signatures *in place* when
+      the user changes account: if the body still ends with this
+      string we replace it with the new account's signature; if the
+      user has typed past it we leave it alone (no destructive edit). */
+  let insertedSignatureHtml: string | null = null
 
-  /** Insert the active account's signature once the editor is live.
-      Done in an effect rather than baked into `initialBodyHtml` because
-      `fromAccount` is a `$derived` that may evaluate to `undefined`
-      during the `$state(initialBodyHtml())` synchronous init — the
-      effect runs after that, by which time the props have flowed
-      through and `fromAccount` carries the real account row (with its
-      `signature` field). Skipped for replies / forwards / restored
-      drafts: those already carry their intended body content. */
+  /** Insert (or swap) the active account's signature when the editor
+      is live and `fromAccount` is settled. Done in an effect rather
+      than baked into `initialBodyHtml` because `fromAccount` is a
+      `$derived` that may evaluate to `undefined` during the
+      `$state(initialBodyHtml())` synchronous init — the effect runs
+      after that, by which time the props have flowed through.
+      Skipped for replies / forwards / restored drafts: those already
+      carry their intended body content. */
   $effect(() => {
-    if (signatureApplied) return
     if (isReplyOrForward(initial) || saved) return
     if (!editorApi || !fromAccount) return
-    const sig = signatureBlock(fromAccount.signature)
-    if (!sig) return
-    editorApi.appendHtml(sig)
-    signatureApplied = true
+    const nextSig = signatureBlock(fromAccount.signature)
+
+    if (insertedSignatureHtml === null) {
+      // First insertion — append at the end. No-op for accounts
+      // without a signature configured.
+      if (!nextSig) return
+      editorApi.appendHtml(nextSig)
+      insertedSignatureHtml = nextSig
+      return
+    }
+
+    if (nextSig === insertedSignatureHtml) return
+
+    // Account changed (or the user edited their signature in
+    // settings while compose was open). Try a tail-replace: only
+    // proceed if the current body still ends with the previously
+    // inserted signature exactly. If the user has typed past it,
+    // we'd rather leave their content untouched than risk a
+    // destructive rewrite.
+    if (bodyHtml.endsWith(insertedSignatureHtml)) {
+      const replaced =
+        bodyHtml.slice(0, bodyHtml.length - insertedSignatureHtml.length) +
+        nextSig
+      editorApi.setHtml(replaced)
+      bodyHtml = replaced
+      insertedSignatureHtml = nextSig || null
+    }
   })
 
   /** Render a per-account signature as the standard `-- ` separator

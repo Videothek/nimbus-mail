@@ -158,6 +158,69 @@
     }
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
   }
+
+  // ── Right-click context menu ──────────────────────────────────
+  // Positioned absolutely at the click coordinates. Closing it is
+  // delegated to a window-level click / keydown listener so any
+  // interaction outside the menu dismisses it (no overlay element
+  // needed). Menu actions act on the captured `env`, not on whatever
+  // is currently selected — right-clicking row B while row A is open
+  // should affect row B.
+  let contextMenu = $state<{
+    x: number
+    y: number
+    env: EmailEnvelope
+  } | null>(null)
+
+  function openContextMenu(e: MouseEvent, env: EmailEnvelope) {
+    e.preventDefault()
+    contextMenu = { x: e.clientX, y: e.clientY, env }
+  }
+
+  function closeContextMenu() {
+    contextMenu = null
+  }
+
+  $effect(() => {
+    if (!contextMenu) return
+    const onDocClick = () => closeContextMenu()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeContextMenu()
+    }
+    // `setTimeout` so the click that *opened* the menu doesn't also
+    // close it on the same frame.
+    const t = setTimeout(() => {
+      window.addEventListener('click', onDocClick)
+      window.addEventListener('keydown', onKey)
+    }, 0)
+    return () => {
+      clearTimeout(t)
+      window.removeEventListener('click', onDocClick)
+      window.removeEventListener('keydown', onKey)
+    }
+  })
+
+  /** Toggle a single envelope's read state from the context menu.
+      Optimistic: flip the local row immediately so the bold styling
+      updates without a round-trip, then call the backend. The
+      backend in turn fires `unread-count-updated`, which the Sidebar
+      listener uses to refresh the per-folder badge. */
+  async function toggleEnvelopeRead(env: EmailEnvelope) {
+    const next = !env.is_read
+    env.is_read = next
+    closeContextMenu()
+    try {
+      await invoke('set_message_read', {
+        accountId: env.account_id || accountId,
+        folder: env.folder,
+        uid: env.uid,
+        read: next,
+      })
+    } catch (e) {
+      console.warn('set_message_read failed:', e)
+      env.is_read = !next
+    }
+  }
 </script>
 
 <div class="flex-1 flex flex-col min-w-0">
@@ -183,6 +246,7 @@
               ? 'bg-primary-500/10'
               : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
           onclick={() => onselect(env.uid, unified ? env.account_id : undefined)}
+          oncontextmenu={(e) => openContextMenu(e, env)}
         >
           <div class="flex items-center justify-between mb-1">
             <span class="text-sm {!env.is_read ? 'font-semibold' : 'font-normal'} truncate pr-2">
@@ -203,3 +267,27 @@
     {/if}
   </div>
 </div>
+
+{#if contextMenu}
+  <!-- Right-click menu. Stop propagation so a click *inside* the menu
+       doesn't reach the window-level dismiss listener and close it
+       before the action handler runs. `role="menu"` keeps screen
+       readers oriented. -->
+  <div
+    class="fixed z-50 min-w-45 py-1 rounded-md shadow-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 text-sm"
+    style="top: {contextMenu.y}px; left: {contextMenu.x}px;"
+    role="menu"
+    tabindex="-1"
+    onclick={(e) => e.stopPropagation()}
+    onkeydown={(e) => e.key === 'Escape' && closeContextMenu()}
+    oncontextmenu={(e) => e.preventDefault()}
+  >
+    <button
+      type="button"
+      class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+      onclick={() => contextMenu && toggleEnvelopeRead(contextMenu.env)}
+    >
+      {contextMenu.env.is_read ? 'Mark as unread' : 'Mark as read'}
+    </button>
+  </div>
+{/if}
