@@ -370,7 +370,10 @@ pub struct Contact {
     pub nextcloud_account_id: String,
     pub display_name: String,
     pub email: Vec<String>,
-    pub phone: Vec<String>,
+    /// Phone numbers paired with a kind hint (vCard `TEL;TYPE=…`).
+    /// Same shape pattern as `addresses` so the UI can group "home /
+    /// work / mobile / fax / other" the way Nextcloud Contacts does.
+    pub phone: Vec<ContactPhone>,
     pub organization: Option<String>,
     /// MIME type of `photo_data` (e.g. "image/jpeg"); `None` if no photo.
     pub photo_mime: Option<String>,
@@ -418,6 +421,19 @@ pub struct ContactAddress {
     pub region: String,
     pub postal_code: String,
     pub country: String,
+}
+
+/// One phone number from a vCard `TEL` property paired with a kind
+/// hint pulled from its `TYPE=` parameter. vCard 4 lets `TYPE` carry
+/// a comma-separated list — we pick the first recognised value
+/// (`home` / `work` / `cell` / `fax`) and fall back to `"other"` so
+/// no entry ever loses its value just because we couldn't classify
+/// it. Mirrors the `ContactAddress` pattern so the UI grouping
+/// works the same way Nextcloud Contacts does.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContactPhone {
+    pub kind: String,
+    pub value: String,
 }
 
 /// Represents a calendar event from CalDAV / Nextcloud.

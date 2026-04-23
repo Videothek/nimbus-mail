@@ -759,7 +759,14 @@ fn raw_contact_to_row(c: &RawContact) -> ContactRow {
         vcard_uid: c.vcard_uid.clone(),
         display_name: c.display_name.clone(),
         emails: c.emails.clone(),
-        phones: c.phones.clone(),
+        phones: c
+            .phones
+            .iter()
+            .map(|p| nimbus_core::models::ContactPhone {
+                kind: p.kind.clone(),
+                value: p.value.clone(),
+            })
+            .collect(),
         organization: c.organization.clone(),
         photo_mime: c.photo_mime.clone(),
         photo_data: c.photo_data.clone(),
@@ -809,7 +816,7 @@ fn raw_contact_to_row(c: &RawContact) -> ContactRow {
 struct ContactInput {
     display_name: String,
     emails: Vec<String>,
-    phones: Vec<String>,
+    phones: Vec<nimbus_core::models::ContactPhone>,
     organization: Option<String>,
     photo_mime: Option<String>,
     photo_data: Option<Vec<u8>>,
@@ -895,7 +902,14 @@ async fn update_contact(
     parsed.uid = handle.vcard_uid.clone();
     parsed.display_name = input.display_name.clone();
     parsed.emails = input.emails.clone();
-    parsed.phones = input.phones.clone();
+    parsed.phones = input
+        .phones
+        .iter()
+        .map(|p| nimbus_carddav::VcardPhone {
+            kind: p.kind.clone(),
+            value: p.value.clone(),
+        })
+        .collect();
     parsed.organization = input.organization.clone();
     if input.photo_data.is_some() {
         parsed.photo_mime = input.photo_mime.clone();
@@ -1562,7 +1576,14 @@ fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
         uid: uid.to_string(),
         display_name: input.display_name.clone(),
         emails: input.emails.clone(),
-        phones: input.phones.clone(),
+        phones: input
+            .phones
+            .iter()
+            .map(|p| nimbus_carddav::VcardPhone {
+                kind: p.kind.clone(),
+                value: p.value.clone(),
+            })
+            .collect(),
         organization: input.organization.clone(),
         photo_mime: input.photo_mime.clone(),
         photo_data: input.photo_data.clone(),
@@ -1606,7 +1627,14 @@ fn parsed_to_row(
         vcard_uid: uid.to_string(),
         display_name: parsed.display_name.clone(),
         emails: parsed.emails.clone(),
-        phones: parsed.phones.clone(),
+        phones: parsed
+            .phones
+            .iter()
+            .map(|p| nimbus_core::models::ContactPhone {
+                kind: p.kind.clone(),
+                value: p.value.clone(),
+            })
+            .collect(),
         organization: parsed.organization.clone(),
         photo_mime: parsed.photo_mime.clone(),
         photo_data: parsed.photo_data.clone(),

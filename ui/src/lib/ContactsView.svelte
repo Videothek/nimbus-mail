@@ -32,12 +32,18 @@
     postal_code: string
     country: string
   }
+  interface ContactPhone {
+    /** "home" / "work" / "cell" / "fax" / "other" — pulled from the
+        vCard `TEL;TYPE=…` parameter. */
+    kind: string
+    value: string
+  }
   interface Contact {
     id: string
     nextcloud_account_id: string
     display_name: string
     email: string[]
-    phone: string[]
+    phone: ContactPhone[]
     organization: string | null
     photo_mime: string | null
     photo_data: number[] | null
@@ -50,7 +56,7 @@
   interface ContactInput {
     display_name: string
     emails: string[]
-    phones: string[]
+    phones: ContactPhone[]
     organization: string | null
     photo_mime: string | null
     photo_data: number[] | null
@@ -86,7 +92,10 @@
   // mutate the cached row until the user saves.
   let formName = $state('')
   let formEmails = $state('') // newline-separated
-  let formPhones = $state('') // newline-separated
+  // Phones are now per-row records so each carries a kind picker
+  // ("home" / "work" / "mobile" / "fax" / "other"), matching what
+  // Nextcloud Contacts shows.
+  let formPhones = $state<ContactPhone[]>([])
   let formOrg = $state('')
   let formTitle = $state('')
   let formBirthday = $state('')
@@ -221,7 +230,7 @@
     if (!c) return
     formName = c.display_name
     formEmails = c.email.join('\n')
-    formPhones = c.phone.join('\n')
+    formPhones = c.phone.map((p) => ({ ...p }))
     formOrg = c.organization ?? ''
     formTitle = c.title ?? ''
     formBirthday = c.birthday ?? ''
@@ -240,7 +249,7 @@
     formError = ''
     formName = ''
     formEmails = ''
-    formPhones = ''
+    formPhones = []
     formOrg = ''
     formTitle = ''
     formBirthday = ''
@@ -273,6 +282,16 @@
 
   function removeAddress(idx: number) {
     formAddresses = formAddresses.filter((_, i) => i !== idx)
+  }
+
+  /** Add a blank phone row. Defaults to "cell" — by far the most
+      common kind for a freshly-added number on a personal contact. */
+  function addPhone() {
+    formPhones = [...formPhones, { kind: 'cell', value: '' }]
+  }
+
+  function removePhone(idx: number) {
+    formPhones = formPhones.filter((_, i) => i !== idx)
   }
 
   function cancelEdit() {
@@ -341,7 +360,11 @@
     return {
       display_name: formName.trim(),
       emails: splitLines(formEmails),
-      phones: splitLines(formPhones),
+      // Drop empty-value rows so an unfilled "Add phone" slot
+      // doesn't end up as a blank entry on the server.
+      phones: formPhones
+        .filter((p) => p.value.trim())
+        .map((p) => ({ kind: p.kind, value: p.value.trim() })),
       organization: formOrg.trim() || null,
       photo_mime: existingMime,
       photo_data: existingMime ? selectedPhotoBytes : null,
@@ -548,15 +571,39 @@
           ></textarea>
         </label>
 
-        <label class="label">
-          <span>Phone numbers <span class="text-surface-500">(one per line)</span></span>
-          <textarea
-            class="textarea"
-            rows="2"
-            bind:value={formPhones}
-            placeholder="+1 555 0100"
-          ></textarea>
-        </label>
+        <!-- Phone numbers — per-row so each carries a kind picker
+             (mobile / work / home / fax / other) and Nextcloud
+             Contacts groups identically on its side. Same shape as
+             the addresses block below. -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-medium">Phone numbers</span>
+            <button type="button" class="btn btn-sm preset-tonal" onclick={addPhone}>
+              + Add phone
+            </button>
+          </div>
+          {#each formPhones as phone, i (i)}
+            <div class="flex items-center gap-2">
+              <select class="select w-28" bind:value={phone.kind}>
+                <option value="cell">Mobile</option>
+                <option value="work">Work</option>
+                <option value="home">Home</option>
+                <option value="fax">Fax</option>
+                <option value="other">Other</option>
+              </select>
+              <input
+                class="input flex-1"
+                bind:value={phone.value}
+                placeholder="+1 555 0100"
+              />
+              <button
+                type="button"
+                class="text-xs text-error-500 hover:underline"
+                onclick={() => removePhone(i)}
+              >Remove</button>
+            </div>
+          {/each}
+        </div>
 
         <div class="grid grid-cols-2 gap-3">
           <label class="label">
