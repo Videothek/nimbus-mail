@@ -369,7 +369,10 @@ pub struct Contact {
     /// group contacts by source if a user has more than one NC server.
     pub nextcloud_account_id: String,
     pub display_name: String,
-    pub email: Vec<String>,
+    /// Email addresses paired with a kind hint (vCard `EMAIL;TYPE=…`).
+    /// Same shape pattern as `phone` and `addresses` so the UI can
+    /// group "home / work / other" the way Nextcloud Contacts does.
+    pub email: Vec<ContactEmail>,
     /// Phone numbers paired with a kind hint (vCard `TEL;TYPE=…`).
     /// Same shape pattern as `addresses` so the UI can group "home /
     /// work / mobile / fax / other" the way Nextcloud Contacts does.
@@ -432,6 +435,17 @@ pub struct ContactAddress {
 /// works the same way Nextcloud Contacts does.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContactPhone {
+    pub kind: String,
+    pub value: String,
+}
+
+/// One email address from a vCard `EMAIL` property paired with a
+/// kind hint pulled from its `TYPE=` parameter. Recognises `home`
+/// and `work`; `INTERNET` (a vCard-3 legacy meaning "this is an
+/// email address") is treated as no information and falls back to
+/// `"other"`. Same shape as `ContactPhone`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContactEmail {
     pub kind: String,
     pub value: String,
 }

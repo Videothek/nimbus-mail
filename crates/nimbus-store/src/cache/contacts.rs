@@ -20,7 +20,7 @@
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{OptionalExtension, params};
 
-use nimbus_core::models::{Contact, ContactAddress, ContactPhone};
+use nimbus_core::models::{Contact, ContactAddress, ContactEmail, ContactPhone};
 
 use crate::cache::{Cache, CacheError};
 
@@ -32,7 +32,10 @@ pub struct ContactRow {
     pub etag: String,
     pub vcard_uid: String,
     pub display_name: String,
-    pub emails: Vec<String>,
+    /// Email addresses paired with the vCard `EMAIL;TYPE=…` kind
+    /// hint. Same backward-compat story as `phones` — JSON column
+    /// reads tolerate the legacy `Vec<String>` shape.
+    pub emails: Vec<ContactEmail>,
     /// Phone numbers paired with the vCard `TEL;TYPE=…` kind hint.
     /// Stored as JSON in `phones_json`; reads tolerate the legacy
     /// `Vec<String>` shape so existing rows keep working until the
@@ -503,7 +506,7 @@ fn row_to_contact_no_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
         id: r.get(0)?,
         nextcloud_account_id: r.get(1)?,
         display_name: r.get(2)?,
-        email: serde_json::from_str(&emails_json).unwrap_or_default(),
+        email: decode_emails(&emails_json),
         phone: decode_phones(&phones_json),
         organization: r.get(5)?,
         photo_mime: r.get(6)?,
@@ -538,6 +541,25 @@ fn decode_phones(json: &str) -> Vec<ContactPhone> {
     Vec::new()
 }
 
+/// Mirror of `decode_phones` for `emails_json`. Same shape evolution
+/// (`[String]` → `[{kind, value}]`), same legacy-rows-stay-readable
+/// guarantee.
+fn decode_emails(json: &str) -> Vec<ContactEmail> {
+    if let Ok(typed) = serde_json::from_str::<Vec<ContactEmail>>(json) {
+        return typed;
+    }
+    if let Ok(plain) = serde_json::from_str::<Vec<String>>(json) {
+        return plain
+            .into_iter()
+            .map(|v| ContactEmail {
+                kind: "other".to_string(),
+                value: v,
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,7 +579,10 @@ mod tests {
             etag: format!("etag-{uid}"),
             vcard_uid: uid.into(),
             display_name: name.into(),
-            emails: vec![email.into()],
+            emails: vec![ContactEmail {
+                kind: "other".into(),
+                value: email.into(),
+            }],
             phones: vec![],
             organization: None,
             photo_mime: None,
@@ -617,7 +642,8 @@ mod tests {
         // Hit by email
         let r = cache.search_contacts("reggae", 10).unwrap();
         assert_eq!(r.len(), 1);
-        assert_eq!(r[0].email, vec!["bob@reggae.com"]);
+        assert_eq!(r[0].email.len(), 1);
+        assert_eq!(r[0].email[0].value, "bob@reggae.com");
 
         // count_contacts
         assert_eq!(cache.count_contacts("nc1").unwrap(), 2);
