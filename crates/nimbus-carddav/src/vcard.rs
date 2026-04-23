@@ -28,7 +28,7 @@ use nimbus_core::NimbusError;
 pub struct ParsedVcard {
     pub uid: String,
     pub display_name: String,
-    pub emails: Vec<String>,
+    pub emails: Vec<VcardEmail>,
     pub phones: Vec<VcardPhone>,
     pub organization: Option<String>,
     pub title: Option<String>,
@@ -63,6 +63,15 @@ pub struct VcardPhone {
     pub value: String,
 }
 
+/// One vCard `EMAIL` property. Same shape as `VcardPhone`; the
+/// kind hint comes from `TYPE=home` / `TYPE=work` (with the legacy
+/// `INTERNET` collapsed into `"other"`).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct VcardEmail {
+    pub kind: String,
+    pub value: String,
+}
+
 /// Parse a single vCard string. The input is the raw `BEGIN:VCARD … END:VCARD`
 /// block; the `ical` parser returns at most one card from it.
 pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
@@ -77,7 +86,7 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
     let mut uid: Option<String> = None;
     let mut formatted_name = String::new();
     let mut structured_name = String::new();
-    let mut emails: Vec<String> = Vec::new();
+    let mut emails: Vec<VcardEmail> = Vec::new();
     let mut phones: Vec<VcardPhone> = Vec::new();
     let mut organization: Option<String> = None;
     let mut title: Option<String> = None;
@@ -103,8 +112,15 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
             }
             "EMAIL" => {
                 let v = value.trim().to_string();
-                if !v.is_empty() && !emails.contains(&v) {
-                    emails.push(v);
+                if v.is_empty() {
+                    continue;
+                }
+                let kind = email_kind(prop);
+                // Dedup by value (kind-agnostic) so a card that
+                // lists the same address with and without a TYPE
+                // doesn't duplicate.
+                if !emails.iter().any(|e| e.value == v) {
+                    emails.push(VcardEmail { kind, value: v });
                 }
             }
             "TEL" => {
@@ -197,7 +213,7 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
     } else if !structured_name.is_empty() {
         structured_name
     } else if let Some(first) = emails.first() {
-        first.clone()
+        first.value.clone()
     } else {
         "(unnamed)".to_string()
     };
@@ -232,6 +248,14 @@ fn address_kind(prop: &Property) -> String {
 /// else (pager, video, text, etc.) falls back to `"other"`.
 fn phone_kind(prop: &Property) -> String {
     pick_type(prop, &["home", "work", "cell", "fax"])
+}
+
+/// Same as `address_kind` for `EMAIL`. Only `home` / `work` are
+/// meaningful; `INTERNET` (a vCard 3 marker for "this is an
+/// internet email address" rather than X.400 — useless today)
+/// and any other value collapse into `"other"`.
+fn email_kind(prop: &Property) -> String {
+    pick_type(prop, &["home", "work"])
 }
 
 /// Walk a property's `TYPE=` parameter (which may be a single value
@@ -346,7 +370,17 @@ pub fn build_vcard(card: &ParsedVcard) -> String {
         &format!("N:{};;;;", escape_value(&card.display_name)),
     );
     for email in &card.emails {
-        push_line(&mut out, &format!("EMAIL:{}", escape_value(email)));
+        // Same `;TYPE=…` round-trip as TEL — empty kind drops the
+        // param (servers don't all accept `TYPE=` with no value).
+        let typ = if email.kind.is_empty() {
+            String::new()
+        } else {
+            format!(";TYPE={}", email.kind)
+        };
+        push_line(
+            &mut out,
+            &format!("EMAIL{typ}:{}", escape_value(&email.value)),
+        );
     }
     for phone in &card.phones {
         // Mirror the address `TYPE` round-trip: emit `TEL;TYPE=cell:…`
@@ -467,7 +501,11 @@ mod tests {
         let p = parse_vcard(raw).unwrap();
         assert_eq!(p.uid, "abc-123");
         assert_eq!(p.display_name, "Alice Example");
-        assert_eq!(p.emails, vec!["alice@example.com"]);
+        assert_eq!(p.emails.len(), 1);
+        // INTERNET collapses to "other" — vCard 3 puts INTERNET on
+        // every email and it carries no useful info.
+        assert_eq!(p.emails[0].kind, "other");
+        assert_eq!(p.emails[0].value, "alice@example.com");
         assert_eq!(p.phones.len(), 1);
         assert_eq!(p.phones[0].kind, "cell");
         assert_eq!(p.phones[0].value, "+1 555 0100");
@@ -500,7 +538,10 @@ mod tests {
         let original = ParsedVcard {
             uid: "abc-123".into(),
             display_name: "Alice Example".into(),
-            emails: vec!["alice@example.com".into(), "alice@work.com".into()],
+            emails: vec![
+                VcardEmail { kind: "home".into(), value: "alice@example.com".into() },
+                VcardEmail { kind: "work".into(), value: "alice@work.com".into() },
+            ],
             phones: vec![
                 VcardPhone { kind: "cell".into(), value: "+1 555 0100".into() },
                 VcardPhone { kind: "work".into(), value: "+1 555 0200".into() },
@@ -514,7 +555,11 @@ mod tests {
         let parsed = parse_vcard(&raw).expect("re-parse");
         assert_eq!(parsed.uid, "abc-123");
         assert_eq!(parsed.display_name, "Alice Example");
-        assert_eq!(parsed.emails, vec!["alice@example.com", "alice@work.com"]);
+        assert_eq!(parsed.emails.len(), 2);
+        assert_eq!(parsed.emails[0].kind, "home");
+        assert_eq!(parsed.emails[0].value, "alice@example.com");
+        assert_eq!(parsed.emails[1].kind, "work");
+        assert_eq!(parsed.emails[1].value, "alice@work.com");
         assert_eq!(parsed.phones.len(), 2);
         assert_eq!(parsed.phones[0].kind, "cell");
         assert_eq!(parsed.phones[0].value, "+1 555 0100");

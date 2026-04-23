@@ -38,11 +38,17 @@
     kind: string
     value: string
   }
+  interface ContactEmail {
+    /** "home" / "work" / "other" — pulled from the vCard
+        `EMAIL;TYPE=…` parameter. */
+    kind: string
+    value: string
+  }
   interface Contact {
     id: string
     nextcloud_account_id: string
     display_name: string
-    email: string[]
+    email: ContactEmail[]
     phone: ContactPhone[]
     organization: string | null
     photo_mime: string | null
@@ -55,7 +61,7 @@
   }
   interface ContactInput {
     display_name: string
-    emails: string[]
+    emails: ContactEmail[]
     phones: ContactPhone[]
     organization: string | null
     photo_mime: string | null
@@ -91,7 +97,10 @@
   // copy the matching contact's fields into these so edits don't
   // mutate the cached row until the user saves.
   let formName = $state('')
-  let formEmails = $state('') // newline-separated
+  // Same per-row treatment as phones — each email carries a kind
+  // picker (Home / Work / Other) so the vCard `EMAIL;TYPE=…`
+  // round-trips and Nextcloud Contacts groups identically.
+  let formEmails = $state<ContactEmail[]>([])
   // Phones are now per-row records so each carries a kind picker
   // ("home" / "work" / "mobile" / "fax" / "other"), matching what
   // Nextcloud Contacts shows.
@@ -134,7 +143,7 @@
     return contacts.filter(
       (c) =>
         c.display_name.toLowerCase().includes(q) ||
-        c.email.some((e) => e.toLowerCase().includes(q)) ||
+        c.email.some((e) => e.value.toLowerCase().includes(q)) ||
         (c.organization ?? '').toLowerCase().includes(q),
     )
   })
@@ -229,7 +238,7 @@
     const c = contacts.find((x) => x.id === id)
     if (!c) return
     formName = c.display_name
-    formEmails = c.email.join('\n')
+    formEmails = c.email.map((e) => ({ ...e }))
     formPhones = c.phone.map((p) => ({ ...p }))
     formOrg = c.organization ?? ''
     formTitle = c.title ?? ''
@@ -248,7 +257,7 @@
     deleteConfirm = false
     formError = ''
     formName = ''
-    formEmails = ''
+    formEmails = []
     formPhones = []
     formOrg = ''
     formTitle = ''
@@ -292,6 +301,16 @@
 
   function removePhone(idx: number) {
     formPhones = formPhones.filter((_, i) => i !== idx)
+  }
+
+  /** Add a blank email row. Defaults to "home" — typical for a
+      personal contact entry; the user can flip to Work / Other. */
+  function addEmail() {
+    formEmails = [...formEmails, { kind: 'home', value: '' }]
+  }
+
+  function removeEmail(idx: number) {
+    formEmails = formEmails.filter((_, i) => i !== idx)
   }
 
   function cancelEdit() {
@@ -359,7 +378,11 @@
         : null
     return {
       display_name: formName.trim(),
-      emails: splitLines(formEmails),
+      // Drop empty-value rows the same way phones do — an unfilled
+      // "Add email" slot shouldn't ship to the server as a blank.
+      emails: formEmails
+        .filter((e) => e.value.trim())
+        .map((e) => ({ kind: e.kind, value: e.value.trim() })),
       // Drop empty-value rows so an unfilled "Add phone" slot
       // doesn't end up as a blank entry on the server.
       phones: formPhones
@@ -515,7 +538,7 @@
             <span class="flex flex-col min-w-0 text-left">
               <span class="truncate">{c.display_name || '(no name)'}</span>
               {#if c.email.length > 0}
-                <span class="text-xs text-surface-500 truncate normal-case">{c.email[0]}</span>
+                <span class="text-xs text-surface-500 truncate normal-case">{c.email[0].value}</span>
               {/if}
             </span>
           </button>
@@ -561,15 +584,37 @@
           <input class="input" bind:value={formName} placeholder="Jane Doe" />
         </label>
 
-        <label class="label">
-          <span>Email addresses <span class="text-surface-500">(one per line)</span></span>
-          <textarea
-            class="textarea"
-            rows="3"
-            bind:value={formEmails}
-            placeholder="jane@example.com"
-          ></textarea>
-        </label>
+        <!-- Email addresses — same per-row treatment as phones so
+             each carries a Home / Work / Other picker. The kind
+             round-trips to the vCard `EMAIL;TYPE=…` parameter. -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-medium">Email addresses</span>
+            <button type="button" class="btn btn-sm preset-tonal" onclick={addEmail}>
+              + Add email
+            </button>
+          </div>
+          {#each formEmails as email, i (i)}
+            <div class="flex items-center gap-2">
+              <select class="select w-28" bind:value={email.kind}>
+                <option value="home">Home</option>
+                <option value="work">Work</option>
+                <option value="other">Other</option>
+              </select>
+              <input
+                class="input flex-1"
+                type="email"
+                bind:value={email.value}
+                placeholder="jane@example.com"
+              />
+              <button
+                type="button"
+                class="text-xs text-error-500 hover:underline"
+                onclick={() => removeEmail(i)}
+              >Remove</button>
+            </div>
+          {/each}
+        </div>
 
         <!-- Phone numbers — per-row so each carries a kind picker
              (mobile / work / home / fax / other) and Nextcloud

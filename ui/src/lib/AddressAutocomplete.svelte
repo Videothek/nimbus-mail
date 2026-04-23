@@ -29,12 +29,20 @@
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { onDestroy } from 'svelte'
 
+  interface ContactEmail {
+    kind: string
+    value: string
+  }
+  interface ContactPhone {
+    kind: string
+    value: string
+  }
   interface Contact {
     id: string
     nextcloud_account_id: string
     display_name: string
-    email: string[]
-    phone: string[]
+    email: ContactEmail[]
+    phone: ContactPhone[]
     organization: string | null
     photo_mime: string | null
   }
@@ -100,9 +108,11 @@
     debounceTimer = window.setTimeout(() => runSearch(token), DEBOUNCE_MS)
   }
 
-  /** Pick the first non-empty email address. */
+  /** Pick the first non-empty email address. Each entry now
+      carries a kind hint (Home / Work / Other from vCard
+      `EMAIL;TYPE=…`); the autocomplete only needs the value. */
   function primaryEmail(c: Contact): string {
-    return c.email.find((e) => e.length > 0) ?? ''
+    return c.email.find((e) => e.value.length > 0)?.value ?? ''
   }
 
   /**

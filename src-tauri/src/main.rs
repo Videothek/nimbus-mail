@@ -758,7 +758,14 @@ fn raw_contact_to_row(c: &RawContact) -> ContactRow {
         etag: c.etag.clone(),
         vcard_uid: c.vcard_uid.clone(),
         display_name: c.display_name.clone(),
-        emails: c.emails.clone(),
+        emails: c
+            .emails
+            .iter()
+            .map(|e| nimbus_core::models::ContactEmail {
+                kind: e.kind.clone(),
+                value: e.value.clone(),
+            })
+            .collect(),
         phones: c
             .phones
             .iter()
@@ -815,7 +822,7 @@ fn raw_contact_to_row(c: &RawContact) -> ContactRow {
 #[derive(Debug, Clone, Deserialize)]
 struct ContactInput {
     display_name: String,
-    emails: Vec<String>,
+    emails: Vec<nimbus_core::models::ContactEmail>,
     phones: Vec<nimbus_core::models::ContactPhone>,
     organization: Option<String>,
     photo_mime: Option<String>,
@@ -901,7 +908,14 @@ async fn update_contact(
     };
     parsed.uid = handle.vcard_uid.clone();
     parsed.display_name = input.display_name.clone();
-    parsed.emails = input.emails.clone();
+    parsed.emails = input
+        .emails
+        .iter()
+        .map(|e| nimbus_carddav::VcardEmail {
+            kind: e.kind.clone(),
+            value: e.value.clone(),
+        })
+        .collect();
     parsed.phones = input
         .phones
         .iter()
@@ -1575,7 +1589,14 @@ fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
     ParsedVcard {
         uid: uid.to_string(),
         display_name: input.display_name.clone(),
-        emails: input.emails.clone(),
+        emails: input
+            .emails
+            .iter()
+            .map(|e| nimbus_carddav::VcardEmail {
+                kind: e.kind.clone(),
+                value: e.value.clone(),
+            })
+            .collect(),
         phones: input
             .phones
             .iter()
@@ -1626,7 +1647,14 @@ fn parsed_to_row(
         etag: etag.to_string(),
         vcard_uid: uid.to_string(),
         display_name: parsed.display_name.clone(),
-        emails: parsed.emails.clone(),
+        emails: parsed
+            .emails
+            .iter()
+            .map(|e| nimbus_core::models::ContactEmail {
+                kind: e.kind.clone(),
+                value: e.value.clone(),
+            })
+            .collect(),
         phones: parsed
             .phones
             .iter()
