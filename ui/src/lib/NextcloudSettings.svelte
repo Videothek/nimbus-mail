@@ -15,6 +15,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import SyncStatusRow from './SyncStatusRow.svelte'
 
   // ── Types (mirror the Rust models) ──────────────────────────
   interface NextcloudCapabilities {
@@ -48,13 +49,21 @@
   }
   // Per-account sync view-model. Keyed by account id so rows
   // render independently and one account's spinner doesn't block
-  // another's. `lastSyncedAt` is only set after a successful run.
-  interface ContactsState {
+  // another's. `lastSyncedAt` comes from the cache via
+  // `get_{contacts,calendars}_sync_status` — RFC 3339 from Rust,
+  // which `SyncStatusRow` formats as a relative phrase.
+  interface SyncRowState {
     syncing: boolean
-    lastSyncedAt: number | null  // ms epoch
-    lastReport: SyncContactsReport | null
-    count: number                 // contacts cached locally
+    lastSyncedAt: string | null
+    count: number
     error: string
+  }
+
+  // Same Tauri payload shape for both contacts and calendars
+  // sync-status reads.
+  interface SyncStatus {
+    last_synced_at: string | null
+    count: number
   }
 
   // ── State ───────────────────────────────────────────────────
@@ -62,10 +71,11 @@
   let loading = $state(true)
   let error = $state('')
 
-  // Per-account contacts state, keyed by NC account id. Lives
-  // outside `accounts` so resorting/refreshing the list doesn't
-  // wipe in-flight sync status.
-  let contactsState = $state<Record<string, ContactsState>>({})
+  // Per-account contacts/calendars state, keyed by NC account id.
+  // Lives outside `accounts` so resorting/refreshing the list
+  // doesn't wipe in-flight sync status.
+  let contactsState = $state<Record<string, SyncRowState>>({})
+  let calendarsState = $state<Record<string, SyncRowState>>({})
 
   // Connect flow
   let serverInput = $state('')
@@ -83,30 +93,46 @@
     error = ''
     try {
       accounts = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
-      // Seed contacts state for any new accounts, and refresh the
-      // cached count for existing ones. Count failure is non-fatal —
-      // we just leave the old value.
+      // Seed sync-row state for any new accounts and refresh the
+      // cached counts + last-sync timestamps for existing ones.
+      // Failures are non-fatal — we just keep the old values so a
+      // transient cache hiccup doesn't blank the row.
       for (const a of accounts) {
-        if (!contactsState[a.id]) {
-          contactsState[a.id] = {
-            syncing: false,
-            lastSyncedAt: null,
-            lastReport: null,
-            count: 0,
-            error: '',
-          }
-        }
-        try {
-          const rows = await invoke<unknown[]>('get_contacts', { ncId: a.id })
-          contactsState[a.id].count = rows.length
-        } catch (e) {
-          console.warn('get_contacts failed for', a.id, e)
-        }
+        ensureRow(contactsState, a.id)
+        ensureRow(calendarsState, a.id)
+        await refreshContactsStatus(a.id)
+        await refreshCalendarsStatus(a.id)
       }
     } catch (e) {
       error = formatError(e) || 'Failed to load Nextcloud connections'
     } finally {
       loading = false
+    }
+  }
+
+  function ensureRow(map: Record<string, SyncRowState>, id: string) {
+    if (!map[id]) {
+      map[id] = { syncing: false, lastSyncedAt: null, count: 0, error: '' }
+    }
+  }
+
+  async function refreshContactsStatus(ncId: string) {
+    try {
+      const s = await invoke<SyncStatus>('get_contacts_sync_status', { ncId })
+      contactsState[ncId].lastSyncedAt = s.last_synced_at
+      contactsState[ncId].count = s.count
+    } catch (e) {
+      console.warn('get_contacts_sync_status failed for', ncId, e)
+    }
+  }
+
+  async function refreshCalendarsStatus(ncId: string) {
+    try {
+      const s = await invoke<SyncStatus>('get_calendars_sync_status', { ncId })
+      calendarsState[ncId].lastSyncedAt = s.last_synced_at
+      calendarsState[ncId].count = s.count
+    } catch (e) {
+      console.warn('get_calendars_sync_status failed for', ncId, e)
     }
   }
 
@@ -127,19 +153,10 @@
       const report = await invoke<SyncContactsReport>('sync_nextcloud_contacts', {
         ncId: acct.id,
       })
-      state.lastReport = report
-      state.lastSyncedAt = Date.now()
       if (report.errors.length > 0) {
         state.error = report.errors.join('; ')
       }
-      // Refresh the cached count — the sync report gives deltas, not
-      // an absolute total.
-      try {
-        const rows = await invoke<unknown[]>('get_contacts', { ncId: acct.id })
-        state.count = rows.length
-      } catch (e) {
-        console.warn('get_contacts refresh failed', e)
-      }
+      await refreshContactsStatus(acct.id)
     } catch (e) {
       state.error = formatError(e) || 'Sync failed'
     } finally {
@@ -147,15 +164,27 @@
     }
   }
 
-  function formatRelative(ts: number | null): string {
-    if (ts === null) return 'never'
-    const diffMs = Date.now() - ts
-    if (diffMs < 60_000) return 'just now'
-    const mins = Math.floor(diffMs / 60_000)
-    if (mins < 60) return `${mins}m ago`
-    const hours = Math.floor(mins / 60)
-    if (hours < 24) return `${hours}h ago`
-    return `${Math.floor(hours / 24)}d ago`
+  /** Mirror of `syncContacts` for calendars — same backend pattern,
+      same UI shape, both feed the same `SyncStatusRow` component. */
+  async function syncCalendars(acct: NextcloudAccount) {
+    const state = calendarsState[acct.id]
+    if (!state || state.syncing) return
+    state.syncing = true
+    state.error = ''
+    try {
+      const report = await invoke<{ errors: string[] }>(
+        'sync_nextcloud_calendars',
+        { ncId: acct.id },
+      )
+      if (report.errors.length > 0) {
+        state.error = report.errors.join('; ')
+      }
+      await refreshCalendarsStatus(acct.id)
+    } catch (e) {
+      state.error = formatError(e) || 'Sync failed'
+    } finally {
+      state.syncing = false
+    }
   }
 
   async function startConnect() {
@@ -303,30 +332,29 @@
 
             <!-- Contacts sync row -->
             {#if acct.capabilities?.carddav !== false}
-              <div class="flex items-center justify-between pt-2 border-t border-surface-300/40 dark:border-surface-700/60">
-                <div class="text-sm">
-                  <p>
-                    <span class="font-medium">Contacts:</span>
-                    {cs?.count ?? 0} cached
-                  </p>
-                  <p class="text-xs text-surface-500">
-                    Last sync: {formatRelative(cs?.lastSyncedAt ?? null)}
-                    {#if cs?.lastReport && (cs.lastReport.upserted > 0 || cs.lastReport.deleted > 0)}
-                      · {cs.lastReport.upserted} updated, {cs.lastReport.deleted} removed
-                    {/if}
-                  </p>
-                  {#if cs?.error}
-                    <p class="text-xs text-red-500 mt-1">{cs.error}</p>
-                  {/if}
-                </div>
-                <button
-                  class="btn btn-sm preset-outlined-primary-500"
-                  onclick={() => syncContacts(acct)}
-                  disabled={cs?.syncing}
-                >
-                  {cs?.syncing ? 'Syncing…' : 'Sync now'}
-                </button>
-              </div>
+              {@const cls = calendarsState[acct.id]}
+              <SyncStatusRow
+                label="Contacts"
+                count={cs?.count ?? null}
+                lastSyncedAt={cs?.lastSyncedAt ?? null}
+                syncing={cs?.syncing ?? false}
+                error={cs?.error ?? null}
+                onsync={() => syncContacts(acct)}
+              />
+              <!-- Calendars sync row — same component, same shape, so
+                   the two surfaces stay visually identical. CalendarView
+                   no longer carries its own sync UI; the user comes
+                   here to refresh. -->
+              {#if acct.capabilities?.caldav !== false}
+                <SyncStatusRow
+                  label="Calendars"
+                  count={cls?.count ?? null}
+                  lastSyncedAt={cls?.lastSyncedAt ?? null}
+                  syncing={cls?.syncing ?? false}
+                  error={cls?.error ?? null}
+                  onsync={() => syncCalendars(acct)}
+                />
+              {/if}
             {/if}
           </div>
         {/each}

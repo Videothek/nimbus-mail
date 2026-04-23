@@ -253,6 +253,28 @@ impl Cache {
         Ok(out)
     }
 
+    /// Most-recent `last_synced_at` across every calendar for the
+    /// given Nextcloud account, in UTC. Mirror of
+    /// `latest_addressbook_sync_at` — same shape, same purpose
+    /// (settings-row "synced 12m ago" chip).
+    pub fn latest_calendar_sync_at(
+        &self,
+        nc_account_id: &str,
+    ) -> Result<Option<DateTime<Utc>>, CacheError> {
+        let conn = self.pool.get()?;
+        let ts: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(last_synced_at)
+                 FROM calendars
+                 WHERE nextcloud_account_id = ?1",
+                params![nc_account_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(ts.and_then(|t| Utc.timestamp_opt(t, 0).single()))
+    }
+
     /// Read the sync bookmark for a single calendar.
     pub fn get_calendar_sync_state(
         &self,
