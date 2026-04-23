@@ -144,8 +144,18 @@
     sha256: string
     host: string
   }
+  /** Full Rust `TrustedCert` shape — what `test_connection` and
+      `add_account` both deserialize. The `added_at` epoch is
+      stamped at trust time so we don't depend on the user
+      finishing the wizard before the timestamp is set. */
+  interface TrustedCert {
+    der: number[]
+    sha256: string
+    host: string
+    added_at: number
+  }
   let pendingCert = $state<ProbedCert | null>(null)
-  let trustedCerts = $state<ProbedCert[]>([])
+  let trustedCerts = $state<TrustedCert[]>([])
 
   /** Heuristic: does this error message look like it came from a
       TLS cert validation failure? rustls's wording is fairly stable
@@ -180,7 +190,14 @@
 
   function trustPendingCert() {
     if (!pendingCert) return
-    trustedCerts = [...trustedCerts, pendingCert]
+    // Promote `ProbedCert` → `TrustedCert` by stamping the trust
+    // timestamp here. The retried `test_connection` and the
+    // eventual `add_account` both deserialize this as the full
+    // Rust `TrustedCert` struct, so the shape has to match.
+    trustedCerts = [
+      ...trustedCerts,
+      { ...pendingCert, added_at: Math.floor(Date.now() / 1000) },
+    ]
     pendingCert = null
     void submit()
   }
@@ -230,12 +247,9 @@
           use_jmap: useJmap,
           signature: signature.trim() || null,
           folder_icons: [],
-          trusted_certs: trustedCerts.map((c) => ({
-            der: c.der,
-            sha256: c.sha256,
-            host: c.host,
-            added_at: Math.floor(Date.now() / 1000),
-          })),
+          // `trustedCerts` already carries `added_at` from when the
+          // user accepted each cert, so it ships through unchanged.
+          trusted_certs: trustedCerts,
         },
         password,
       })
