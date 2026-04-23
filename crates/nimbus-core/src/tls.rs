@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use rustls::ClientConfig;
 use rustls::RootCertStore;
+use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -32,40 +33,112 @@ use sha2::{Digest, Sha256};
 
 use crate::models::TrustedCert;
 
-/// Build a `rustls::ClientConfig` that trusts Mozilla's standard
-/// webpki-roots **and** every additional cert the caller passes in.
-/// The latter is how user-trusted self-signed certs become valid:
-/// rustls treats each entry in the root store as a trust anchor,
-/// so a chain that ends in an exact-match leaf is accepted.
+/// Build a `rustls::ClientConfig` for an account that may have its
+/// own list of pre-trusted certs.
 ///
-/// The returned config is wrapped in `Arc` because rustls expects
-/// configs to be cheap to clone and share across connections.
+/// - **No trusted certs** → standard webpki-roots verification.
+///   The cheap, common path; same behaviour every other client
+///   gets out of the box.
+/// - **Trusted certs present** → custom [`FingerprintVerifier`]
+///   that first delegates to the standard webpki verifier, and
+///   on failure falls back to comparing the SHA-256 of the leaf
+///   cert against the user's trust list. This sidesteps rustls's
+///   `RootCertStore::add`, which validates each entry as a proper
+///   CA trust anchor and rejects self-signed leaves (the most
+///   common reason a user would land in the trust prompt in the
+///   first place).
 pub fn build_client_config(extra_roots: &[TrustedCert]) -> Arc<ClientConfig> {
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    for cert in extra_roots {
-        // A bad DER blob shouldn't kill the whole connection — log
-        // and skip; the user can re-trust later.
-        if let Err(e) = roots.add(CertificateDer::from(cert.der.clone())) {
-            tracing::warn!(
-                "skipping trusted cert {} for host '{}': {e}",
-                cert.sha256, cert.host
-            );
-        }
+
+    if extra_roots.is_empty() {
+        return Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
     }
+
+    let inner = WebPkiServerVerifier::builder(Arc::new(roots))
+        .build()
+        .expect("webpki-roots verifier build");
+    let verifier = Arc::new(FingerprintVerifier {
+        inner,
+        trusted_fingerprints: extra_roots.iter().map(|c| c.sha256.clone()).collect(),
+    });
     Arc::new(
         ClientConfig::builder()
-            .with_root_certificates(roots)
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
             .with_no_client_auth(),
     )
 }
 
-/// Flat list of trusted-cert DER blobs, for callers (lettre) that
-/// take additional roots one at a time. Skips entries whose DER
-/// can't be parsed as a certificate; same forgiving posture as
-/// [`build_client_config`].
-pub fn extra_root_der(certs: &[TrustedCert]) -> Vec<Vec<u8>> {
-    certs.iter().map(|c| c.der.clone()).collect()
+/// Custom rustls verifier that accepts a cert if **either**:
+///   1. The standard webpki chain validates against Mozilla's
+///      curated roots — i.e. a normal CA-signed cert. Hostname
+///      matching, expiry, signature: all the usual checks. Or
+///   2. The leaf cert's SHA-256 matches a user-trusted fingerprint
+///      from the account's `trusted_certs` list — the "I know this
+///      is my self-signed mail server" escape hatch.
+///
+/// Signature verification (TLS 1.2 / 1.3 handshake signing) is
+/// always delegated to the inner webpki verifier. We only override
+/// the *trust* decision, not the cryptographic checks.
+#[derive(Debug)]
+struct FingerprintVerifier {
+    inner: Arc<WebPkiServerVerifier>,
+    trusted_fingerprints: Vec<String>,
+}
+
+impl ServerCertVerifier for FingerprintVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        match self
+            .inner
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+        {
+            Ok(v) => Ok(v),
+            Err(_) => {
+                let fp = fingerprint_sha256(end_entity.as_ref());
+                if self.trusted_fingerprints.iter().any(|t| t == &fp) {
+                    Ok(ServerCertVerified::assertion())
+                } else {
+                    Err(rustls::Error::InvalidCertificate(
+                        rustls::CertificateError::UnknownIssuer,
+                    ))
+                }
+            }
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
 }
 
 /// SHA-256 of the DER bytes, formatted as `aa:bb:cc:…` lowercase
