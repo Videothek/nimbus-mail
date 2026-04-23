@@ -24,6 +24,14 @@
     username: string
     display_name?: string | null
   }
+  interface ContactAddress {
+    kind: string
+    street: string
+    locality: string
+    region: string
+    postal_code: string
+    country: string
+  }
   interface Contact {
     id: string
     nextcloud_account_id: string
@@ -33,6 +41,11 @@
     organization: string | null
     photo_mime: string | null
     photo_data: number[] | null
+    title?: string | null
+    birthday?: string | null
+    note?: string | null
+    addresses?: ContactAddress[]
+    urls?: string[]
   }
   interface ContactInput {
     display_name: string
@@ -41,6 +54,14 @@
     organization: string | null
     photo_mime: string | null
     photo_data: number[] | null
+    /** Optional extended fields. The Rust side merges them over the
+        cached vCard so omitting a field preserves whatever was on
+        the server, instead of clearing it. */
+    title?: string | null
+    birthday?: string | null
+    note?: string | null
+    addresses?: ContactAddress[]
+    urls?: string[]
   }
   interface AddressbookSummary {
     path: string
@@ -67,6 +88,15 @@
   let formEmails = $state('') // newline-separated
   let formPhones = $state('') // newline-separated
   let formOrg = $state('')
+  let formTitle = $state('')
+  let formBirthday = $state('')
+  let formNote = $state('')
+  let formUrls = $state('') // newline-separated
+  // Addresses are an array of records, edited in place. We model a
+  // single concatenated free-text field per address keeping
+  // street/locality/region/postal/country on separate lines so the
+  // form stays readable without exploding into one input per slot.
+  let formAddresses = $state<ContactAddress[]>([])
   let formAccountId = $state('')       // only used for create
   let formAddressbookUrl = $state('')  // only used for create
   let formAddressbookName = $state('') // only used for create
@@ -193,6 +223,11 @@
     formEmails = c.email.join('\n')
     formPhones = c.phone.join('\n')
     formOrg = c.organization ?? ''
+    formTitle = c.title ?? ''
+    formBirthday = c.birthday ?? ''
+    formNote = c.note ?? ''
+    formUrls = (c.urls ?? []).join('\n')
+    formAddresses = (c.addresses ?? []).map((a) => ({ ...a }))
     selectedPhotoBytes = null
     // We still need the bytes (not just a URL) so save can re-emit
     // them in the vCard — without this, an edit drops the avatar.
@@ -207,11 +242,37 @@
     formEmails = ''
     formPhones = ''
     formOrg = ''
+    formTitle = ''
+    formBirthday = ''
+    formNote = ''
+    formUrls = ''
+    formAddresses = []
     selectedPhotoBytes = null
     if (!formAccountId && accounts.length > 0) {
       formAccountId = accounts[0].id
     }
     if (formAccountId) void loadAddressbooksFor(formAccountId)
+  }
+
+  /** Add a blank address row. Defaults to "home" so the picker has
+      something selected — RFC 6350's TYPE param is optional but
+      Nextcloud Contacts always groups by it, so we may as well too. */
+  function addAddress() {
+    formAddresses = [
+      ...formAddresses,
+      {
+        kind: 'home',
+        street: '',
+        locality: '',
+        region: '',
+        postal_code: '',
+        country: '',
+      },
+    ]
+  }
+
+  function removeAddress(idx: number) {
+    formAddresses = formAddresses.filter((_, i) => i !== idx)
   }
 
   function cancelEdit() {
@@ -284,6 +345,20 @@
       organization: formOrg.trim() || null,
       photo_mime: existingMime,
       photo_data: existingMime ? selectedPhotoBytes : null,
+      title: formTitle.trim() || null,
+      birthday: formBirthday.trim() || null,
+      note: formNote.trim() || null,
+      urls: splitLines(formUrls),
+      // Strip empty rows so the user can't end up with a phantom
+      // address from forgetting to fill in the slots they added.
+      addresses: formAddresses.filter(
+        (a) =>
+          a.street.trim() ||
+          a.locality.trim() ||
+          a.region.trim() ||
+          a.postal_code.trim() ||
+          a.country.trim(),
+      ),
     }
   }
 
@@ -483,9 +558,83 @@
           ></textarea>
         </label>
 
+        <div class="grid grid-cols-2 gap-3">
+          <label class="label">
+            <span>Organization</span>
+            <input class="input" bind:value={formOrg} placeholder="Example Corp" />
+          </label>
+          <label class="label">
+            <span>Job title</span>
+            <input class="input" bind:value={formTitle} placeholder="Product Manager" />
+          </label>
+        </div>
+
         <label class="label">
-          <span>Organization</span>
-          <input class="input" bind:value={formOrg} placeholder="Example Corp" />
+          <span>Birthday</span>
+          <input
+            class="input"
+            bind:value={formBirthday}
+            placeholder="1985-10-31"
+          />
+        </label>
+
+        <label class="label">
+          <span>Websites <span class="text-surface-500">(one per line)</span></span>
+          <textarea
+            class="textarea"
+            rows="2"
+            bind:value={formUrls}
+            placeholder="https://example.com"
+          ></textarea>
+        </label>
+
+        <!-- Postal addresses. Variable-length so we render with an
+             explicit add/remove instead of a free-text textarea —
+             matches the Nextcloud Contacts UI's per-address card and
+             keeps street/city/region/postal/country round-tripping
+             cleanly through the vCard ADR field. -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-medium">Addresses</span>
+            <button type="button" class="btn btn-sm preset-tonal" onclick={addAddress}>
+              + Add address
+            </button>
+          </div>
+          {#each formAddresses as addr, i (i)}
+            <div class="card p-3 bg-surface-50 dark:bg-surface-900/50 rounded-md space-y-2">
+              <div class="flex items-center gap-2">
+                <select class="select w-32" bind:value={addr.kind}>
+                  <option value="home">Home</option>
+                  <option value="work">Work</option>
+                  <option value="other">Other</option>
+                </select>
+                <button
+                  type="button"
+                  class="ml-auto text-xs text-error-500 hover:underline"
+                  onclick={() => removeAddress(i)}
+                >Remove</button>
+              </div>
+              <input class="input" bind:value={addr.street} placeholder="Street" />
+              <div class="grid grid-cols-2 gap-2">
+                <input class="input" bind:value={addr.locality} placeholder="City" />
+                <input class="input" bind:value={addr.region} placeholder="Region / State" />
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <input class="input" bind:value={addr.postal_code} placeholder="Postal code" />
+                <input class="input" bind:value={addr.country} placeholder="Country" />
+              </div>
+            </div>
+          {/each}
+        </div>
+
+        <label class="label">
+          <span>Notes</span>
+          <textarea
+            class="textarea"
+            rows="3"
+            bind:value={formNote}
+            placeholder="Anything you want to remember about this contact"
+          ></textarea>
         </label>
 
         {#if selectedId === 'new'}

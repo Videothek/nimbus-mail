@@ -673,6 +673,60 @@ fn search_contacts(
     cache.search_contacts(&query, limit).map_err(Into::into)
 }
 
+/// Aggregate sync status for the Settings UI's Contacts and
+/// Calendars rows. Both surfaces want the same shape: when did we
+/// last successfully sync, and what's the cached count? — so we
+/// share the struct and reuse the `SyncStatusRow` Svelte component.
+#[derive(Debug, Clone, Serialize)]
+struct SyncStatus {
+    /// RFC 3339 timestamp of the most recent successful sync across
+    /// every addressbook / calendar for this account, or `None` if
+    /// the account has never finished one. The frontend formats it
+    /// relative ("12m ago" / "Synced just now").
+    last_synced_at: Option<String>,
+    /// Cached row count for this account (contacts or calendars).
+    /// Mostly informational — the row title carries the meaningful
+    /// "are we up to date?" signal.
+    count: u32,
+}
+
+#[tauri::command]
+fn get_contacts_sync_status(
+    nc_id: String,
+    cache: State<'_, Cache>,
+) -> Result<SyncStatus, NimbusError> {
+    let last = cache
+        .latest_addressbook_sync_at(&nc_id)
+        .map_err(NimbusError::from)?
+        .map(|t| t.to_rfc3339());
+    let count = cache
+        .count_contacts(&nc_id)
+        .map_err(NimbusError::from)?;
+    Ok(SyncStatus {
+        last_synced_at: last,
+        count,
+    })
+}
+
+#[tauri::command]
+fn get_calendars_sync_status(
+    nc_id: String,
+    cache: State<'_, Cache>,
+) -> Result<SyncStatus, NimbusError> {
+    let last = cache
+        .latest_calendar_sync_at(&nc_id)
+        .map_err(NimbusError::from)?
+        .map(|t| t.to_rfc3339());
+    let count = cache
+        .list_calendars(&nc_id)
+        .map(|cs| cs.len() as u32)
+        .unwrap_or(0);
+    Ok(SyncStatus {
+        last_synced_at: last,
+        count,
+    })
+}
+
 /// Fetched separately from `get_contacts` because photo bytes are
 /// huge and Tauri serialises them as JSON number arrays — shipping
 /// every photo with the list payload made the contacts view feel
@@ -709,6 +763,22 @@ fn raw_contact_to_row(c: &RawContact) -> ContactRow {
         organization: c.organization.clone(),
         photo_mime: c.photo_mime.clone(),
         photo_data: c.photo_data.clone(),
+        title: c.title.clone(),
+        birthday: c.birthday.clone(),
+        note: c.note.clone(),
+        addresses: c
+            .addresses
+            .iter()
+            .map(|a| nimbus_core::models::ContactAddress {
+                kind: a.kind.clone(),
+                street: a.street.clone(),
+                locality: a.locality.clone(),
+                region: a.region.clone(),
+                postal_code: a.postal_code.clone(),
+                country: a.country.clone(),
+            })
+            .collect(),
+        urls: c.urls.clone(),
         vcard_raw: c.vcard_raw.clone(),
     }
 }
@@ -730,6 +800,11 @@ fn raw_contact_to_row(c: &RawContact) -> ContactRow {
 // addressbook) by contact id; the UI never has to carry those around.
 
 /// Editable fields for a contact, shared by create and update.
+/// The "extended" block (title, birthday, note, addresses, urls)
+/// is optional so older UI versions that don't surface those
+/// fields keep working — `update_contact` merges over the cached
+/// vCard, so missing fields preserve whatever's on the server
+/// instead of clobbering it.
 #[derive(Debug, Clone, Deserialize)]
 struct ContactInput {
     display_name: String,
@@ -738,6 +813,16 @@ struct ContactInput {
     organization: Option<String>,
     photo_mime: Option<String>,
     photo_data: Option<Vec<u8>>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    birthday: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    addresses: Option<Vec<nimbus_core::models::ContactAddress>>,
+    #[serde(default)]
+    urls: Option<Vec<String>>,
 }
 
 /// Create a new contact on Nextcloud and cache it locally.
@@ -774,18 +859,7 @@ async fn create_contact(
     )
     .await?;
 
-    let row = ContactRow {
-        href: outcome.href.clone(),
-        etag: outcome.etag.clone(),
-        vcard_uid: uid.clone(),
-        display_name: parsed.display_name.clone(),
-        emails: parsed.emails.clone(),
-        phones: parsed.phones.clone(),
-        organization: parsed.organization.clone(),
-        photo_mime: parsed.photo_mime.clone(),
-        photo_data: parsed.photo_data.clone(),
-        vcard_raw: vcard,
-    };
+    let row = parsed_to_row(&outcome.href, &outcome.etag, &uid, &parsed, vcard);
     cache
         .upsert_single_contact(&nc_id, &addressbook_name, &row)
         .map_err(NimbusError::from)?;
@@ -807,7 +881,57 @@ async fn update_contact(
     let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
-    let parsed = input_to_parsed(&handle.vcard_uid, &input);
+    // Merge the form fields over the existing parsed vCard so fields
+    // the edit form doesn't surface (addresses, birthday, urls, note,
+    // title, …) round-trip instead of being silently wiped on every
+    // edit. The form-editable fields below replace whatever was there.
+    let mut parsed = match nimbus_carddav::parse_vcard(&handle.vcard_raw) {
+        Ok(p) => p,
+        Err(_) => ParsedVcard {
+            uid: handle.vcard_uid.clone(),
+            ..Default::default()
+        },
+    };
+    parsed.uid = handle.vcard_uid.clone();
+    parsed.display_name = input.display_name.clone();
+    parsed.emails = input.emails.clone();
+    parsed.phones = input.phones.clone();
+    parsed.organization = input.organization.clone();
+    if input.photo_data.is_some() {
+        parsed.photo_mime = input.photo_mime.clone();
+        parsed.photo_data = input.photo_data.clone();
+    }
+    // Extended fields: a UI that surfaces them sends the new value
+    // (or `None` to clear); a UI that doesn't sends `Option::None`
+    // for the *whole field*, in which case we leave the cached
+    // value alone. The distinction is made via `serde(default)` on
+    // `ContactInput` — `None` only ever appears when the JSON omits
+    // the key entirely, never when the user explicitly cleared it.
+    if let Some(t) = &input.title {
+        parsed.title = if t.is_empty() { None } else { Some(t.clone()) };
+    }
+    if let Some(b) = &input.birthday {
+        parsed.birthday = if b.is_empty() { None } else { Some(b.clone()) };
+    }
+    if let Some(n) = &input.note {
+        parsed.note = if n.is_empty() { None } else { Some(n.clone()) };
+    }
+    if let Some(addrs) = &input.addresses {
+        parsed.addresses = addrs
+            .iter()
+            .map(|a| nimbus_carddav::VcardAddress {
+                kind: a.kind.clone(),
+                street: a.street.clone(),
+                locality: a.locality.clone(),
+                region: a.region.clone(),
+                postal_code: a.postal_code.clone(),
+                country: a.country.clone(),
+            })
+            .collect();
+    }
+    if let Some(urls) = &input.urls {
+        parsed.urls = urls.clone();
+    }
     let vcard = build_vcard(&parsed);
 
     let outcome = carddav_update_contact(
@@ -819,18 +943,7 @@ async fn update_contact(
     )
     .await?;
 
-    let row = ContactRow {
-        href: outcome.href.clone(),
-        etag: outcome.etag.clone(),
-        vcard_uid: handle.vcard_uid.clone(),
-        display_name: parsed.display_name.clone(),
-        emails: parsed.emails.clone(),
-        phones: parsed.phones.clone(),
-        organization: parsed.organization.clone(),
-        photo_mime: parsed.photo_mime.clone(),
-        photo_data: parsed.photo_data.clone(),
-        vcard_raw: vcard,
-    };
+    let row = parsed_to_row(&outcome.href, &outcome.etag, &handle.vcard_uid, &parsed, vcard);
     cache
         .upsert_single_contact(&handle.nextcloud_account_id, &handle.addressbook, &row)
         .map_err(NimbusError::from)?;
@@ -1453,6 +1566,67 @@ fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
         organization: input.organization.clone(),
         photo_mime: input.photo_mime.clone(),
         photo_data: input.photo_data.clone(),
+        title: input.title.clone(),
+        birthday: input.birthday.clone(),
+        note: input.note.clone(),
+        addresses: input
+            .addresses
+            .as_ref()
+            .map(|list| {
+                list.iter()
+                    .map(|a| nimbus_carddav::VcardAddress {
+                        kind: a.kind.clone(),
+                        street: a.street.clone(),
+                        locality: a.locality.clone(),
+                        region: a.region.clone(),
+                        postal_code: a.postal_code.clone(),
+                        country: a.country.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        urls: input.urls.clone().unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
+/// Build a `ContactRow` from a freshly-PUT vCard's outcome. Extracted
+/// so create/update both ship the same set of extended fields
+/// (addresses, birthday, urls, note, title) into the cache.
+fn parsed_to_row(
+    href: &str,
+    etag: &str,
+    uid: &str,
+    parsed: &ParsedVcard,
+    vcard_raw: String,
+) -> ContactRow {
+    ContactRow {
+        href: href.to_string(),
+        etag: etag.to_string(),
+        vcard_uid: uid.to_string(),
+        display_name: parsed.display_name.clone(),
+        emails: parsed.emails.clone(),
+        phones: parsed.phones.clone(),
+        organization: parsed.organization.clone(),
+        photo_mime: parsed.photo_mime.clone(),
+        photo_data: parsed.photo_data.clone(),
+        title: parsed.title.clone(),
+        birthday: parsed.birthday.clone(),
+        note: parsed.note.clone(),
+        addresses: parsed
+            .addresses
+            .iter()
+            .map(|a| nimbus_core::models::ContactAddress {
+                kind: a.kind.clone(),
+                street: a.street.clone(),
+                locality: a.locality.clone(),
+                region: a.region.clone(),
+                postal_code: a.postal_code.clone(),
+                country: a.country.clone(),
+            })
+            .collect(),
+        urls: parsed.urls.clone(),
+        vcard_raw,
     }
 }
 
@@ -1470,6 +1644,11 @@ fn row_to_contact(nc_account_id: &str, row: &ContactRow) -> Contact {
         organization: row.organization.clone(),
         photo_mime: row.photo_mime.clone(),
         photo_data: row.photo_data.clone(),
+        title: row.title.clone(),
+        birthday: row.birthday.clone(),
+        note: row.note.clone(),
+        addresses: row.addresses.clone(),
+        urls: row.urls.clone(),
     }
 }
 
@@ -2792,6 +2971,8 @@ fn main() {
             upload_to_nextcloud,
             save_bytes_to_path,
             sync_nextcloud_contacts,
+            get_contacts_sync_status,
+            get_calendars_sync_status,
             get_contacts,
             search_contacts,
             get_contact_photo,

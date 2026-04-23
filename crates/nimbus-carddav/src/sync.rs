@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use nimbus_core::NimbusError;
 
 use crate::client::{absolute_url, build, normalize_server_url, report};
-use crate::vcard::{ParsedVcard, parse_vcard};
+use crate::vcard::{ParsedVcard, VcardAddress, parse_vcard};
 use crate::xml_util::{local_name, read_text_until, skip_subtree};
 
 /// One contact resource as seen on the server, with all the bookkeeping
@@ -59,6 +59,22 @@ pub struct RawContact {
     pub organization: Option<String>,
     pub photo_mime: Option<String>,
     pub photo_data: Option<Vec<u8>>,
+    /// Job title (vCard `TITLE`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Birthday (vCard `BDAY`) as the literal vCard text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub birthday: Option<String>,
+    /// Free-form note (vCard `NOTE`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Postal addresses (vCard `ADR`). Carries the original "home"/
+    /// "work"/"other" hint so the UI can group them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<VcardAddress>,
+    /// Personal/work URLs (vCard `URL`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub urls: Vec<String>,
     /// Raw vCard text — kept so we can re-parse without re-syncing
     /// if the model evolves later.
     pub vcard_raw: String,
@@ -365,6 +381,11 @@ fn parse_multiget_response(
         organization: parsed.organization,
         photo_mime: parsed.photo_mime,
         photo_data: parsed.photo_data,
+        title: parsed.title,
+        birthday: parsed.birthday,
+        note: parsed.note,
+        addresses: parsed.addresses,
+        urls: parsed.urls,
         vcard_raw,
     }))
 }

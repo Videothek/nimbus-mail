@@ -738,13 +738,11 @@
       >
         + New event
       </button>
-      <button
-        class="btn preset-tonal-surface text-sm"
-        disabled={syncing}
-        onclick={() => void syncInBackground()}
-      >
-        Sync now
-      </button>
+      <!-- "Sync now" lives in Settings → Nextcloud → Calendars now;
+           keeping a button here was the second sync-trigger surface
+           and made the row in settings feel redundant. The "Syncing…"
+           badge above still tells the user when a background sync
+           that *was* triggered from settings is in flight. -->
       <button class="btn preset-tonal-surface text-sm" onclick={onclose}>
         Close
       </button>
@@ -758,8 +756,9 @@
     <p class="px-6 py-4 text-sm text-red-500">{error}</p>
   {:else if calendars.length === 0}
     <p class="px-6 py-4 text-sm text-surface-500">
-      No calendars cached yet. Click <strong>Sync now</strong> to pull them
-      from your Nextcloud account.
+      No calendars cached yet. Open
+      <strong>Settings → Nextcloud → Calendars</strong> and click
+      <strong>Sync now</strong> to pull them from your Nextcloud account.
     </p>
   {:else}
     <div class="flex flex-1 min-h-0">

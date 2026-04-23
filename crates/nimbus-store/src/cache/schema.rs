@@ -535,6 +535,28 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE accounts
         ADD COLUMN trusted_certs_json TEXT NOT NULL DEFAULT '[]';
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v9 → v10: extra contact fields (Issue #66).
+    //
+    // Adds the fields the new contact-card view exposes — title,
+    // birthday, addresses, urls, note. We store the variable-length
+    // ones (addresses, urls) as JSON blobs alongside the existing
+    // `emails_json` / `phones_json` columns; the singletons get
+    // their own scalar columns.
+    //
+    // NOT NULL with sensible empty defaults so older contact rows
+    // (written before this column existed) decode straight back to
+    // an empty list / NULL singleton without a separate backfill.
+    // The `vcard_raw` blob still carries the source data so a future
+    // re-parse can pull anything we missed.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE contacts ADD COLUMN title TEXT;
+    ALTER TABLE contacts ADD COLUMN birthday TEXT;
+    ALTER TABLE contacts ADD COLUMN note TEXT;
+    ALTER TABLE contacts ADD COLUMN addresses_json TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE contacts ADD COLUMN urls_json TEXT NOT NULL DEFAULT '[]';
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

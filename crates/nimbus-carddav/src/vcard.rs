@@ -31,8 +31,27 @@ pub struct ParsedVcard {
     pub emails: Vec<String>,
     pub phones: Vec<String>,
     pub organization: Option<String>,
+    pub title: Option<String>,
+    pub addresses: Vec<VcardAddress>,
+    pub birthday: Option<String>,
+    pub urls: Vec<String>,
+    pub note: Option<String>,
     pub photo_mime: Option<String>,
     pub photo_data: Option<Vec<u8>>,
+}
+
+/// One vCard `ADR` property. Mirrors `nimbus_core::models::ContactAddress`
+/// so the carddav crate can stay free of the core models dependency.
+/// `Serialize + Deserialize` so it round-trips inside `RawContact`
+/// over the Tauri IPC boundary.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct VcardAddress {
+    pub kind: String,
+    pub street: String,
+    pub locality: String,
+    pub region: String,
+    pub postal_code: String,
+    pub country: String,
 }
 
 /// Parse a single vCard string. The input is the raw `BEGIN:VCARD … END:VCARD`
@@ -52,6 +71,11 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
     let mut emails: Vec<String> = Vec::new();
     let mut phones: Vec<String> = Vec::new();
     let mut organization: Option<String> = None;
+    let mut title: Option<String> = None;
+    let mut addresses: Vec<VcardAddress> = Vec::new();
+    let mut birthday: Option<String> = None;
+    let mut urls: Vec<String> = Vec::new();
+    let mut note: Option<String> = None;
     let mut photo_mime: Option<String> = None;
     let mut photo_data: Option<Vec<u8>> = None;
 
@@ -88,6 +112,58 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
                     organization = Some(first);
                 }
             }
+            "TITLE" => {
+                let v = value.trim().to_string();
+                if !v.is_empty() {
+                    title = Some(v);
+                }
+            }
+            "ADR" => {
+                // ADR is PO-box;Extended;Street;Locality;Region;Postal;Country.
+                // PO-box and Extended are commonly empty; keep them absent
+                // from our flat model.
+                let parts: Vec<&str> = value.split(';').collect();
+                let street = parts.get(2).copied().unwrap_or("").trim().to_string();
+                let locality = parts.get(3).copied().unwrap_or("").trim().to_string();
+                let region = parts.get(4).copied().unwrap_or("").trim().to_string();
+                let postal_code = parts.get(5).copied().unwrap_or("").trim().to_string();
+                let country = parts.get(6).copied().unwrap_or("").trim().to_string();
+                if street.is_empty()
+                    && locality.is_empty()
+                    && region.is_empty()
+                    && postal_code.is_empty()
+                    && country.is_empty()
+                {
+                    continue;
+                }
+                let kind = address_kind(prop);
+                addresses.push(VcardAddress {
+                    kind,
+                    street,
+                    locality,
+                    region,
+                    postal_code,
+                    country,
+                });
+            }
+            "BDAY" => {
+                let v = value.trim().to_string();
+                if !v.is_empty() {
+                    birthday = Some(v);
+                }
+            }
+            "URL" => {
+                let v = value.trim().to_string();
+                if !v.is_empty() && !urls.contains(&v) {
+                    urls.push(v);
+                }
+            }
+            "NOTE" => {
+                let v = value.trim().to_string();
+                if !v.is_empty() {
+                    note = Some(v);
+                }
+            }
             "PHOTO" => {
                 if let Some((mime, bytes)) = decode_photo(prop, value) {
                     photo_mime = Some(mime);
@@ -118,9 +194,36 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
         emails,
         phones,
         organization,
+        title,
+        addresses,
+        birthday,
+        urls,
+        note,
         photo_mime,
         photo_data,
     })
+}
+
+/// Pull a "home" / "work" / "other" hint from a vCard property's
+/// `TYPE` parameter. vCard 4 lets the type be a comma-separated list
+/// (e.g. `TYPE="home,pref"`) — we take the first recognised value.
+fn address_kind(prop: &Property) -> String {
+    if let Some(params) = &prop.params {
+        for (key, vals) in params {
+            if !key.eq_ignore_ascii_case("TYPE") {
+                continue;
+            }
+            for v in vals {
+                for piece in v.split(',') {
+                    let lower = piece.trim().to_ascii_lowercase();
+                    if lower == "home" || lower == "work" {
+                        return lower;
+                    }
+                }
+            }
+        }
+    }
+    "other".to_string()
 }
 
 /// Decode a PHOTO property into `(mime, bytes)`.
@@ -220,6 +323,38 @@ pub fn build_vcard(card: &ParsedVcard) -> String {
     }
     if let Some(org) = &card.organization {
         push_line(&mut out, &format!("ORG:{}", escape_value(org)));
+    }
+    if let Some(t) = &card.title {
+        push_line(&mut out, &format!("TITLE:{}", escape_value(t)));
+    }
+    for adr in &card.addresses {
+        // `home`/`work`/`other` ride through in the TYPE param so a
+        // round-trip keeps the user's grouping intact.
+        let typ = if adr.kind.is_empty() {
+            String::new()
+        } else {
+            format!(";TYPE={}", adr.kind)
+        };
+        // Empty PO-box and Extended slots, then street/locality/region/
+        // postal/country in RFC 6350 order.
+        let payload = format!(
+            ";;{};{};{};{};{}",
+            escape_value(&adr.street),
+            escape_value(&adr.locality),
+            escape_value(&adr.region),
+            escape_value(&adr.postal_code),
+            escape_value(&adr.country),
+        );
+        push_line(&mut out, &format!("ADR{typ}:{payload}"));
+    }
+    if let Some(b) = &card.birthday {
+        push_line(&mut out, &format!("BDAY:{}", escape_value(b)));
+    }
+    for url in &card.urls {
+        push_line(&mut out, &format!("URL:{}", escape_value(url)));
+    }
+    if let Some(n) = &card.note {
+        push_line(&mut out, &format!("NOTE:{}", escape_value(n)));
     }
     if let (Some(mime), Some(bytes)) = (&card.photo_mime, &card.photo_data) {
         // vCard 4 PHOTO as data URI — single property, no params,
@@ -325,8 +460,7 @@ mod tests {
             emails: vec!["alice@example.com".into(), "alice@work.com".into()],
             phones: vec!["+1 555 0100".into()],
             organization: Some("Example Corp".into()),
-            photo_mime: None,
-            photo_data: None,
+            ..Default::default()
         };
         let raw = build_vcard(&original);
         assert!(raw.starts_with("BEGIN:VCARD\r\nVERSION:4.0\r\n"));
@@ -378,6 +512,63 @@ mod tests {
         }
         // At least one folded continuation line present.
         assert!(raw.contains("\r\n "));
+    }
+
+    #[test]
+    fn parses_extended_fields() {
+        let raw = "BEGIN:VCARD\r\n\
+                   VERSION:4.0\r\n\
+                   UID:ext-1\r\n\
+                   FN:Erika Mustermann\r\n\
+                   TITLE:CTO\r\n\
+                   BDAY:1985-10-31\r\n\
+                   URL:https://example.com\r\n\
+                   URL:https://example.com/blog\r\n\
+                   NOTE:Met at the conference\r\n\
+                   ADR;TYPE=work:;;Hauptstr. 1;Berlin;BE;10115;DE\r\n\
+                   ADR;TYPE=home:;;Side St 7;Munich;BY;80331;DE\r\n\
+                   END:VCARD\r\n";
+        let p = parse_vcard(raw).unwrap();
+        assert_eq!(p.title.as_deref(), Some("CTO"));
+        assert_eq!(p.birthday.as_deref(), Some("1985-10-31"));
+        assert_eq!(p.urls.len(), 2);
+        assert_eq!(p.note.as_deref(), Some("Met at the conference"));
+        assert_eq!(p.addresses.len(), 2);
+        assert_eq!(p.addresses[0].kind, "work");
+        assert_eq!(p.addresses[0].street, "Hauptstr. 1");
+        assert_eq!(p.addresses[0].locality, "Berlin");
+        assert_eq!(p.addresses[1].kind, "home");
+    }
+
+    #[test]
+    fn extended_fields_round_trip() {
+        let original = ParsedVcard {
+            uid: "rt-1".into(),
+            display_name: "Erika Mustermann".into(),
+            title: Some("CTO".into()),
+            birthday: Some("1985-10-31".into()),
+            urls: vec!["https://example.com".into()],
+            note: Some("hi".into()),
+            addresses: vec![VcardAddress {
+                kind: "work".into(),
+                street: "Hauptstr. 1".into(),
+                locality: "Berlin".into(),
+                region: "BE".into(),
+                postal_code: "10115".into(),
+                country: "DE".into(),
+            }],
+            ..Default::default()
+        };
+        let raw = build_vcard(&original);
+        let parsed = parse_vcard(&raw).expect("re-parse");
+        assert_eq!(parsed.title.as_deref(), Some("CTO"));
+        assert_eq!(parsed.birthday.as_deref(), Some("1985-10-31"));
+        assert_eq!(parsed.urls, vec!["https://example.com"]);
+        assert_eq!(parsed.note.as_deref(), Some("hi"));
+        assert_eq!(parsed.addresses.len(), 1);
+        assert_eq!(parsed.addresses[0].kind, "work");
+        assert_eq!(parsed.addresses[0].street, "Hauptstr. 1");
+        assert_eq!(parsed.addresses[0].country, "DE");
     }
 
     #[test]

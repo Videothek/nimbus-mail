@@ -377,6 +377,47 @@ pub struct Contact {
     /// Raw decoded photo bytes. Serialised as a JSON byte array so the
     /// frontend can wrap it in a `Blob` URL for `<img src>`.
     pub photo_data: Option<Vec<u8>>,
+    /// Job title (vCard `TITLE`) — separate from `organization`'s
+    /// company name. Often paired with org in the contact card UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Postal addresses (vCard `ADR`). Multiple allowed; each carries
+    /// a kind hint (`home` / `work` / `other`) so the UI can group
+    /// them like Nextcloud Contacts does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<ContactAddress>,
+    /// Birthday (vCard `BDAY`). Stored as the raw vCard text — date
+    /// formats vary (`19851031`, `1985-10-31`, `--10-31` for missing
+    /// year) and parsing here would lose information the UI can still
+    /// render verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub birthday: Option<String>,
+    /// Personal/work URLs (vCard `URL`). Multiple allowed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub urls: Vec<String>,
+    /// Free-form note (vCard `NOTE`). Single multi-line string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// One postal address from a vCard `ADR` property.
+///
+/// vCard 4 splits the address into seven fields (PO box, extended,
+/// street, locality, region, postal code, country). We omit the
+/// PO-box and extended slots — Nextcloud Contacts doesn't surface
+/// them either — and keep the rest as plain strings the UI renders
+/// in standard "street, city region postal, country" order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContactAddress {
+    /// "home", "work", or "other". Lower-cased, and `"other"` is the
+    /// fallback when the vCard `TYPE` parameter is absent or
+    /// unrecognised.
+    pub kind: String,
+    pub street: String,
+    pub locality: String,
+    pub region: String,
+    pub postal_code: String,
+    pub country: String,
 }
 
 /// Represents a calendar event from CalDAV / Nextcloud.

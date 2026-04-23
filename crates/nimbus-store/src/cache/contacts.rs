@@ -20,7 +20,7 @@
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{OptionalExtension, params};
 
-use nimbus_core::models::Contact;
+use nimbus_core::models::{Contact, ContactAddress};
 
 use crate::cache::{Cache, CacheError};
 
@@ -37,6 +37,15 @@ pub struct ContactRow {
     pub organization: Option<String>,
     pub photo_mime: Option<String>,
     pub photo_data: Option<Vec<u8>>,
+    /// Job title (vCard `TITLE`).
+    pub title: Option<String>,
+    /// Birthday (vCard `BDAY`) as the literal vCard string —
+    /// formats vary, the UI renders verbatim.
+    pub birthday: Option<String>,
+    /// Free-form note (vCard `NOTE`).
+    pub note: Option<String>,
+    pub addresses: Vec<ContactAddress>,
+    pub urls: Vec<String>,
     pub vcard_raw: String,
 }
 
@@ -110,24 +119,34 @@ impl Cache {
                 "INSERT INTO contacts
                     (id, nextcloud_account_id, addressbook, vcard_uid, href, etag,
                      display_name, emails_json, phones_json, organization,
-                     photo_mime, photo_data, vcard_raw, cached_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                     photo_mime, photo_data, vcard_raw, cached_at,
+                     title, birthday, note, addresses_json, urls_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                         ?15, ?16, ?17, ?18, ?19)
                  ON CONFLICT (nextcloud_account_id, addressbook, vcard_uid) DO UPDATE SET
-                    href         = excluded.href,
-                    etag         = excluded.etag,
-                    display_name = excluded.display_name,
-                    emails_json  = excluded.emails_json,
-                    phones_json  = excluded.phones_json,
-                    organization = excluded.organization,
-                    photo_mime   = excluded.photo_mime,
-                    photo_data   = excluded.photo_data,
-                    vcard_raw    = excluded.vcard_raw,
-                    cached_at    = excluded.cached_at",
+                    href           = excluded.href,
+                    etag           = excluded.etag,
+                    display_name   = excluded.display_name,
+                    emails_json    = excluded.emails_json,
+                    phones_json    = excluded.phones_json,
+                    organization   = excluded.organization,
+                    photo_mime     = excluded.photo_mime,
+                    photo_data     = excluded.photo_data,
+                    vcard_raw      = excluded.vcard_raw,
+                    cached_at      = excluded.cached_at,
+                    title          = excluded.title,
+                    birthday       = excluded.birthday,
+                    note           = excluded.note,
+                    addresses_json = excluded.addresses_json,
+                    urls_json      = excluded.urls_json",
             )?;
             for c in upserts {
                 let id = format!("{nc_account_id}::{}", c.vcard_uid);
                 let emails = serde_json::to_string(&c.emails).unwrap_or_else(|_| "[]".into());
                 let phones = serde_json::to_string(&c.phones).unwrap_or_else(|_| "[]".into());
+                let addresses =
+                    serde_json::to_string(&c.addresses).unwrap_or_else(|_| "[]".into());
+                let urls = serde_json::to_string(&c.urls).unwrap_or_else(|_| "[]".into());
                 stmt.execute(params![
                     id,
                     nc_account_id,
@@ -143,6 +162,11 @@ impl Cache {
                     c.photo_data,
                     c.vcard_raw,
                     now,
+                    c.title,
+                    c.birthday,
+                    c.note,
+                    addresses,
+                    urls,
                 ])?;
             }
         }
@@ -171,6 +195,28 @@ impl Cache {
 
         tx.commit()?;
         Ok(())
+    }
+
+    /// Most-recent `last_synced_at` across every addressbook for the
+    /// given Nextcloud account, in UTC. `Ok(None)` means we've never
+    /// completed a sync for this account — the settings UI uses that
+    /// to show "Never synced" rather than a misleading "0s ago".
+    pub fn latest_addressbook_sync_at(
+        &self,
+        nc_account_id: &str,
+    ) -> Result<Option<DateTime<Utc>>, CacheError> {
+        let conn = self.pool.get()?;
+        let ts: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(last_synced_at)
+                 FROM addressbook_sync_state
+                 WHERE nextcloud_account_id = ?1",
+                params![nc_account_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(ts.and_then(|t| Utc.timestamp_opt(t, 0).single()))
     }
 
     /// Read the addressbook sync bookmark, if any.
@@ -217,7 +263,8 @@ impl Cache {
             Some(nc) => {
                 stmt = conn.prepare(
                     "SELECT id, nextcloud_account_id, display_name, emails_json,
-                            phones_json, organization, photo_mime
+                            phones_json, organization, photo_mime,
+                            title, birthday, note, addresses_json, urls_json
                      FROM contacts
                      WHERE nextcloud_account_id = ?1
                      ORDER BY display_name COLLATE NOCASE",
@@ -227,7 +274,8 @@ impl Cache {
             None => {
                 stmt = conn.prepare(
                     "SELECT id, nextcloud_account_id, display_name, emails_json,
-                            phones_json, organization, photo_mime
+                            phones_json, organization, photo_mime,
+                            title, birthday, note, addresses_json, urls_json
                      FROM contacts
                      ORDER BY display_name COLLATE NOCASE",
                 )?;
@@ -282,7 +330,8 @@ impl Cache {
         // doesn't render avatars, so shipping bytes is pure waste.
         let mut stmt = conn.prepare(
             "SELECT id, nextcloud_account_id, display_name, emails_json,
-                    phones_json, organization, photo_mime
+                    phones_json, organization, photo_mime,
+                    title, birthday, note, addresses_json, urls_json
              FROM contacts
              WHERE emails_json != '[]'
                AND (display_name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
@@ -361,24 +410,33 @@ impl Cache {
         let id = format!("{nc_account_id}::{}", row.vcard_uid);
         let emails = serde_json::to_string(&row.emails).unwrap_or_else(|_| "[]".into());
         let phones = serde_json::to_string(&row.phones).unwrap_or_else(|_| "[]".into());
+        let addresses = serde_json::to_string(&row.addresses).unwrap_or_else(|_| "[]".into());
+        let urls = serde_json::to_string(&row.urls).unwrap_or_else(|_| "[]".into());
         let now = Utc::now().timestamp();
         conn.execute(
             "INSERT INTO contacts
                 (id, nextcloud_account_id, addressbook, vcard_uid, href, etag,
                  display_name, emails_json, phones_json, organization,
-                 photo_mime, photo_data, vcard_raw, cached_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 photo_mime, photo_data, vcard_raw, cached_at,
+                 title, birthday, note, addresses_json, urls_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                     ?15, ?16, ?17, ?18, ?19)
              ON CONFLICT (nextcloud_account_id, addressbook, vcard_uid) DO UPDATE SET
-                href         = excluded.href,
-                etag         = excluded.etag,
-                display_name = excluded.display_name,
-                emails_json  = excluded.emails_json,
-                phones_json  = excluded.phones_json,
-                organization = excluded.organization,
-                photo_mime   = excluded.photo_mime,
-                photo_data   = excluded.photo_data,
-                vcard_raw    = excluded.vcard_raw,
-                cached_at    = excluded.cached_at",
+                href           = excluded.href,
+                etag           = excluded.etag,
+                display_name   = excluded.display_name,
+                emails_json    = excluded.emails_json,
+                phones_json    = excluded.phones_json,
+                organization   = excluded.organization,
+                photo_mime     = excluded.photo_mime,
+                photo_data     = excluded.photo_data,
+                vcard_raw      = excluded.vcard_raw,
+                cached_at      = excluded.cached_at,
+                title          = excluded.title,
+                birthday       = excluded.birthday,
+                note           = excluded.note,
+                addresses_json = excluded.addresses_json,
+                urls_json      = excluded.urls_json",
             params![
                 id,
                 nc_account_id,
@@ -394,6 +452,11 @@ impl Cache {
                 row.photo_data,
                 row.vcard_raw,
                 now,
+                row.title,
+                row.birthday,
+                row.note,
+                addresses,
+                urls,
             ],
         )?;
         Ok(())
@@ -430,6 +493,8 @@ impl Cache {
 fn row_to_contact_no_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
     let emails_json: String = r.get(3)?;
     let phones_json: String = r.get(4)?;
+    let addresses_json: String = r.get(10)?;
+    let urls_json: String = r.get(11)?;
     Ok(Contact {
         id: r.get(0)?,
         nextcloud_account_id: r.get(1)?,
@@ -439,6 +504,11 @@ fn row_to_contact_no_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
         organization: r.get(5)?,
         photo_mime: r.get(6)?,
         photo_data: None,
+        title: r.get(7)?,
+        birthday: r.get(8)?,
+        note: r.get(9)?,
+        addresses: serde_json::from_str(&addresses_json).unwrap_or_default(),
+        urls: serde_json::from_str(&urls_json).unwrap_or_default(),
     })
 }
 
@@ -466,6 +536,11 @@ mod tests {
             organization: None,
             photo_mime: None,
             photo_data: None,
+            title: None,
+            birthday: None,
+            note: None,
+            addresses: Vec::new(),
+            urls: Vec::new(),
             vcard_raw: format!("BEGIN:VCARD\r\nUID:{uid}\r\nEND:VCARD\r\n"),
         }
     }
