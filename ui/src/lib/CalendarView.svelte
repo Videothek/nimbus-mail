@@ -262,36 +262,60 @@
       })
     }
 
-    // Lane assignment per day for overlap handling. Same algorithm
-    // Google/Outlook use: sort by start, assign each event to the
-    // lowest-numbered lane whose last event has already ended. The
-    // day's total lane count then becomes the divisor for block
-    // widths. Simple first-pass: one lane count per day — two
-    // overlapping clusters share the widest-cluster's width even if
-    // they're not mutually overlapping. Good enough for V1; can
-    // narrow later with cluster-aware layout.
+    // Cluster-aware lane assignment per day.
+    //
+    // Two passes:
+    //
+    // 1. Walk events in start-time order and group consecutive
+    //    overlapping events into a "cluster". An event joins the
+    //    current cluster when its start is before the cluster's
+    //    running bottom (the latest end-time anyone in the cluster
+    //    reaches); otherwise it opens a new cluster. Standalone
+    //    events become single-event clusters.
+    //
+    // 2. Inside each cluster, assign each event to the lowest-numbered
+    //    lane whose previous occupant has already ended — same
+    //    algorithm Google / Outlook use. The cluster's lane count
+    //    becomes the width divisor *for that cluster's events only*,
+    //    so a 15:30 event with no neighbours stays full width even on
+    //    a day where 08:00 events are sharing two lanes.
     for (const bucket of buckets) {
       bucket.timed.sort((a, b) => a.topPx - b.topPx)
-      const laneEnds: number[] = [] // each lane's current bottom (px)
+
+      type Cluster = { events: typeof bucket.timed; bottom: number }
+      const clusters: Cluster[] = []
       for (const p of bucket.timed) {
-        const bottom = p.topPx + p.heightPx
-        let assigned = -1
-        for (let i = 0; i < laneEnds.length; i++) {
-          if (laneEnds[i] <= p.topPx) {
-            assigned = i
-            laneEnds[i] = bottom
-            break
-          }
+        const last = clusters[clusters.length - 1]
+        if (last && p.topPx < last.bottom) {
+          last.events.push(p)
+          last.bottom = Math.max(last.bottom, p.topPx + p.heightPx)
+        } else {
+          clusters.push({ events: [p], bottom: p.topPx + p.heightPx })
         }
-        if (assigned === -1) {
-          assigned = laneEnds.length
-          laneEnds.push(bottom)
-        }
-        p.lane = assigned
       }
-      const laneCount = Math.max(1, laneEnds.length)
-      for (const p of bucket.timed) {
-        p.laneCount = laneCount
+
+      for (const cluster of clusters) {
+        const laneEnds: number[] = [] // each lane's current bottom (px)
+        for (const p of cluster.events) {
+          const bottom = p.topPx + p.heightPx
+          let assigned = -1
+          for (let i = 0; i < laneEnds.length; i++) {
+            if (laneEnds[i] <= p.topPx) {
+              assigned = i
+              laneEnds[i] = bottom
+              break
+            }
+          }
+          if (assigned === -1) {
+            assigned = laneEnds.length
+            laneEnds.push(bottom)
+          }
+          p.lane = assigned
+        }
+        const laneCount = Math.max(1, laneEnds.length)
+        for (const p of cluster.events) {
+          p.laneCount = laneCount
+        }
       }
     }
 
