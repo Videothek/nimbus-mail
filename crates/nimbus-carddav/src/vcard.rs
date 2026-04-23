@@ -29,7 +29,7 @@ pub struct ParsedVcard {
     pub uid: String,
     pub display_name: String,
     pub emails: Vec<String>,
-    pub phones: Vec<String>,
+    pub phones: Vec<VcardPhone>,
     pub organization: Option<String>,
     pub title: Option<String>,
     pub addresses: Vec<VcardAddress>,
@@ -54,6 +54,15 @@ pub struct VcardAddress {
     pub country: String,
 }
 
+/// One vCard `TEL` property — the number plus a kind hint pulled
+/// from `TYPE=`. Mirrors `nimbus_core::models::ContactPhone`; same
+/// dependency-direction reasoning as `VcardAddress`.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct VcardPhone {
+    pub kind: String,
+    pub value: String,
+}
+
 /// Parse a single vCard string. The input is the raw `BEGIN:VCARD … END:VCARD`
 /// block; the `ical` parser returns at most one card from it.
 pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
@@ -69,7 +78,7 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
     let mut formatted_name = String::new();
     let mut structured_name = String::new();
     let mut emails: Vec<String> = Vec::new();
-    let mut phones: Vec<String> = Vec::new();
+    let mut phones: Vec<VcardPhone> = Vec::new();
     let mut organization: Option<String> = None;
     let mut title: Option<String> = None;
     let mut addresses: Vec<VcardAddress> = Vec::new();
@@ -100,8 +109,15 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
             }
             "TEL" => {
                 let v = value.trim().to_string();
-                if !v.is_empty() && !phones.contains(&v) {
-                    phones.push(v);
+                if v.is_empty() {
+                    continue;
+                }
+                let kind = phone_kind(prop);
+                // Dedup by value (kind-agnostic) — vCards from older
+                // syncs sometimes carry the same number twice with
+                // and without a TYPE; we keep the first occurrence.
+                if !phones.iter().any(|p| p.value == v) {
+                    phones.push(VcardPhone { kind, value: v });
                 }
             }
             "ORG" => {
@@ -208,6 +224,20 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
 /// `TYPE` parameter. vCard 4 lets the type be a comma-separated list
 /// (e.g. `TYPE="home,pref"`) — we take the first recognised value.
 fn address_kind(prop: &Property) -> String {
+    pick_type(prop, &["home", "work"])
+}
+
+/// Same as `address_kind` but with the vCard `TEL` value set
+/// — `cell` (mobile), `fax`, plus the home/work pair. Anything
+/// else (pager, video, text, etc.) falls back to `"other"`.
+fn phone_kind(prop: &Property) -> String {
+    pick_type(prop, &["home", "work", "cell", "fax"])
+}
+
+/// Walk a property's `TYPE=` parameter (which may be a single value
+/// or a comma-separated list) and return the first piece that
+/// matches one of `accepted`. Returns `"other"` if nothing matches.
+fn pick_type(prop: &Property, accepted: &[&str]) -> String {
     if let Some(params) = &prop.params {
         for (key, vals) in params {
             if !key.eq_ignore_ascii_case("TYPE") {
@@ -216,7 +246,7 @@ fn address_kind(prop: &Property) -> String {
             for v in vals {
                 for piece in v.split(',') {
                     let lower = piece.trim().to_ascii_lowercase();
-                    if lower == "home" || lower == "work" {
+                    if accepted.iter().any(|a| *a == lower) {
                         return lower;
                     }
                 }
@@ -319,7 +349,18 @@ pub fn build_vcard(card: &ParsedVcard) -> String {
         push_line(&mut out, &format!("EMAIL:{}", escape_value(email)));
     }
     for phone in &card.phones {
-        push_line(&mut out, &format!("TEL:{}", escape_value(phone)));
+        // Mirror the address `TYPE` round-trip: emit `TEL;TYPE=cell:…`
+        // so kind survives the round-trip. Empty kind drops the param
+        // (some servers reject `TYPE=` with no value).
+        let typ = if phone.kind.is_empty() {
+            String::new()
+        } else {
+            format!(";TYPE={}", phone.kind)
+        };
+        push_line(
+            &mut out,
+            &format!("TEL{typ}:{}", escape_value(&phone.value)),
+        );
     }
     if let Some(org) = &card.organization {
         push_line(&mut out, &format!("ORG:{}", escape_value(org)));
@@ -427,7 +468,9 @@ mod tests {
         assert_eq!(p.uid, "abc-123");
         assert_eq!(p.display_name, "Alice Example");
         assert_eq!(p.emails, vec!["alice@example.com"]);
-        assert_eq!(p.phones, vec!["+1 555 0100"]);
+        assert_eq!(p.phones.len(), 1);
+        assert_eq!(p.phones[0].kind, "cell");
+        assert_eq!(p.phones[0].value, "+1 555 0100");
         assert_eq!(p.organization.as_deref(), Some("Example Corp"));
         assert!(p.photo_data.is_none());
     }
@@ -458,7 +501,10 @@ mod tests {
             uid: "abc-123".into(),
             display_name: "Alice Example".into(),
             emails: vec!["alice@example.com".into(), "alice@work.com".into()],
-            phones: vec!["+1 555 0100".into()],
+            phones: vec![
+                VcardPhone { kind: "cell".into(), value: "+1 555 0100".into() },
+                VcardPhone { kind: "work".into(), value: "+1 555 0200".into() },
+            ],
             organization: Some("Example Corp".into()),
             ..Default::default()
         };
@@ -469,7 +515,11 @@ mod tests {
         assert_eq!(parsed.uid, "abc-123");
         assert_eq!(parsed.display_name, "Alice Example");
         assert_eq!(parsed.emails, vec!["alice@example.com", "alice@work.com"]);
-        assert_eq!(parsed.phones, vec!["+1 555 0100"]);
+        assert_eq!(parsed.phones.len(), 2);
+        assert_eq!(parsed.phones[0].kind, "cell");
+        assert_eq!(parsed.phones[0].value, "+1 555 0100");
+        assert_eq!(parsed.phones[1].kind, "work");
+        assert_eq!(parsed.phones[1].value, "+1 555 0200");
         assert_eq!(parsed.organization.as_deref(), Some("Example Corp"));
     }
 

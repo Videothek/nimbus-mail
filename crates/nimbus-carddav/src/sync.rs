@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use nimbus_core::NimbusError;
 
 use crate::client::{absolute_url, build, normalize_server_url, report};
-use crate::vcard::{ParsedVcard, VcardAddress, parse_vcard};
+use crate::vcard::{ParsedVcard, VcardAddress, VcardPhone, parse_vcard};
 use crate::xml_util::{local_name, read_text_until, skip_subtree};
 
 /// One contact resource as seen on the server, with all the bookkeeping
@@ -55,7 +55,8 @@ pub struct RawContact {
     pub vcard_uid: String,
     pub display_name: String,
     pub emails: Vec<String>,
-    pub phones: Vec<String>,
+    /// Phone numbers paired with the vCard `TEL;TYPE=…` kind hint.
+    pub phones: Vec<VcardPhone>,
     pub organization: Option<String>,
     pub photo_mime: Option<String>,
     pub photo_data: Option<Vec<u8>>,

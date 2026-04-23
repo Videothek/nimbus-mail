@@ -20,7 +20,7 @@
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{OptionalExtension, params};
 
-use nimbus_core::models::{Contact, ContactAddress};
+use nimbus_core::models::{Contact, ContactAddress, ContactPhone};
 
 use crate::cache::{Cache, CacheError};
 
@@ -33,7 +33,11 @@ pub struct ContactRow {
     pub vcard_uid: String,
     pub display_name: String,
     pub emails: Vec<String>,
-    pub phones: Vec<String>,
+    /// Phone numbers paired with the vCard `TEL;TYPE=…` kind hint.
+    /// Stored as JSON in `phones_json`; reads tolerate the legacy
+    /// `Vec<String>` shape so existing rows keep working until the
+    /// next sync rewrites them in the new shape.
+    pub phones: Vec<ContactPhone>,
     pub organization: Option<String>,
     pub photo_mime: Option<String>,
     pub photo_data: Option<Vec<u8>>,
@@ -500,7 +504,7 @@ fn row_to_contact_no_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
         nextcloud_account_id: r.get(1)?,
         display_name: r.get(2)?,
         email: serde_json::from_str(&emails_json).unwrap_or_default(),
-        phone: serde_json::from_str(&phones_json).unwrap_or_default(),
+        phone: decode_phones(&phones_json),
         organization: r.get(5)?,
         photo_mime: r.get(6)?,
         photo_data: None,
@@ -510,6 +514,28 @@ fn row_to_contact_no_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
         addresses: serde_json::from_str(&addresses_json).unwrap_or_default(),
         urls: serde_json::from_str(&urls_json).unwrap_or_default(),
     })
+}
+
+/// Read `phones_json` tolerantly. The new shape is `[{kind, value}]`
+/// (vCard `TEL;TYPE=…`); rows written before this column was typed
+/// have the old `[String]` shape, which we lift to a typed array
+/// with `kind = "other"` so no number ever vanishes from the UI.
+/// On the next sync, the rewrite from CardDAV puts the proper kind
+/// in place.
+fn decode_phones(json: &str) -> Vec<ContactPhone> {
+    if let Ok(typed) = serde_json::from_str::<Vec<ContactPhone>>(json) {
+        return typed;
+    }
+    if let Ok(plain) = serde_json::from_str::<Vec<String>>(json) {
+        return plain
+            .into_iter()
+            .map(|v| ContactPhone {
+                kind: "other".to_string(),
+                value: v,
+            })
+            .collect();
+    }
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -550,7 +576,10 @@ mod tests {
         let cache = open_test_cache();
         let phone_only = ContactRow {
             emails: vec![],
-            phones: vec!["+1 555 1234".into()],
+            phones: vec![ContactPhone {
+                kind: "cell".into(),
+                value: "+1 555 1234".into(),
+            }],
             ..row("u9", "Phone Only", "")
         };
         cache
