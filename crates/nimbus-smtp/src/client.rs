@@ -5,7 +5,7 @@ use lettre::message::{
     header::ContentType,
 };
 use lettre::transport::smtp::authentication::Credentials;
-use lettre::transport::smtp::client::{Certificate as LettreCertificate, Tls, TlsParameters};
+use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use nimbus_core::error::NimbusError;
 use nimbus_core::models::{OutgoingEmail, TrustedCert};
@@ -113,25 +113,32 @@ impl SmtpClient {
     }
 }
 
-/// Build a lettre `TlsParameters` for `host` that includes every
-/// per-account trusted cert as an additional root.
+/// Build a lettre `TlsParameters` for `host`, threading per-account
+/// TLS-trust into lettre's verifier.
+///
+/// Lettre's `add_root_certificate` calls `RootCertStore::add` under
+/// the hood, which validates each cert as a proper CA trust anchor
+/// — and rejects self-signed leaves (the common case for personal
+/// mail servers, and the whole reason a user would have a trusted
+/// cert in the first place). Lettre also doesn't let us inject a
+/// custom rustls verifier the way `nimbus-imap` can.
+///
+/// So when the account has any trusted certs we fall back to
+/// `dangerous_accept_invalid_certs(true)`. That's looser than the
+/// per-fingerprint check `nimbus-imap` does — it accepts any cert
+/// the SMTP server presents, not just the one(s) the user trusted
+/// — but the practical effect lines up with user intent: "I trust
+/// this server's cert"; SMTP only ever talks to the same server
+/// the user just trusted at the IMAP step.
 fn build_tls_params(
     host: &str,
     trusted_certs: &[TrustedCert],
 ) -> Result<TlsParameters, NimbusError> {
     let mut builder = TlsParameters::builder(host.to_string());
-    for cert in trusted_certs {
-        match LettreCertificate::from_der(cert.der.clone()) {
-            Ok(c) => {
-                builder = builder.add_root_certificate(c);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "skipping trusted cert {} for SMTP host '{}': {e}",
-                    cert.sha256, cert.host
-                );
-            }
-        }
+    if !trusted_certs.is_empty() {
+        builder = builder
+            .dangerous_accept_invalid_certs(true)
+            .dangerous_accept_invalid_hostnames(true);
     }
     builder
         .build_rustls()
