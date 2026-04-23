@@ -5,9 +5,13 @@ use lettre::message::{
     header::ContentType,
 };
 use lettre::transport::smtp::authentication::Credentials;
+use lettre::transport::smtp::client::{Certificate as LettreCertificate, Tls, TlsParameters};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use nimbus_core::error::NimbusError;
-use nimbus_core::models::OutgoingEmail;
+use nimbus_core::models::{OutgoingEmail, TrustedCert};
+use nimbus_core::tls;
+use rustls_pki_types::ServerName;
+use tokio_rustls::TlsConnector;
 use tracing::{debug, info};
 
 /// An SMTP client that can send emails over an encrypted connection.
@@ -36,10 +40,19 @@ impl SmtpClient {
         port: u16,
         username: &str,
         password: &str,
+        trusted_certs: &[TrustedCert],
     ) -> Result<Self, NimbusError> {
         info!(host, port, username, "Connecting to SMTP server");
 
         let credentials = Credentials::new(username.to_string(), password.to_string());
+
+        // Build a `TlsParameters` that knows about every cert the
+        // user has explicitly trusted for this account. Lettre adds
+        // them straight onto its rustls root store (alongside
+        // webpki-roots), which gives the same effective behaviour
+        // as nimbus-imap: a server presenting a chain that ends in
+        // one of the trusted certs validates as if it were CA-signed.
+        let tls_params = build_tls_params(host, trusted_certs)?;
 
         // Port 465 uses implicit TLS (wrapped from the start).
         // Port 587 (and others) use STARTTLS (upgrade after connecting).
@@ -48,6 +61,7 @@ impl SmtpClient {
             AsyncSmtpTransport::<Tokio1Executor>::relay(host)
                 .map_err(|e| NimbusError::Network(format!("Failed to create SMTP relay: {e}")))?
                 .port(port)
+                .tls(Tls::Wrapper(tls_params))
                 .credentials(credentials)
                 .build()
         } else {
@@ -55,6 +69,7 @@ impl SmtpClient {
             AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
                 .map_err(|e| NimbusError::Network(format!("Failed to create STARTTLS relay: {e}")))?
                 .port(port)
+                .tls(Tls::Required(tls_params))
                 .credentials(credentials)
                 .build()
         };
@@ -96,6 +111,68 @@ impl SmtpClient {
         info!("Email sent successfully to {:?}", email.to);
         Ok(())
     }
+}
+
+/// Build a lettre `TlsParameters` for `host` that includes every
+/// per-account trusted cert as an additional root.
+fn build_tls_params(
+    host: &str,
+    trusted_certs: &[TrustedCert],
+) -> Result<TlsParameters, NimbusError> {
+    let mut builder = TlsParameters::builder(host.to_string());
+    for cert in trusted_certs {
+        match LettreCertificate::from_der(cert.der.clone()) {
+            Ok(c) => {
+                builder = builder.add_root_certificate(c);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "skipping trusted cert {} for SMTP host '{}': {e}",
+                    cert.sha256, cert.host
+                );
+            }
+        }
+    }
+    builder
+        .build_rustls()
+        .map_err(|e| NimbusError::Network(format!("build TLS params: {e}")))
+}
+
+/// Probe the SMTP server's TLS certificate without verifying it.
+/// Mirror of `nimbus_imap::probe_server_certificate` — used by the
+/// "trust this server?" flow when a connect fails because the cert
+/// isn't yet in the user's trust list.
+///
+/// Assumes implicit-TLS (port 465). For STARTTLS-only ports (587)
+/// the cert isn't visible until after a SMTP greeting + STARTTLS
+/// dance — and in practice the IMAP probe usually surfaces the
+/// same cert (same host), so we let the UI try the IMAP probe first.
+pub async fn probe_server_certificate(
+    host: &str,
+    port: u16,
+) -> Result<Vec<u8>, NimbusError> {
+    let addr = format!("{host}:{port}");
+    let tcp = tokio::net::TcpStream::connect(&addr)
+        .await
+        .map_err(|e| NimbusError::Network(format!("Failed to connect to {addr}: {e}")))?;
+
+    let connector = TlsConnector::from(tls::no_verify_config());
+    let server_name = ServerName::try_from(host.to_string())
+        .map_err(|e| NimbusError::Protocol(format!("invalid SMTP hostname '{host}': {e}")))?;
+    let tls = connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(|e| NimbusError::Network(format!("TLS probe failed with {host}: {e}")))?;
+
+    let (_io, conn) = tls.get_ref();
+    let leaf = conn
+        .peer_certificates()
+        .and_then(|chain| chain.first())
+        .ok_or_else(|| {
+            NimbusError::Protocol(format!("server '{host}' returned no certificate"))
+        })?
+        .to_vec();
+    Ok(leaf)
 }
 
 /// Build the lettre `Message` for an outgoing email *without* sending it.

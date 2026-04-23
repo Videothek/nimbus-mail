@@ -73,28 +73,33 @@ struct TrayBaseIcon {
 
 /// Return all configured accounts.
 #[tauri::command]
-fn get_accounts() -> Result<Vec<Account>, NimbusError> {
-    account_store::load_accounts()
+fn get_accounts(cache: State<'_, Cache>) -> Result<Vec<Account>, NimbusError> {
+    account_store::load_accounts(&cache)
 }
 
 /// Add a new email account and store its password in the OS keychain.
 ///
 /// The frontend sends an `Account` object plus a `password`. The account
-/// metadata goes to `accounts.json`; the password goes to the OS keychain.
-/// Separating them means the JSON file never contains secrets and can be
-/// safely inspected or backed up.
+/// metadata lands in the encrypted SQLite cache; the password goes to
+/// the OS keychain. Separating them keeps secrets off disk and lets the
+/// `accounts` table be inspected without exposing credentials.
 #[tauri::command]
-fn add_account(account: Account, password: String) -> Result<(), NimbusError> {
+fn add_account(
+    account: Account,
+    password: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
     credentials::store_imap_password(&account.id, &password)?;
-    account_store::add_account(account)
+    account_store::add_account(&cache, account)
 }
 
 /// Remove an account and its stored password.
 ///
-/// Order matters: keychain → cache → account record. If any step fails,
-/// the remaining state is still consistent with the account being present
-/// (the user can retry). The last step (removing from accounts.json) is
-/// the visible source of truth, so we do it last.
+/// Order matters: keychain → cached message data → account record.
+/// If any step fails, the remaining state is still consistent with
+/// the account being present (the user can retry). The account row
+/// is deleted last so the rest of the app's "this account exists"
+/// queries stay truthful right up until the cleanup completes.
 #[tauri::command]
 fn remove_account(id: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
     credentials::delete_imap_password(&id)?;
@@ -103,13 +108,68 @@ fn remove_account(id: String, cache: State<'_, Cache>) -> Result<(), NimbusError
     if let Err(e) = cache.wipe_account(&id) {
         tracing::warn!("failed to wipe cache for account '{id}': {e}");
     }
-    account_store::remove_account(&id)
+    account_store::remove_account(&cache, &id)
 }
 
 /// Update an existing account's settings.
 #[tauri::command]
-fn update_account(account: Account) -> Result<(), NimbusError> {
-    account_store::update_account(account)
+fn update_account(account: Account, cache: State<'_, Cache>) -> Result<(), NimbusError> {
+    account_store::update_account(&cache, account)
+}
+
+/// Probe Mozilla autoconfig and DNS SRV records for the email's
+/// domain and return any IMAP/SMTP server settings discovered.
+/// Used by the AccountSetup wizard to prefill the form so most
+/// users only need to type their email + password.
+///
+/// Returns `Ok(None)` when nothing is found — the wizard falls back
+/// to manual entry. `Err` only on argument validation failures
+/// (e.g. malformed email); transient network errors during the
+/// individual probes are swallowed inside the discovery crate so
+/// one flaky route doesn't kill the whole flow.
+#[tauri::command]
+async fn discover_account_settings(
+    email: String,
+) -> Result<Option<nimbus_discovery::DiscoveredAccount>, NimbusError> {
+    match nimbus_discovery::discover(&email).await {
+        Ok(found) => Ok(Some(found)),
+        Err(nimbus_discovery::DiscoveryError::NotFound) => Ok(None),
+        Err(nimbus_discovery::DiscoveryError::Parse(msg)) => Err(NimbusError::Other(msg)),
+        Err(nimbus_discovery::DiscoveryError::Network(msg)) => Err(NimbusError::Network(msg)),
+    }
+}
+
+/// Shape returned to the UI by [`probe_server_certificate`]. Lets
+/// the "trust this server?" prompt show the SHA-256 fingerprint
+/// the user should compare against their server, plus the host
+/// they were trying to reach (for sanity-checking).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProbedCert {
+    /// Raw DER bytes — round-tripped back via `add_account` /
+    /// `update_account` so the cert can be added to the account's
+    /// `trusted_certs` list. Frontend treats it as opaque.
+    der: Vec<u8>,
+    /// `aa:bb:cc:…` SHA-256 of `der`. Displayed verbatim in the
+    /// trust prompt.
+    sha256: String,
+    host: String,
+}
+
+/// Open a no-verify TLS handshake to a mail server and capture the
+/// leaf certificate. Used by the AccountSetup wizard's "trust this
+/// server?" path: when [`test_connection`] fails because the cert
+/// isn't trusted, the UI calls this to get the fingerprint, asks
+/// the user, and on confirm passes the DER back into `add_account`
+/// as a `trusted_certs` entry.
+///
+/// **Safety**: the captured cert is never used for actual mail
+/// traffic — the connection is dropped immediately after the
+/// handshake. The user explicitly chooses whether to trust it.
+#[tauri::command]
+async fn probe_server_certificate(host: String, port: u16) -> Result<ProbedCert, NimbusError> {
+    let der = nimbus_imap::probe_server_certificate(&host, port).await?;
+    let sha256 = nimbus_core::tls::fingerprint_sha256(&der);
+    Ok(ProbedCert { der, sha256, host })
 }
 
 /// Validate IMAP credentials by actually logging in.
@@ -129,9 +189,12 @@ async fn test_connection(
     port: u16,
     username: String,
     password: String,
+    trusted_certs: Option<Vec<nimbus_core::models::TrustedCert>>,
 ) -> Result<String, NimbusError> {
     tracing::info!("Testing IMAP connection to {host}:{port} as {username}");
-    let client = ImapClient::connect(&host, port, &username, &password).await?;
+    let trusted = trusted_certs.unwrap_or_default();
+    let client =
+        ImapClient::connect(&host, port, &username, &password, &trusted).await?;
     let _ = client.logout().await;
     Ok(format!("IMAP login to {host}:{port} succeeded"))
 }
@@ -1444,15 +1507,20 @@ fn load_contact_handle(
 // network; a follow-up PR will flip reads to cache-first with a
 // background refresh.
 
-/// Look up an account by ID, or return a helpful error.
-fn load_account(id: &str) -> Result<Account, NimbusError> {
-    account_store::load_accounts()?
+/// Look up an account by ID, or return a helpful error. Takes a
+/// `&Cache` because every account row now lives in SQLite (#60) and
+/// we want every callsite to be explicit about which DB it's reading
+/// from rather than hiding a global behind a free function.
+fn load_account(cache: &Cache, id: &str) -> Result<Account, NimbusError> {
+    account_store::load_accounts(cache)?
         .into_iter()
         .find(|a| a.id == id)
         .ok_or_else(|| NimbusError::Other(format!("no account with id '{id}'")))
 }
 
 /// Connect to an account's IMAP server using the stored password.
+/// Includes any per-account TLS-trusted certs so a self-signed
+/// server the user has previously accepted continues to validate.
 async fn connect_imap(account: &Account) -> Result<ImapClient, NimbusError> {
     let password = credentials::get_imap_password(&account.id)?;
     ImapClient::connect(
@@ -1460,6 +1528,7 @@ async fn connect_imap(account: &Account) -> Result<ImapClient, NimbusError> {
         account.imap_port,
         &account.email,
         &password,
+        &account.trusted_certs,
     )
     .await
 }
@@ -1506,7 +1575,7 @@ async fn fetch_envelopes_inner(
     limit: u32,
     cache: &Cache,
 ) -> Result<Vec<EmailEnvelope>, NimbusError> {
-    let account = load_account(account_id)?;
+    let account = load_account(cache, account_id)?;
     let _ = poll_folder(&account, folder, limit, cache).await?;
     // The poll helper already wrote through to the cache and updated
     // the sync bookmark; we return the newest `limit` from the cache
@@ -1528,7 +1597,7 @@ async fn fetch_unified_envelopes(
     limit: u32,
     cache: State<'_, Cache>,
 ) -> Result<Vec<EmailEnvelope>, NimbusError> {
-    let accounts = account_store::load_accounts().unwrap_or_default();
+    let accounts = account_store::load_accounts(&cache).unwrap_or_default();
     for account in &accounts {
         if let Err(e) = poll_folder(account, &folder, limit, &cache).await {
             tracing::warn!("unified poll failed for '{}': {e}", account.id);
@@ -1714,7 +1783,7 @@ async fn fetch_message_inner(
     uid: u32,
     cache: &Cache,
 ) -> Result<Email, NimbusError> {
-    let account = load_account(account_id)?;
+    let account = load_account(cache, account_id)?;
 
     let email = if uses_jmap(&account) {
         let client = connect_jmap(&account).await?;
@@ -1754,8 +1823,9 @@ async fn download_email_attachment(
     folder: String,
     uid: u32,
     part_id: u32,
+    cache: State<'_, Cache>,
 ) -> Result<Vec<u8>, NimbusError> {
-    let account = load_account(&account_id)?;
+    let account = load_account(&cache, &account_id)?;
     if uses_jmap(&account) {
         return Err(NimbusError::Protocol(
             "JMAP attachment download is not implemented yet".into(),
@@ -1813,7 +1883,7 @@ async fn set_message_read(
     // — a 5-minute sync wait would feel broken.
     refresh_unread_badge(&app);
 
-    let account = load_account(&account_id)?;
+    let account = load_account(&cache, &account_id)?;
     if uses_jmap(&account) {
         let client = connect_jmap(&account).await?;
         return if read {
@@ -1852,7 +1922,7 @@ async fn send_email(
     email: OutgoingEmail,
     cache: State<'_, Cache>,
 ) -> Result<(), NimbusError> {
-    let account = load_account(&account_id)?;
+    let account = load_account(&cache, &account_id)?;
 
     // JMAP handles sending server-side via EmailSubmission and writes
     // a copy to Sent itself — no separate SMTP/APPEND needed.
@@ -1874,6 +1944,7 @@ async fn send_email(
         account.smtp_port,
         &account.email,
         &password,
+        &account.trusted_certs,
     )
     .await?;
     smtp.send(&email).await?;
@@ -1913,6 +1984,7 @@ async fn append_to_sent(
         account.imap_port,
         &account.email,
         &password,
+        &account.trusted_certs,
     )
     .await?;
     let result = client.append_message(&sent, raw, &["\\Seen"]).await;
@@ -1966,7 +2038,7 @@ async fn fetch_folders(
     account_id: String,
     cache: State<'_, Cache>,
 ) -> Result<Vec<Folder>, NimbusError> {
-    let account = load_account(&account_id)?;
+    let account = load_account(&cache, &account_id)?;
 
     let folders = if uses_jmap(&account) {
         let client = connect_jmap(&account).await?;
@@ -2215,7 +2287,7 @@ async fn search_imap_server(
     limit: u32,
     cache: State<'_, Cache>,
 ) -> Result<Vec<EmailEnvelope>, NimbusError> {
-    let account = load_account(&account_id)?;
+    let account = load_account(&cache, &account_id)?;
     if uses_jmap(&account) {
         // JMAP cache-first coverage is comprehensive; no separate
         // server-side search path yet. Return empty so the UI
@@ -2374,8 +2446,8 @@ fn show_main_window(app: &AppHandle) -> Result<(), NimbusError> {
 /// Now` tray/UI action — same code path so manual and automatic
 /// refreshes behave identically.
 async fn check_mail_now_inner(app: &AppHandle) -> Result<(), NimbusError> {
-    let accounts = account_store::load_accounts().unwrap_or_default();
     let cache = app.state::<Cache>();
+    let accounts = account_store::load_accounts(&cache).unwrap_or_default();
 
     for account in &accounts {
         match poll_folder(account, "INBOX", 20, &cache).await {
@@ -2685,6 +2757,8 @@ fn main() {
             add_account,
             remove_account,
             update_account,
+            discover_account_settings,
+            probe_server_certificate,
             test_connection,
             fetch_envelopes,
             fetch_unified_envelopes,

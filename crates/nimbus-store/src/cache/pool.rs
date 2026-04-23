@@ -101,7 +101,10 @@ pub fn open_pool(path: &Path, key_hex: String) -> Result<SqlitePool, CacheError>
 /// isolates tests that run in parallel. The `file::<name>:?mode=memory&
 /// cache=shared` URI lets multiple pooled connections share one DB while
 /// the counter-driven name prevents other tests from crashing into it.
-#[cfg(test)]
+///
+/// `pub(crate)` and *not* `cfg(test)` so sibling modules
+/// (e.g. `account_store`) can build a Cache for their own unit tests.
+/// Production code should never call this — it bypasses the keychain.
 pub(crate) fn open_memory_pool() -> Result<SqlitePool, CacheError> {
     use rusqlite::OpenFlags;
     use std::sync::atomic::{AtomicU64, Ordering};

@@ -71,15 +71,122 @@
   }
 
   // ── Auto-fill server settings from email domain ─────────────
-  // When the user types their email, we pre-fill server hostnames
-  // with common patterns. This is just a convenience — they can
-  // always change it. Real auto-discovery (SRV/MX records) will
-  // come later.
-  function autoFillServers() {
+  // When the user blurs the email field we ask the backend to
+  // probe Mozilla autoconfig and DNS SRV for that domain. If
+  // anything comes back we prefill the IMAP/SMTP fields with the
+  // discovered hosts/ports — the user can still edit them on the
+  // next step. If nothing comes back we fall back to the naive
+  // `imap.<domain>` / `smtp.<domain>` heuristic so the form
+  // doesn't look completely empty.
+  let discovering = $state(false)
+  let discoveryHint = $state<string | null>(null)
+
+  interface DiscoveredAccount {
+    imap_host: string
+    imap_port: number
+    imap_tls: boolean
+    smtp_host: string
+    smtp_port: number
+    smtp_tls: boolean
+    source: 'autoconfig-domain' | 'autoconfig-ispdb' | 'srv'
+  }
+
+  async function autoFillServers() {
     if (!email.includes('@')) return
     const domain = email.split('@')[1]
+    discoveryHint = null
+    discovering = true
+    try {
+      const found = await invoke<DiscoveredAccount | null>(
+        'discover_account_settings',
+        { email: email.trim() },
+      )
+      if (found) {
+        // Only overwrite blank fields so a user mid-edit doesn't
+        // lose what they typed. Same posture as the old heuristic.
+        if (!imapHost) imapHost = found.imap_host
+        imapPort = found.imap_port
+        if (!smtpHost) smtpHost = found.smtp_host
+        smtpPort = found.smtp_port
+        const label =
+          found.source === 'autoconfig-domain'
+            ? 'your provider'
+            : found.source === 'autoconfig-ispdb'
+              ? "Mozilla's database"
+              : 'DNS records'
+        discoveryHint = `Server settings auto-discovered from ${label}.`
+        return
+      }
+    } catch (e) {
+      console.warn('discover_account_settings failed:', e)
+    } finally {
+      discovering = false
+    }
+
+    // Fallback heuristic when discovery returns nothing.
     if (!imapHost) imapHost = `imap.${domain}`
     if (!smtpHost) smtpHost = `smtp.${domain}`
+    discoveryHint = `Couldn't auto-discover ${domain} — best-guess hostnames filled in. Edit if needed.`
+  }
+
+  // ── TLS-trust prompt state ─────────────────────────────────
+  // When test_connection fails because the IMAP server's cert
+  // can't be validated, we show a prompt that lets the user trust
+  // the cert and retry. The flow:
+  //   1. submit() catches the cert error from test_connection
+  //   2. invoke probe_server_certificate to capture the leaf cert
+  //   3. show ProbedCert details + "Trust this server" button
+  //   4. user confirms → trustedCerts gets the cert → retry submit
+  // The list rides through to add_account so the saved account
+  // remembers the trust decision and uses it on future connects.
+  interface ProbedCert {
+    der: number[]
+    sha256: string
+    host: string
+  }
+  let pendingCert = $state<ProbedCert | null>(null)
+  let trustedCerts = $state<ProbedCert[]>([])
+
+  /** Heuristic: does this error message look like it came from a
+      TLS cert validation failure? rustls's wording is fairly stable
+      ("invalid peer certificate", "UnknownIssuer", etc.) but we
+      cast a wide net to be tolerant of OS-level wrappers. */
+  function looksLikeCertError(message: string): boolean {
+    const m = message.toLowerCase()
+    return (
+      m.includes('certificate') ||
+      m.includes('cert ') ||
+      m.includes('unknownissuer') ||
+      m.includes('untrustedissuer') ||
+      m.includes('badcertificate') ||
+      m.includes('tls handshake')
+    )
+  }
+
+  async function handleCertError() {
+    pendingCert = null
+    try {
+      const probed = await invoke<ProbedCert>('probe_server_certificate', {
+        host: imapHost.trim(),
+        port: imapPort,
+      })
+      pendingCert = probed
+    } catch (e: any) {
+      error =
+        'Could not retrieve the server certificate to display: ' +
+        (formatError(e) || 'unknown error')
+    }
+  }
+
+  function trustPendingCert() {
+    if (!pendingCert) return
+    trustedCerts = [...trustedCerts, pendingCert]
+    pendingCert = null
+    void submit()
+  }
+
+  function dismissCertPrompt() {
+    pendingCert = null
   }
 
   // ── Submit ──────────────────────────────────────────────────
@@ -92,12 +199,15 @@
       // persisting anything. This turns "saved a bad account and
       // everything breaks silently on first fetch" into a clear,
       // immediate error the user can act on (wrong host, wrong port,
-      // TLS failure, bad password — all surface here).
+      // TLS failure, bad password — all surface here). `trustedCerts`
+      // grows when the user accepts a self-signed cert via the
+      // prompt below, so the same probe will pass on the retry.
       await invoke('test_connection', {
         host: imapHost.trim(),
         port: imapPort,
         username: email.trim(),
         password,
+        trustedCerts: trustedCerts.length > 0 ? trustedCerts : null,
       })
 
       // Generate a simple unique ID for this account.
@@ -119,6 +229,13 @@
           smtp_port: smtpPort,
           use_jmap: useJmap,
           signature: signature.trim() || null,
+          folder_icons: [],
+          trusted_certs: trustedCerts.map((c) => ({
+            der: c.der,
+            sha256: c.sha256,
+            host: c.host,
+            added_at: Math.floor(Date.now() / 1000),
+          })),
         },
         password,
       })
@@ -126,7 +243,16 @@
       // Success! Tell the parent component to switch to inbox
       oncomplete()
     } catch (e: any) {
-      error = formatError(e) || 'Failed to save account'
+      const msg = formatError(e) || 'Failed to save account'
+      if (looksLikeCertError(msg)) {
+        // Don't surface the raw error — the prompt explains the
+        // situation more clearly. Kick off the cert probe in the
+        // background; UI shows a spinner until it returns.
+        error = ''
+        void handleCertError()
+      } else {
+        error = msg
+      }
     } finally {
       saving = false
     }
@@ -182,7 +308,13 @@
               placeholder="e.g. nick@example.com"
               class="input w-full mt-1 px-3 py-2 rounded-md"
               onblur={autoFillServers}
+              disabled={discovering}
             />
+            {#if discovering}
+              <span class="block text-xs text-surface-500 mt-1">Looking up server settings…</span>
+            {:else if discoveryHint}
+              <span class="block text-xs text-surface-500 mt-1">{discoveryHint}</span>
+            {/if}
           </label>
         </div>
 
@@ -277,6 +409,49 @@
       {#if error}
         <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-md">
           {error}
+        </div>
+      {/if}
+
+      <!-- TLS-trust prompt. Shown when test_connection failed with a
+           cert error and probe_server_certificate succeeded in
+           capturing the leaf cert. The user gets the SHA-256 to
+           compare against their server, then chooses whether to
+           trust it for this account. -->
+      {#if pendingCert}
+        <div class="mb-4 p-4 rounded-md border border-warning-500/40 bg-warning-500/5">
+          <p class="text-sm font-medium mb-1">
+            The server's TLS certificate isn't trusted by default.
+          </p>
+          <p class="text-xs text-surface-500 mb-3">
+            This is normal for self-hosted mail servers using a
+            self-signed certificate. Compare the fingerprint below
+            with your server's actual certificate before trusting.
+          </p>
+          <p class="text-xs mb-1"><span class="text-surface-500">Host:</span> <span class="font-mono">{pendingCert.host}</span></p>
+          <p class="text-xs mb-3 break-all">
+            <span class="text-surface-500">SHA-256:</span>
+            <span class="font-mono">{pendingCert.sha256}</span>
+          </p>
+          <div class="flex gap-2">
+            <button
+              type="button"
+              class="btn btn-sm preset-filled-primary-500"
+              onclick={trustPendingCert}
+            >Trust this server and continue</button>
+            <button
+              type="button"
+              class="btn btn-sm preset-outlined-surface-500"
+              onclick={dismissCertPrompt}
+            >Cancel</button>
+          </div>
+        </div>
+      {/if}
+
+      {#if trustedCerts.length > 0 && !pendingCert}
+        <div class="mb-4 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400">
+          Trusting {trustedCerts.length}
+          self-signed certificate{trustedCerts.length === 1 ? '' : 's'}
+          for this account.
         </div>
       {/if}
 

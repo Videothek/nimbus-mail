@@ -98,6 +98,46 @@ pub struct Account {
     /// have to share one global list.
     #[serde(default)]
     pub folder_icons: Vec<FolderIconRule>,
+    /// TLS certificates the user has explicitly trusted for this
+    /// account — typically self-signed certs on a personal mail
+    /// server that webpki-roots wouldn't normally accept. Each
+    /// entry is added to the rustls config's root store, so a
+    /// matching cert chain validates as if it were CA-signed.
+    /// Per-account so trust granted to one mail server can't
+    /// silently apply to another.
+    #[serde(default)]
+    pub trusted_certs: Vec<TrustedCert>,
+}
+
+/// One TLS leaf certificate the user has chosen to trust for an
+/// account. We keep the raw DER bytes so the cert can be plugged
+/// straight into `rustls::RootCertStore` (and into lettre's
+/// `add_root_certificate`) on every connect, plus the SHA-256
+/// fingerprint for display in settings ("you trust 4 certificates
+/// for this account: aa:bb:cc:…") and a human-readable host /
+/// added-on date so the user can audit the list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustedCert {
+    /// Raw DER-encoded certificate bytes. Stored as a `Vec<u8>` so
+    /// the JSON representation is a base64 string under the hood
+    /// (serde-bytes if we needed it; serde's default for `Vec<u8>`
+    /// is an array of integers — works fine for a few-hundred-byte
+    /// cert and stays human-debuggable).
+    pub der: Vec<u8>,
+    /// SHA-256 of the DER bytes, lowercase hex with `:` separators
+    /// every two characters (`aa:bb:cc:…`). This is what the user
+    /// compared against their server when they trusted it; we
+    /// surface it in settings so they can confirm what's stored.
+    pub sha256: String,
+    /// Hostname this cert was trusted *for*. Just informational —
+    /// rustls handles the actual hostname matching during the
+    /// handshake, so a cert valid for `mail.example.com` won't
+    /// silently extend trust to `other.example.com`.
+    pub host: String,
+    /// Unix epoch seconds when the cert was added. Lets the
+    /// settings UI render "trusted on Jan 5" so a stale entry is
+    /// recognisable.
+    pub added_at: i64,
 }
 
 /// One "folder name contains keyword → show icon" rule. `keyword`

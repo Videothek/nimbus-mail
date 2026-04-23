@@ -474,6 +474,67 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE calendar_events
         ADD COLUMN reminders_json TEXT NOT NULL DEFAULT '[]';
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v7 → v8: move email accounts from `accounts.json` into the
+    // encrypted SQLite cache (Issue #60).
+    //
+    // Why: accounts.json sits next to the database in the user's
+    // config dir as plaintext. Moving it inside SQLCipher gives us
+    // at-rest encryption for the whole account record (host names,
+    // signatures, the lot) without a separate keychain entry per
+    // field. It also opens the door to foreign keys from `messages`
+    // onto an `account_id` once we want cascade-on-delete semantics.
+    //
+    // Schema mirrors the `Account` struct one-to-one. Lists / option
+    // types that don't fit a column (`folder_icons`,
+    // `trusted_fingerprints` once #60 lands TLS trust) are kept as
+    // JSON blobs — same pattern we use elsewhere (`rdate_json`,
+    // `attendees_json`, …) and lets `serde_json` round-trip the
+    // whole field in one call.
+    //
+    // Migration of existing data is *not* part of this DDL — it
+    // happens lazily in `account_store::load_accounts` on the first
+    // call after the upgrade. That keeps the migration code owned
+    // by the same module that knows about the JSON file format.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    CREATE TABLE accounts (
+        id                TEXT PRIMARY KEY,
+        display_name      TEXT NOT NULL,
+        email             TEXT NOT NULL,
+        imap_host         TEXT NOT NULL,
+        imap_port         INTEGER NOT NULL,
+        smtp_host         TEXT NOT NULL,
+        smtp_port         INTEGER NOT NULL,
+        use_jmap          INTEGER NOT NULL DEFAULT 0,
+        jmap_url          TEXT,
+        signature         TEXT,
+        folder_icons_json TEXT NOT NULL DEFAULT '[]',
+        -- Insertion order is the natural sort for the account
+        -- switcher; SQLite assigns rowids monotonically so we read
+        -- back with `ORDER BY rowid`.
+        created_at        INTEGER NOT NULL
+    );
+    "#,
+    // ─────────────────────────────────────────────────────────────
+    // v8 → v9: per-account TLS trust list (Issue #60).
+    //
+    // When the user knowingly accepts a self-signed cert during
+    // account setup, we stash the cert's DER bytes here so every
+    // future IMAP/SMTP connect from that account can plug it into
+    // the rustls root store. The list is a JSON array of
+    // `TrustedCert` records (DER, sha256 fingerprint, host, added
+    // timestamp) — same JSON-blob pattern the rest of the schema
+    // uses for variable-length structured fields.
+    //
+    // NOT NULL with `'[]'` default so older account rows decode
+    // without a backfill: an empty list means "trust webpki-roots
+    // only", which is the historical behaviour.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE accounts
+        ADD COLUMN trusted_certs_json TEXT NOT NULL DEFAULT '[]';
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
