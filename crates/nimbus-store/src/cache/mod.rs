@@ -142,6 +142,29 @@ impl Cache {
         Ok(Self { pool })
     }
 
+    /// Open an in-memory cache for tests. Each call gets its own
+    /// fresh DB — see `pool::open_memory_pool` for the URI trick
+    /// that makes that work. Useful for any sibling module
+    /// (e.g. `account_store`) that needs a Cache to run unit tests
+    /// against without touching the user's real config dir or the
+    /// keychain.
+    pub fn open_in_memory() -> Result<Self, CacheError> {
+        let pool = pool::open_memory_pool()?;
+        let mut conn = pool.get()?;
+        schema::run_migrations(&mut conn)?;
+        drop(conn);
+        Ok(Self { pool })
+    }
+
+    /// Borrow the underlying connection pool. Exposed so the
+    /// `account_store` module (a sibling, not a method) can run its
+    /// own SQL without each operation paying for a fresh `Cache`
+    /// open. The pool is internally synchronised so handing out a
+    /// shared reference is safe across tasks.
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     /// Clears the cache for a specific account — called when an account
     /// is removed, or when `UIDVALIDITY` changes and we need to start fresh.
     pub fn wipe_account(&self, account_id: &str) -> Result<(), CacheError> {

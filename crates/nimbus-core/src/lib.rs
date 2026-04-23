@@ -2,5 +2,6 @@
 
 pub mod error;
 pub mod models;
+pub mod tls;
 
 pub use error::NimbusError;

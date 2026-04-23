@@ -12,6 +12,7 @@ nimbus-caldav.workspace = true
 nimbus-carddav.workspace = true
 nimbus-nextcloud.workspace = true
 nimbus-store.workspace = true
+nimbus-discovery.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
 serde.workspace = true

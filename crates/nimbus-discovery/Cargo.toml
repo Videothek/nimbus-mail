@@ -1,0 +1,17 @@
+[package]
+name = "nimbus-discovery"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nimbus-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+quick-xml.workspace = true
+hickory-resolver.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }

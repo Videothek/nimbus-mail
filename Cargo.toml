@@ -9,6 +9,7 @@ members = [
     "crates/nimbus-carddav",
     "crates/nimbus-nextcloud",
     "crates/nimbus-store",
+    "crates/nimbus-discovery",
     "src-tauri",
 ]
 
@@ -69,9 +70,26 @@ open = "5"
 hex = "0.4"
 # IMAP
 async-imap = "0.10"
-async-native-tls = "0.5"
-async-std = { version = "1.13", features = ["attributes"] }
 futures = "0.3"
+# Pure-Rust TLS used by both nimbus-imap and nimbus-smtp so we have
+# one TLS stack, one custom cert verifier, and one set of trust
+# storage. `ring` is the crypto provider that lettre defaults to —
+# matching it keeps both halves linking the same crypto.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "ring"] }
+# Mozilla's curated CA bundle. `webpki-roots` pins the public roots
+# at build time so behaviour is identical across Win/Mac/Linux —
+# the OS native trust stores would each give us slightly different
+# answers.
+webpki-roots = "0.26"
+rustls-pki-types = "1"
+# Adapters between tokio I/O traits and futures-io traits. async-imap
+# is generic over `futures-io::AsyncRead + AsyncWrite`, but our TLS
+# stream is a `tokio::AsyncRead`; `Compat` bridges the two.
+tokio-util = { version = "0.7", features = ["compat"] }
+# SHA-256 for the displayable cert fingerprint shown in the
+# "trust this server?" prompt. Tiny crate, no surprises.
+sha2 = "0.10"
 # SMTP
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
 # MIME / email parsing (headers, bodies, encodings)
@@ -92,6 +110,11 @@ base64 = "0.22"
 # UUIDs for fresh vCard UIDs on contact create — we picked `urn:uuid:`
 # form to match what other CardDAV clients emit.
 uuid = { version = "1", features = ["v4"] }
+# Async DNS resolver. Used by nimbus-discovery for SRV-record
+# autoconfiguration (`_imaps._tcp.<domain>` etc.) when a provider
+# doesn't expose a Mozilla autoconfig endpoint. Pure Rust, no
+# system-resolver dependency.
+hickory-resolver = "0.24"
 # Internal crates
 nimbus-core = { path = "crates/nimbus-core" }
 nimbus-imap = { path = "crates/nimbus-imap" }
@@ -101,3 +124,4 @@ nimbus-caldav = { path = "crates/nimbus-caldav" }
 nimbus-carddav = { path = "crates/nimbus-carddav" }
 nimbus-nextcloud = { path = "crates/nimbus-nextcloud" }
 nimbus-store = { path = "crates/nimbus-store" }
+nimbus-discovery = { path = "crates/nimbus-discovery" }

@@ -2,15 +2,26 @@
 //! methods to interact with mailboxes.
 
 use async_imap::Session;
-use async_native_tls::TlsStream;
-use async_std::net::TcpStream;
 use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
 use mail_parser::{MessageParser, MimeHeaders};
 use nimbus_core::error::NimbusError;
-use nimbus_core::models::{Email, EmailAttachment, EmailEnvelope, Folder};
+use nimbus_core::models::{Email, EmailAttachment, EmailEnvelope, Folder, TrustedCert};
+use nimbus_core::tls;
+use rustls_pki_types::ServerName;
+use tokio::net::TcpStream;
+use tokio_rustls::TlsConnector;
+use tokio_rustls::client::TlsStream;
+use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 
 use crate::mutf7;
+
+/// `async-imap`'s `Session` is generic over its underlying I/O. We
+/// pin the alias to the concrete `Compat<TlsStream<TcpStream>>` so
+/// downstream callers don't have to think about the four layers of
+/// generics — and so the `session: Option<...>` field below has a
+/// nameable type.
+type ImapSession = Session<Compat<TlsStream<TcpStream>>>;
 
 /// Encode a UTF-8 mailbox name into the IMAP Modified UTF-7 form that
 /// `SELECT` / `EXAMINE` / `STATUS` / `APPEND` etc. expect on the wire.
@@ -19,6 +30,68 @@ use crate::mutf7;
 fn to_wire(name: &str) -> String {
     mutf7::encode(name)
 }
+
+/// Open a TCP+TLS connection to the IMAP server, returning a stream
+/// adapted to the `futures-io` traits that `async-imap` expects.
+async fn tls_connect(
+    host: &str,
+    port: u16,
+    trusted_certs: &[TrustedCert],
+) -> Result<Compat<TlsStream<TcpStream>>, NimbusError> {
+    let addr = format!("{host}:{port}");
+    let tcp = TcpStream::connect(&addr)
+        .await
+        .map_err(|e| NimbusError::Network(format!("Failed to connect to {addr}: {e}")))?;
+    debug!("TCP connection established to {addr}");
+
+    let config = tls::build_client_config(trusted_certs);
+    let connector = TlsConnector::from(config);
+    let server_name = ServerName::try_from(host.to_string())
+        .map_err(|e| NimbusError::Protocol(format!("invalid IMAP hostname '{host}': {e}")))?;
+    let tls = connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(|e| NimbusError::Network(format!("TLS handshake failed with {host}: {e}")))?;
+    debug!("TLS handshake completed");
+
+    Ok(tls.compat())
+}
+
+/// Probe the IMAP server's TLS certificate without verifying it.
+/// Used by the "trust this server?" flow: when the regular connect
+/// fails because the cert isn't in any trust store we know about,
+/// the UI calls this to capture the leaf cert (DER) so the user
+/// can be shown its fingerprint and decide whether to trust it.
+///
+/// Returns the leaf (end-entity) cert's DER bytes. Caller is
+/// responsible for never using this for actual mail traffic — we
+/// drop the connection immediately after the handshake succeeds.
+pub async fn probe_server_certificate(
+    host: &str,
+    port: u16,
+) -> Result<Vec<u8>, NimbusError> {
+    let addr = format!("{host}:{port}");
+    let tcp = TcpStream::connect(&addr)
+        .await
+        .map_err(|e| NimbusError::Network(format!("Failed to connect to {addr}: {e}")))?;
+
+    let connector = TlsConnector::from(tls::no_verify_config());
+    let server_name = ServerName::try_from(host.to_string())
+        .map_err(|e| NimbusError::Protocol(format!("invalid IMAP hostname '{host}': {e}")))?;
+    let tls = connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(|e| NimbusError::Network(format!("TLS probe failed with {host}: {e}")))?;
+
+    let (_io, conn) = tls.get_ref();
+    let leaf = conn
+        .peer_certificates()
+        .and_then(|chain| chain.first())
+        .ok_or_else(|| NimbusError::Protocol(format!("server '{host}' returned no certificate")))?
+        .to_vec();
+    Ok(leaf)
+}
+
 use tracing::{debug, info, warn};
 
 /// An authenticated IMAP session, ready to interact with mailboxes.
@@ -32,7 +105,7 @@ use tracing::{debug, info, warn};
 pub struct ImapClient {
     /// The underlying async-imap session, wrapped in TLS.
     /// `Option` so we can take it out during logout.
-    session: Option<Session<TlsStream<TcpStream>>>,
+    session: Option<ImapSession>,
 }
 
 /// Result of a sync fetch — envelopes plus the folder's `UIDVALIDITY`.
@@ -50,41 +123,22 @@ pub struct EnvelopeBatch {
 impl ImapClient {
     /// Connect to an IMAP server over TLS and log in.
     ///
-    /// This does three things in order:
-    /// 1. Opens a TCP connection to host:port
-    /// 2. Wraps it in TLS (so all data is encrypted)
-    /// 3. Sends LOGIN with your credentials
-    ///
-    /// Returns an authenticated `ImapClient` ready for use.
+    /// `trusted_certs` is the per-account list of additional roots
+    /// (the user's self-signed certs they've explicitly trusted in
+    /// settings). Empty for "trust webpki-roots only" — the
+    /// historical behaviour.
     pub async fn connect(
         host: &str,
         port: u16,
         username: &str,
         password: &str,
+        trusted_certs: &[TrustedCert],
     ) -> Result<Self, NimbusError> {
         info!(host, port, username, "Connecting to IMAP server");
 
-        // Step 1: TCP connection
-        let addr = format!("{host}:{port}");
-        let tcp = TcpStream::connect(&addr)
-            .await
-            .map_err(|e| NimbusError::Network(format!("Failed to connect to {addr}: {e}")))?;
+        let stream = tls_connect(host, port, trusted_certs).await?;
+        let imap_client = async_imap::Client::new(stream);
 
-        debug!("TCP connection established");
-
-        // Step 2: TLS handshake — this encrypts the connection.
-        // We use the hostname for certificate verification.
-        let tls_connector = async_native_tls::TlsConnector::new();
-        let tls_stream = tls_connector
-            .connect(host, tcp)
-            .await
-            .map_err(|e| NimbusError::Network(format!("TLS handshake failed with {host}: {e}")))?;
-
-        debug!("TLS handshake completed");
-
-        // Step 3: Create the IMAP client on top of the TLS stream
-        // and log in with credentials.
-        let imap_client = async_imap::Client::new(tls_stream);
         let session = imap_client.login(username, password).await.map_err(|e| {
             // login() returns (error, client) on failure — we only need the error
             NimbusError::Auth(format!("IMAP login failed: {}", e.0))
