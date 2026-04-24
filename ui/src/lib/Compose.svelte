@@ -148,6 +148,13 @@
   // so we don't hit `get_nextcloud_accounts` / PROPFIND until the user
   // actually clicks "Attach from Nextcloud".
   let showNcPicker = $state(false)
+  // Separate flag for the *image* flow. Same `NextcloudFilePicker`
+  // component but the `onpicked` handler differs: instead of
+  // appending bytes to the attachments list, we base64-encode them
+  // into a `data:` URL and insert as an inline `<img>`. Kept as a
+  // distinct boolean so the two pickers can never be open at once
+  // and neither flow silently steals the other's result.
+  let showNcImagePicker = $state(false)
   // Imperative handle into the rich-text editor — populated once the
   // editor mounts. We use it to append Nextcloud share links into the
   // body without disturbing the user's cursor or undo history.
@@ -270,6 +277,22 @@
     const tmp = document.createElement('div')
     tmp.innerHTML = html
     return tmp.textContent ?? tmp.innerText ?? ''
+  }
+
+  /** Turn a Tauri-IPC byte array (`number[]`) into a `data:` URL
+   *  the editor can embed as an `<img src>`. We route through a
+   *  `Blob` + `FileReader` rather than `btoa(...)` so large images
+   *  don't blow the JS stack on the `String.fromCharCode(...bytes)`
+   *  apply-size limit, and the browser handles the base64 encode
+   *  natively. Returns a promise because `FileReader` is async. */
+  function bytesToDataUrl(bytes: number[], mime: string): Promise<string> {
+    const blob = new Blob([new Uint8Array(bytes)], { type: mime })
+    return new Promise((resolve, reject) => {
+      const r = new FileReader()
+      r.onload = () => resolve(r.result as string)
+      r.onerror = () => reject(r.error)
+      r.readAsDataURL(blob)
+    })
   }
 
   let sending = $state(false)
@@ -770,6 +793,7 @@
         content={bodyHtml}
         onchange={(html) => { bodyHtml = html }}
         onready={(api) => { editorApi = api }}
+        onrequestncimage={() => { showNcImagePicker = true }}
       />
 
       {#if attachments.length > 0}
@@ -848,6 +872,25 @@
       editorApi?.appendHtml(block)
     }}
     onclose={() => (showNcPicker = false)}
+  />
+{/if}
+
+{#if showNcImagePicker}
+  <!-- Image-insert flow: reuse the NC picker in "attach" mode, but
+       instead of appending the bytes to the attachments list we
+       inline them as `data:` URLs via the editor's `insertImage`.
+       Non-image picks are ignored — the picker doesn't constrain
+       file type server-side, so the UI-side filter is what keeps a
+       stray `.docx` out of the body. -->
+  <NextcloudFilePicker
+    onpicked={async (picked) => {
+      for (const p of picked) {
+        if (!p.content_type.startsWith('image/')) continue
+        const src = await bytesToDataUrl(p.data, p.content_type)
+        editorApi?.insertImage(src)
+      }
+    }}
+    onclose={() => (showNcImagePicker = false)}
   />
 {/if}
 

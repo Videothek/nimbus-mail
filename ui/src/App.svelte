@@ -417,13 +417,46 @@
     composeInitial = null
   }
 
-  // Build a quoted reply body — RFC 3676 style "> " prefix on each line.
+  /** Build a quoted reply body as HTML.
+   *
+   *  Output shape (the Compose editor's `initialBodyHtml` accepts
+   *  literal HTML — it detects tags and passes the string straight
+   *  through instead of escaping):
+   *
+   *    <p></p>
+   *    <p></p>
+   *    <p>On <date>, <from> wrote:</p>
+   *    <blockquote>...original body, escaped or passed-through...</blockquote>
+   *
+   *  The two leading empty paragraphs give the user a visible cursor
+   *  above the quote to start typing into. The `<blockquote>` is
+   *  Tiptap-native, so the styling we already have (left bar, indent,
+   *  muted colour) applies; when the message is sent, the HTML flows
+   *  straight through to the wire so the recipient's client renders
+   *  it the same way every other client does.
+   */
   function quoteBody(from: string, date: string, body: string | null): string {
-    const quoted = (body ?? '')
-      .split('\n')
-      .map((l) => `> ${l}`)
-      .join('\n')
-    return `\n\nOn ${new Date(date).toLocaleString()}, ${from} wrote:\n${quoted}`
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const bodyHtml = htmlOrEscape(body ?? '')
+    const when = new Date(date).toLocaleString()
+    return (
+      `<p></p><p></p>` +
+      `<p>On ${esc(when)}, ${esc(from)} wrote:</p>` +
+      `<blockquote>${bodyHtml}</blockquote>`
+    )
+  }
+
+  /** If the input already looks like HTML, pass it through. Otherwise
+   *  escape special chars and convert newlines to `<br>` so the plain
+   *  text renders with its original line breaks inside the blockquote. */
+  function htmlOrEscape(text: string): string {
+    if (/<[a-z][\s\S]*>/i.test(text)) return text
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
   }
 
   function replySubject(s: string): string {
@@ -464,9 +497,25 @@
   }
 
   function onForward(mail: OpenMail) {
+    // Forwards use the same blockquote treatment as replies so the
+    // original message sits inside a visually distinct container.
+    // Unlike reply, we prefix with a small header block that states
+    // the original From/Date/Subject so the recipient can see the
+    // chain even if they collapse the quote.
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const when = new Date(mail.date).toLocaleString()
+    const header =
+      `<p><strong>---------- Forwarded message ----------</strong></p>` +
+      `<p>From: ${esc(mail.from)}<br>` +
+      `Date: ${esc(when)}<br>` +
+      `Subject: ${esc(mail.subject)}</p>`
+    const body = htmlOrEscape(mail.body_text ?? '')
     openCompose({
       subject: forwardSubject(mail.subject),
-      body: `\n\n---------- Forwarded message ----------\nFrom: ${mail.from}\nDate: ${new Date(mail.date).toLocaleString()}\nSubject: ${mail.subject}\n\n${mail.body_text ?? ''}`,
+      body:
+        `<p></p><p></p>` +
+        `<blockquote>${header}${body}</blockquote>`,
     })
   }
 
