@@ -972,6 +972,30 @@ impl ImapClient {
         Ok(())
     }
 
+    /// Return every UID currently in the folder (via `UID SEARCH ALL`).
+    ///
+    /// Used by the envelope-cache reconciler to spot ghost rows: any
+    /// UID in our local cache that isn't in this set has been expunged
+    /// on the server and should be dropped. Cheap on small folders
+    /// (Drafts, Trash, Archive); on large inboxes it's a few KB of
+    /// wire traffic but still a single command, much cheaper than
+    /// re-fetching bodies.
+    pub async fn list_all_uids(&mut self, folder: &str) -> Result<Vec<u32>, NimbusError> {
+        let _ = self.select_folder(folder).await?;
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        let uids: Vec<u32> = session
+            .uid_search("ALL")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID SEARCH ALL failed: {e}")))?
+            .into_iter()
+            .collect();
+        Ok(uids)
+    }
+
     /// Server-side search fallback for messages that aren't cached locally.
     ///
     /// Runs `UID SEARCH` on the given folder with a criterion built from

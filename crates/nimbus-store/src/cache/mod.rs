@@ -470,6 +470,78 @@ impl Cache {
         Ok(())
     }
 
+    /// Return every cached envelope UID for a folder — used by the
+    /// reconciler that diffs the cache against the server's live UID
+    /// set after each incremental fetch and drops rows whose UIDs no
+    /// longer exist on the server.
+    pub fn list_envelope_uids(
+        &self,
+        account_id: &str,
+        folder: &str,
+    ) -> Result<Vec<u32>, CacheError> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT uid FROM messages
+             WHERE account_id = ?1 AND folder = ?2",
+        )?;
+        let rows = stmt.query_map(params![account_id, folder], |r| r.get::<_, i64>(0))?;
+        let mut uids = Vec::new();
+        for row in rows {
+            uids.push(row? as u32);
+        }
+        Ok(uids)
+    }
+
+    /// Remove a single cached envelope + body after the message has been
+    /// expunged / moved on the server. The incremental envelope fetch
+    /// only pulls UIDs `> highest_seen`, so without an explicit delete
+    /// here the cache accumulates ghost rows for every expunged UID —
+    /// and MailList keeps showing them, handing the user stale UIDs
+    /// that the server has since reassigned or reclaimed.
+    ///
+    /// If the envelope was unread at the time of removal, the folder
+    /// `unread_count` is also decremented so the sidebar badge tracks
+    /// the row disappearing. Same clamp-at-zero guard as
+    /// `mark_envelope_read`. Returns `true` iff a row was actually
+    /// removed — callers can tell the difference between "cleaned up
+    /// a real stale row" and "no row existed in the first place".
+    pub fn remove_envelope(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+    ) -> Result<bool, CacheError> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+
+        let was_unread: bool = tx
+            .query_row(
+                "SELECT is_read = 0 FROM messages
+                 WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+                params![account_id, folder, uid as i64],
+                |r| r.get::<_, i64>(0).map(|v| v != 0),
+            )
+            .unwrap_or(false);
+
+        let rows = tx.execute(
+            "DELETE FROM messages
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64],
+        )?;
+
+        if rows > 0 && was_unread {
+            tx.execute(
+                "UPDATE folders
+                 SET unread_count = MAX(COALESCE(unread_count, 0) - 1, 0)
+                 WHERE account_id = ?1 AND name = ?2",
+                params![account_id, folder],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(rows > 0)
+    }
+
     /// Mark a cached envelope as unread (sets `is_read = 0`) and keep
     /// the folder's `unread_count` in sync by incrementing it iff the
     /// message was previously read. Mirror of `mark_envelope_read`.

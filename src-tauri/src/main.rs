@@ -1949,7 +1949,50 @@ async fn poll_folder(
         batch = client.fetch_envelopes(folder, limit, None).await?;
     }
 
+    // Reconcile the cache against the server's live UID set. Without
+    // this, any UID expunged between polls (by our own delete/archive
+    // paths, by another client, or by the server itself) would linger
+    // as a ghost envelope forever — the incremental fetch above only
+    // ever pulls UIDs *greater* than the bookmark, it never revisits
+    // older ones. Ghosts used to surface as "UID isn't in folder"
+    // errors when the user clicked on them from the mail list.
+    let server_uids = match client.list_all_uids(folder).await {
+        Ok(uids) => uids,
+        Err(e) => {
+            tracing::warn!(
+                "list_all_uids for '{account_id}'/'{folder}' failed (skipping reconcile): {e}"
+            );
+            Vec::new()
+        }
+    };
+
     let _ = client.logout().await;
+
+    if !server_uids.is_empty() || uidvalidity_rotated {
+        let server_set: std::collections::HashSet<u32> = server_uids.into_iter().collect();
+        match cache.list_envelope_uids(account_id, folder) {
+            Ok(cached_uids) => {
+                let mut removed = 0u32;
+                for uid in cached_uids {
+                    if !server_set.contains(&uid) {
+                        match cache.remove_envelope(account_id, folder, uid) {
+                            Ok(true) => removed += 1,
+                            Ok(false) => {}
+                            Err(e) => tracing::warn!(
+                                "remove_envelope (reconcile) for UID {uid} failed: {e}"
+                            ),
+                        }
+                    }
+                }
+                if removed > 0 {
+                    tracing::info!(
+                        "Reconciled '{account_id}'/'{folder}': dropped {removed} ghost UID(s)"
+                    );
+                }
+            }
+            Err(e) => tracing::warn!("list_envelope_uids failed: {e}"),
+        }
+    }
 
     if let Err(e) = cache.upsert_envelopes_for_account(account_id, &batch.envelopes) {
         tracing::warn!("cache.upsert_envelopes failed: {e}");
@@ -2173,7 +2216,33 @@ async fn delete_message(
     .await?;
     let result = client.delete_message(&folder, uid).await;
     let _ = client.logout().await;
+
+    // Clear the cache row whether the delete succeeded OR failed with
+    // "UID not on the server" — in the success case the cache would
+    // otherwise hang onto a ghost row (incremental envelope fetch
+    // never re-examines existing UIDs), and in the failure case the
+    // reason we hit that error *is* a stale cache row, so dropping it
+    // unblocks the user's next refresh.
+    if should_clean_cache_for_delete(&result) {
+        if let Err(e) = cache.remove_envelope(&account_id, &folder, uid) {
+            tracing::warn!("remove_envelope after delete_message failed: {e}");
+        }
+    }
+
     result
+}
+
+/// Did this delete_message result leave the cache holding a definitely-
+/// stale row for the target UID? True when the server confirmed the
+/// delete (Ok) *or* reported the UID isn't there (the probe error we
+/// added to `delete_message`) — in both cases the cached envelope
+/// should come out.
+fn should_clean_cache_for_delete(result: &Result<(), NimbusError>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(NimbusError::Protocol(msg)) => msg.contains("isn't in folder"),
+        _ => false,
+    }
 }
 
 /// Move the message to the account's Archive folder.
@@ -2223,6 +2292,16 @@ async fn archive_message(
     .await?;
     let result = client.move_message(&folder, uid, &archive).await;
     let _ = client.logout().await;
+
+    if result.is_ok() {
+        // The envelope row for the source folder needs to go — the
+        // next `fetch_envelopes` is an incremental one and won't
+        // notice the move by itself.
+        if let Err(e) = cache.remove_envelope(&account_id, &folder, uid) {
+            tracing::warn!("remove_envelope after archive_message failed: {e}");
+        }
+    }
+
     result
 }
 
@@ -2426,10 +2505,21 @@ async fn save_draft(
 
     // Only attempt the delete if the APPEND actually succeeded —
     // otherwise a flaky APPEND would have us destroy the user's
-    // only remaining copy.
+    // only remaining copy. We also want to clear the cached envelope
+    // for the source UID whether the server-side delete hit an
+    // existing UID or complained that the UID wasn't there (ghost
+    // envelope left over from a previous expunge) — either way the
+    // cached row is wrong and hanging onto it just makes the next
+    // edit attempt fail the same way.
     let result = if append_result.is_ok() {
         if let Some(src) = replace_source {
-            match client.delete_message(&src.folder, src.uid).await {
+            let delete_result = client.delete_message(&src.folder, src.uid).await;
+            if should_clean_cache_for_delete(&delete_result) {
+                if let Err(e) = cache.remove_envelope(&account_id, &src.folder, src.uid) {
+                    tracing::warn!("remove_envelope after save_draft replace failed: {e}");
+                }
+            }
+            match delete_result {
                 Ok(()) => Ok(()),
                 Err(e) => Err(NimbusError::Other(format!(
                     "Draft saved, but removing the previous copy (UID {}) failed: {e}",
