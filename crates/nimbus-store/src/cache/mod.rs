@@ -234,6 +234,38 @@ impl Cache {
         Ok(())
     }
 
+    /// Carry every cached row for a folder over to a new folder name
+    /// in lockstep with an IMAP `RENAME`. The server preserves UIDs
+    /// across a rename, so updating the `folder` column on `messages`
+    /// + `folder_sync_state` + `folders` is enough to keep every
+    /// envelope / body / unread-count bookmark pointing at the right
+    /// mailbox — without re-fetching a single byte.
+    pub fn rename_folder(
+        &self,
+        account_id: &str,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "UPDATE messages SET folder = ?3
+             WHERE account_id = ?1 AND folder = ?2",
+            params![account_id, old_name, new_name],
+        )?;
+        conn.execute(
+            "UPDATE folder_sync_state SET folder = ?3
+             WHERE account_id = ?1 AND folder = ?2",
+            params![account_id, old_name, new_name],
+        )?;
+        conn.execute(
+            "UPDATE folders SET name = ?3
+             WHERE account_id = ?1 AND name = ?2",
+            params![account_id, old_name, new_name],
+        )?;
+        info!("Renamed cache rows: '{account_id}'/'{old_name}' -> '{new_name}'");
+        Ok(())
+    }
+
     /// Clear all cached rows for a single folder — used when the server's
     /// `UIDVALIDITY` for that folder has changed, meaning every UID we had
     /// cached now refers to a different message (or none at all).

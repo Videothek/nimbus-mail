@@ -2695,6 +2695,94 @@ fn get_cached_folders(
     cache.get_folders(&account_id).map_err(Into::into)
 }
 
+// ── Folder-management commands ──────────────────────────────────
+//
+// Thin wrappers around the IMAP CREATE / DELETE / RENAME primitives.
+// JMAP-only accounts get a not-yet-implemented error so we're never
+// surprised by a silent no-op on those; the JMAP side would use
+// `Mailbox/set` and is deferred.
+
+/// Create a new mailbox. Hierarchy is expressed in the `name`
+/// argument itself (e.g. `"Projects/2026"` with the server's
+/// delimiter) — the caller decides whether this is top-level or a
+/// subfolder, we just forward to IMAP. After success the frontend
+/// re-runs `fetch_folders` so the new entry shows up.
+#[tauri::command]
+async fn create_folder(
+    account_id: String,
+    name: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let account = load_account(&cache, &account_id)?;
+    if uses_jmap(&account) {
+        return Err(NimbusError::Other(
+            "Creating folders via JMAP is not yet implemented — this account uses JMAP".into(),
+        ));
+    }
+    let mut client = connect_imap(&account).await?;
+    let result = client.create_folder(&name).await;
+    let _ = client.logout().await;
+    result
+}
+
+/// Delete a mailbox. The IMAP server usually refuses to drop a
+/// non-empty folder (errors bubble up unchanged). On success we
+/// wipe the folder's cache rows so the sidebar / MailList don't
+/// keep showing ghost envelopes until the next reconcile.
+#[tauri::command]
+async fn delete_folder(
+    account_id: String,
+    name: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let account = load_account(&cache, &account_id)?;
+    if uses_jmap(&account) {
+        return Err(NimbusError::Other(
+            "Deleting folders via JMAP is not yet implemented — this account uses JMAP".into(),
+        ));
+    }
+    let mut client = connect_imap(&account).await?;
+    let result = client.delete_folder(&name).await;
+    let _ = client.logout().await;
+
+    if result.is_ok() {
+        if let Err(e) = cache.wipe_folder(&account_id, &name) {
+            tracing::warn!("wipe_folder after delete_folder failed: {e}");
+        }
+    }
+
+    result
+}
+
+/// Rename a mailbox. IMAP RENAME preserves UIDs, so we carry every
+/// cached envelope / body / sync bookmark over to the new name in
+/// one SQL pass via `Cache::rename_folder` — no re-fetching.
+#[tauri::command]
+async fn rename_folder(
+    account_id: String,
+    old_name: String,
+    new_name: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let account = load_account(&cache, &account_id)?;
+    if uses_jmap(&account) {
+        return Err(NimbusError::Other(
+            "Renaming folders via JMAP is not yet implemented — this account uses JMAP".into(),
+        ));
+    }
+    let mut client = connect_imap(&account).await?;
+    let result = client.rename_folder(&old_name, &new_name).await;
+    let _ = client.logout().await;
+
+    if result.is_ok() {
+        if let Err(e) = cache.rename_folder(&account_id, &old_name, &new_name) {
+            tracing::warn!("cache.rename_folder failed: {e}");
+        }
+    }
+
+    result
+}
+
 // ── Cache-first read commands ───────────────────────────────────
 //
 // These return whatever's in the local cache instantly so the UI has
@@ -3415,6 +3503,9 @@ fn main() {
             fetch_message,
             download_email_attachment,
             fetch_folders,
+            create_folder,
+            delete_folder,
+            rename_folder,
             mark_as_read,
             set_message_read,
             send_email,

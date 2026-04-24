@@ -224,6 +224,72 @@ impl ImapClient {
         Ok(folders)
     }
 
+    /// Create a new mailbox on the server via IMAP `CREATE`.
+    ///
+    /// `name` is the full hierarchy path in display form (e.g.
+    /// `"Projects"` for a top-level folder, `"INBOX/Projects/2026"`
+    /// for a subfolder using the `/` delimiter that most servers
+    /// report via LIST). We re-encode to Modified UTF-7 on the wire
+    /// via `to_wire` — the same path every other mailbox-naming
+    /// command uses — so non-ASCII folder names round-trip correctly.
+    pub async fn create_folder(&mut self, name: &str) -> Result<(), NimbusError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+        session
+            .create(to_wire(name))
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("CREATE '{name}' failed: {e}")))?;
+        info!("Created mailbox '{name}'");
+        Ok(())
+    }
+
+    /// Delete a mailbox via IMAP `DELETE`.
+    ///
+    /// Most servers refuse to delete a folder that still holds
+    /// messages — the error bubbles up to the UI unchanged so the
+    /// user sees a real reason ("Mailbox has children" / "Mailbox
+    /// is not empty"). Callers that want "delete even if full"
+    /// semantics should first move the messages to Trash.
+    pub async fn delete_folder(&mut self, name: &str) -> Result<(), NimbusError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+        session
+            .delete(to_wire(name))
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("DELETE '{name}' failed: {e}")))?;
+        info!("Deleted mailbox '{name}'");
+        Ok(())
+    }
+
+    /// Rename a mailbox via IMAP `RENAME`.
+    ///
+    /// The server rewrites all UIDs server-side but keeps messages
+    /// intact; our local cache needs a parallel update so envelopes
+    /// and bodies that were stored under the old name carry over
+    /// to the new one. That's handled in the caller (`main.rs`)
+    /// via `Cache::rename_folder` — this method only drives the
+    /// IMAP side.
+    pub async fn rename_folder(
+        &mut self,
+        from: &str,
+        to: &str,
+    ) -> Result<(), NimbusError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+        session
+            .rename(to_wire(from), to_wire(to))
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("RENAME '{from}' -> '{to}' failed: {e}")))?;
+        info!("Renamed mailbox '{from}' -> '{to}'");
+        Ok(())
+    }
+
     /// Select a folder for reading (uses EXAMINE — read-only, no state changes).
     ///
     /// In IMAP you must SELECT (or EXAMINE) a folder before you can fetch messages
