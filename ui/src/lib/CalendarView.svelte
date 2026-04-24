@@ -1237,9 +1237,14 @@
 </div>
 
 {#if creatingDraft}
+  <!-- Only pass the *visible* calendars to the editor — the
+       dropdown is how the user picks where a new event lands, and
+       a hidden calendar shouldn't be a reachable destination. Edit
+       mode is unreachable on hidden calendars anyway (their events
+       never paint on the grid), so the same filter applies there. -->
   <EventEditor
     mode="create"
-    {calendars}
+    calendars={visibleCalendars}
     draft={creatingDraft}
     onclose={closeEditor}
     onsaved={onEditorSaved}
@@ -1247,7 +1252,7 @@
 {:else if editingEvent}
   <EventEditor
     mode="edit"
-    {calendars}
+    calendars={visibleCalendars}
     event={editingEvent}
     onclose={closeEditor}
     onsaved={onEditorSaved}
