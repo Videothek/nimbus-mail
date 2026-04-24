@@ -601,8 +601,19 @@
     error = ''
     sending = true
     try {
+      // `replaceSource` lets the backend APPEND + EXPUNGE in a single
+      // IMAP session — critical for "edit an existing draft" because
+      // two separate commands were sometimes leaving the original
+      // copy behind (server hadn't flushed the APPEND before the
+      // DELETE ran on a fresh connection). Letting the backend batch
+      // the two also guarantees APPEND and DELETE target the *same*
+      // folder (the one the user opened the draft from), even on
+      // servers where `pick_drafts_folder` would otherwise choose a
+      // different `\Drafts`-attributed mailbox than the one the user
+      // is looking at.
+      const src = initial?.draftSource
       await invoke('save_draft', {
-        accountId: fromAccountId,
+        accountId: src?.accountId ?? fromAccountId,
         email: {
           from: fromAddress,
           to: splitAddrs(to),
@@ -614,18 +625,8 @@
           body_html: bodyHtml || null,
           attachments,
         },
+        replaceSource: src ? { folder: src.folder, uid: src.uid } : null,
       })
-      // We APPEND a fresh copy to Drafts (the backend has no "replace
-      // by UID" primitive); the previous copy, if any, is expunged
-      // afterwards so the mailbox holds exactly one version of the
-      // draft the user is actively editing. If the expunge fails the
-      // save itself was fine — we stay open with a hint so the user
-      // can see what went wrong and manually delete the stale copy.
-      const expungeErr = await expungeDraftSource()
-      if (expungeErr) {
-        error = `Draft saved, but removing the old copy failed: ${expungeErr}`
-        return
-      }
       onclose()
     } catch (e: any) {
       error = formatError(e) || 'Failed to save draft'

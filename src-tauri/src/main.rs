@@ -2141,11 +2141,12 @@ async fn set_message_read(
 /// Permanently remove a message from a folder on the server.
 ///
 /// Used by the "edit draft" flow: the user opens a draft in Compose,
-/// edits, and clicks Send or Save draft. In either case the old
-/// draft needs to go away so the Drafts mailbox doesn't accumulate
-/// a copy per edit. IMAP-only for now — JMAP would use
-/// `Email/set { destroy }` and is deferred alongside the matching
-/// `save_draft` path.
+/// edits, and clicks Send. The old draft needs to go away so the
+/// Drafts mailbox doesn't accumulate a copy per edit. Also used by
+/// MailView's "Delete" button for outright removal (no Trash
+/// intermediate — callers that want Trash semantics use
+/// `move_to_trash` instead). IMAP-only for now; JMAP would use
+/// `Email/set { destroy }` and is deferred alongside `save_draft`.
 #[tauri::command]
 async fn delete_message(
     account_id: String,
@@ -2173,6 +2174,88 @@ async fn delete_message(
     let result = client.delete_message(&folder, uid).await;
     let _ = client.logout().await;
     result
+}
+
+/// Move the message to the account's Archive folder.
+///
+/// Semantics: single-click "I'm done with this, get it out of my
+/// face" — the message is preserved on the server (unlike
+/// `delete_message`) but pulled out of the current mailbox so the
+/// Inbox stops showing it. If no Archive folder can be located
+/// (server doesn't expose one and no common name matches) the
+/// caller gets a clear error rather than silently deleting.
+#[tauri::command]
+async fn archive_message(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let account = load_account(&cache, &account_id)?;
+
+    if uses_jmap(&account) {
+        return Err(NimbusError::Other(
+            "Archiving via JMAP is not yet implemented — this account uses JMAP".into(),
+        ));
+    }
+
+    let Some(archive) = pick_archive_folder(&account.id, cache.inner()) else {
+        return Err(NimbusError::Other(
+            "no Archive folder found for this account — create one on the server or tell us which folder to use".into(),
+        ));
+    };
+
+    if archive.eq_ignore_ascii_case(&folder) {
+        // Already sitting in Archive. Silently succeed rather than
+        // move-to-self, which some servers reject and others treat
+        // as a noop with a surprising UID change.
+        return Ok(());
+    }
+
+    let password = credentials::get_imap_password(&account.id)?;
+    let mut client = ImapClient::connect(
+        &account.imap_host,
+        account.imap_port,
+        &account.email,
+        &password,
+        &account.trusted_certs,
+    )
+    .await?;
+    let result = client.move_message(&folder, uid, &archive).await;
+    let _ = client.logout().await;
+    result
+}
+
+/// Locate the account's Archive folder via the IMAP `\Archive`
+/// special-use attribute or a name-based fallback. Same strategy as
+/// `pick_sent_folder` / `pick_drafts_folder`.
+fn pick_archive_folder(account_id: &str, cache: &Cache) -> Option<String> {
+    let folders = cache.get_folders(account_id).ok()?;
+
+    if let Some(by_attr) = folders.iter().find(|f| {
+        f.attributes
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case("archive") || a.eq_ignore_ascii_case("\\archive"))
+    }) {
+        return Some(by_attr.name.clone());
+    }
+
+    const NAME_HINTS: &[&str] = &[
+        "archive",
+        "archiv",
+        "archives",
+        "archivé",
+        "archivés",
+        "all mail",
+        "[gmail]/all mail",
+    ];
+    folders
+        .iter()
+        .find(|f| {
+            let lower = f.name.to_lowercase();
+            NAME_HINTS.iter().any(|h| lower.contains(h))
+        })
+        .map(|f| f.name.clone())
 }
 
 // ── SMTP commands ───────────────────────────────────────────────
@@ -2264,6 +2347,20 @@ async fn append_to_sent(
     result
 }
 
+/// Payload for the "this save replaces an existing draft" flow.
+/// When Compose opens an existing draft for editing, the frontend
+/// hands the source UID + folder back here so `save_draft` can
+/// APPEND-then-delete inside the same IMAP session — avoiding the
+/// split-connection race where a separate `delete_message` call
+/// would run after the APPEND and sometimes leave the original
+/// behind.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DraftReplaceSource {
+    folder: String,
+    uid: u32,
+}
+
 /// Save an in-progress message to the account's IMAP Drafts folder.
 ///
 /// Mirrors `send_email` structurally (same `OutgoingEmail` input, same
@@ -2272,10 +2369,20 @@ async fn append_to_sent(
 /// devices and the user can finish / send it later. IMAP-only for now;
 /// JMAP accounts get a clear error until the equivalent `Email/set`
 /// create-in-Drafts flow is wired up (tracked separately).
+///
+/// When `replace_source` is set, the save is treated as a
+/// continuation of an existing draft the user opened from Drafts:
+/// we APPEND the new copy into that *same folder* (not whatever
+/// `pick_drafts_folder` thinks Drafts is — the server might have
+/// multiple drafts-like folders and we want the edit to land where
+/// the user is looking) and then EXPUNGE the source UID in the
+/// same session, so from the user's perspective the draft they
+/// were editing is updated in place.
 #[tauri::command]
 async fn save_draft(
     account_id: String,
     email: OutgoingEmail,
+    replace_source: Option<DraftReplaceSource>,
     cache: State<'_, Cache>,
 ) -> Result<(), NimbusError> {
     let account = load_account(&cache, &account_id)?;
@@ -2288,24 +2395,16 @@ async fn save_draft(
 
     let message = build_outgoing_message(&email)?;
     let raw = message.formatted();
-    append_to_drafts(&account, &raw, &cache).await
-}
 
-/// Locate the account's Drafts folder (via the IMAP `\Drafts` attribute,
-/// or a name-based fallback) and `APPEND` the raw RFC 822 bytes there
-/// with the `\Draft` flag set — that's what tells other clients and the
-/// server that this message is a work-in-progress rather than a
-/// received or already-sent mail.
-async fn append_to_drafts(
-    account: &Account,
-    raw: &[u8],
-    cache: &Cache,
-) -> Result<(), NimbusError> {
-    let drafts_folder = pick_drafts_folder(&account.id, cache);
-    let Some(drafts) = drafts_folder else {
-        return Err(NimbusError::Other(
-            "no Drafts folder found in cached folder list".into(),
-        ));
+    // Prefer the source folder when replacing an existing draft so
+    // APPEND and DELETE both target the folder the user actually
+    // opened the draft from. Otherwise fall back to the "find the
+    // account's Drafts folder" heuristic for brand-new drafts.
+    let target_folder = match replace_source.as_ref() {
+        Some(src) => src.folder.clone(),
+        None => pick_drafts_folder(&account.id, cache.inner()).ok_or_else(|| {
+            NimbusError::Other("no Drafts folder found in cached folder list".into())
+        })?,
     };
 
     let password = credentials::get_imap_password(&account.id)?;
@@ -2317,13 +2416,33 @@ async fn append_to_drafts(
         &account.trusted_certs,
     )
     .await?;
-    // `\Draft` is the IMAP flag that marks a message as an unfinished
-    // draft. `\Seen` keeps it out of the unread badge — there's no
-    // point notifying the user about a mail they themselves are
-    // composing.
-    let result = client
-        .append_message(&drafts, raw, &["\\Draft", "\\Seen"])
+
+    // `\Draft` marks the message as an unfinished draft. `\Seen`
+    // keeps it out of the unread badge — there's no point notifying
+    // the user about a mail they themselves just composed.
+    let append_result = client
+        .append_message(&target_folder, &raw, &["\\Draft", "\\Seen"])
         .await;
+
+    // Only attempt the delete if the APPEND actually succeeded —
+    // otherwise a flaky APPEND would have us destroy the user's
+    // only remaining copy.
+    let result = if append_result.is_ok() {
+        if let Some(src) = replace_source {
+            match client.delete_message(&src.folder, src.uid).await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(NimbusError::Other(format!(
+                    "Draft saved, but removing the previous copy (UID {}) failed: {e}",
+                    src.uid
+                ))),
+            }
+        } else {
+            Ok(())
+        }
+    } else {
+        append_result
+    };
+
     let _ = client.logout().await;
     result
 }
@@ -3139,6 +3258,7 @@ fn main() {
             send_email,
             save_draft,
             delete_message,
+            archive_message,
             get_cached_envelopes,
             get_unified_cached_envelopes,
             get_cached_message,
