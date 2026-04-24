@@ -123,7 +123,23 @@
   // `!initial` check would mis-classify every blank compose as a reply
   // and skip both draft restoration and signature insertion.
   // svelte-ignore state_referenced_locally
-  const saved = !isReplyOrForward(initial) ? loadDraft() : null
+  const saved = !isReplyOrForward(initial) ? loadMeaningfulDraft() : null
+
+  /** Load a persisted draft *only if* it has any user content — the
+      autosave effect writes an empty placeholder at mount, so a naive
+      `loadDraft()` on the next compose would return that empty object
+      and be treated as "there's work to restore". That mis-classifies
+      every subsequent blank compose as a draft-continuation and
+      suppresses the signature `$effect` below. Treating an empty
+      object as "no draft" brings the first-compose behavior (signature
+      appended, nothing to restore) back to every compose the user
+      didn't actually type into. */
+  function loadMeaningfulDraft() {
+    const d = loadDraft()
+    if (!d) return null
+    if (!d.to && !d.cc && !d.bcc && !d.subject && !d.body) return null
+    return d
+  }
 
   /** Does this initial prefill carry quoted reply / forward content?
       Other prefills (FilesView attachments, TalkView links) leave the
