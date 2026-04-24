@@ -20,6 +20,7 @@
   import TextAlign from '@tiptap/extension-text-align'
   import Placeholder from '@tiptap/extension-placeholder'
   import { TextStyle } from '@tiptap/extension-text-style'
+  import { FontFamily } from '@tiptap/extension-font-family'
   import Color from '@tiptap/extension-color'
   import Highlight from '@tiptap/extension-highlight'
   import { Table } from '@tiptap/extension-table'
@@ -43,6 +44,10 @@
      *  different From: account — caller is responsible for passing
      *  the *full* new body, not a diff. */
     setHtml: (html: string) => void
+    /** Insert an image at the current selection. Used by the "insert
+     *  from Nextcloud" flow: the parent opens the file picker,
+     *  downloads bytes, converts to a data URL, and calls this. */
+    insertImage: (src: string) => void
   }
 
   interface Props {
@@ -55,12 +60,20 @@
     /** Fires once the editor instance is ready, handing over a small
      *  imperative API for operations the parent can't drive via props. */
     onready?: (api: EditorApi) => void
+    /** If set, the "insert image from Nextcloud" toolbar button calls
+     *  this instead of prompting for a URL. The parent is expected to
+     *  mount the `NextcloudFilePicker` and hand the picked image's
+     *  data URL back via `editorApi.insertImage`. When not provided
+     *  the button falls back to the plain URL prompt so embedders
+     *  without Nextcloud (tests, future standalone usage) still work. */
+    onrequestncimage?: () => void
   }
   let {
     content = '',
     placeholder = 'Write your message\u2026',
     onchange,
     onready,
+    onrequestncimage,
   }: Props = $props()
 
   // svelte-ignore state_referenced_locally
@@ -68,6 +81,11 @@
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
+        // Tiptap 3 renamed `History` to `UndoRedo`. `newGroupDelay`
+        // groups consecutive keystrokes inside a 500ms window into
+        // one undo unit — Ctrl-Z then undoes a word (not a single
+        // character), which is what every modern editor does.
+        undoRedo: { newGroupDelay: 500 },
       }),
       Underline,
       // Extend the Link mark so every rendered <a> carries a `title`
@@ -93,11 +111,123 @@
         openOnClick: false,
         HTMLAttributes: { target: '_blank', rel: 'noopener noreferrer' },
       }),
-      Image.configure({ inline: true }),
+      // Image extended with drag-to-resize. A plain `<img>` doesn't
+      // expose a native resize affordance, so we:
+      //   1. add optional `width` / `height` attributes that parse
+      //      from and render into the HTML, so sizes round-trip
+      //      through save/open/send,
+      //   2. plug in a NodeView that renders a wrapper span around
+      //      the `<img>` with a small bottom-right corner handle;
+      //      dragging the handle resizes the image in real time
+      //      and commits the final width as an attr on pointer-up.
+      // The NodeView is plain DOM (no Svelte NodeView wrapper) so
+      // it stays under 80 lines and doesn't drag Svelte runtime
+      // into ProseMirror's view layer.
+      Image.extend({
+        inline: true,
+        addAttributes() {
+          return {
+            ...this.parent?.(),
+            width: {
+              default: null,
+              parseHTML: (el) => {
+                const w = el.getAttribute('width')
+                if (w && /^\d+$/.test(w)) return parseInt(w, 10)
+                return null
+              },
+              renderHTML: (attrs) =>
+                attrs.width ? { width: String(attrs.width) } : {},
+            },
+            height: {
+              default: null,
+              parseHTML: (el) => {
+                const h = el.getAttribute('height')
+                if (h && /^\d+$/.test(h)) return parseInt(h, 10)
+                return null
+              },
+              renderHTML: (attrs) =>
+                attrs.height ? { height: String(attrs.height) } : {},
+            },
+          }
+        },
+        addNodeView() {
+          return ({ node, editor: ed, getPos }) => {
+            const wrap = document.createElement('span')
+            wrap.className = 'ev-resizable-img'
+            wrap.style.display = 'inline-block'
+            wrap.style.position = 'relative'
+            wrap.style.maxWidth = '100%'
+
+            const img = document.createElement('img')
+            img.src = node.attrs.src
+            img.alt = node.attrs.alt ?? ''
+            if (node.attrs.width) img.style.width = `${node.attrs.width}px`
+            img.style.maxWidth = '100%'
+            img.style.height = 'auto'
+            img.style.display = 'block'
+            wrap.appendChild(img)
+
+            const handle = document.createElement('span')
+            handle.className = 'ev-resize-handle'
+            handle.setAttribute('aria-hidden', 'true')
+            wrap.appendChild(handle)
+
+            handle.addEventListener('pointerdown', (e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              const startX = e.clientX
+              const startWidth = img.offsetWidth || img.naturalWidth || 200
+              let latestWidth = startWidth
+              const onMove = (ev: PointerEvent) => {
+                latestWidth = Math.max(50, startWidth + ev.clientX - startX)
+                img.style.width = `${latestWidth}px`
+              }
+              const onUp = () => {
+                window.removeEventListener('pointermove', onMove)
+                window.removeEventListener('pointerup', onUp)
+                const pos = typeof getPos === 'function' ? getPos() : null
+                if (pos == null) return
+                // Commit the final width as an attribute so it
+                // round-trips through save/send. `setNodeSelection`
+                // puts the cursor on the node so `updateAttributes`
+                // lands on the right one.
+                ed.chain()
+                  .setNodeSelection(pos)
+                  .updateAttributes('image', { width: Math.round(latestWidth) })
+                  .run()
+              }
+              window.addEventListener('pointermove', onMove)
+              window.addEventListener('pointerup', onUp)
+            })
+
+            return {
+              dom: wrap,
+              update(updatedNode) {
+                // Reject updates of a different type so ProseMirror
+                // falls back to full re-render; accept same-type
+                // updates and re-sync the width.
+                if (updatedNode.type.name !== 'image') return false
+                img.src = updatedNode.attrs.src
+                img.alt = updatedNode.attrs.alt ?? ''
+                if (updatedNode.attrs.width) {
+                  img.style.width = `${updatedNode.attrs.width}px`
+                } else {
+                  img.style.width = ''
+                }
+                return true
+              },
+            }
+          }
+        },
+      }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       // svelte-ignore state_referenced_locally
       Placeholder.configure({ placeholder }),
+      // TextStyle is the mark that FontFamily / Color attach to;
+      // the extensions are cumulative — adding more marks here
+      // doesn't invalidate existing content.
       TextStyle,
+      FontFamily,
       Color,
       Highlight.configure({ multicolor: true }),
       Table.configure({ resizable: true }),
@@ -136,6 +266,13 @@
           // we don't want to round-trip back through `onchange` and
           // re-trigger reactive effects watching `bodyHtml`.
           ed.commands.setContent(html, { emitUpdate: false })
+        },
+        insertImage: (src: string) => {
+          // Run through `chain().focus()` so the editor takes focus
+          // even if the insert was triggered from a modal in the
+          // parent — otherwise Tiptap's selection can sit outside
+          // the document and the image lands in the wrong place.
+          ed.chain().focus().setImage({ src }).run()
         },
       })
     }
@@ -187,11 +324,54 @@
     input.click()
   }
 
-  /** Insert an image from a URL. */
-  function addImageFromUrl() {
+  /** Request an image via the parent-supplied picker, or fall back
+   *  to a raw URL prompt if the embedder didn't provide one. The
+   *  picker path (Compose → NextcloudFilePicker) is what users
+   *  actually want — the URL prompt just keeps the component
+   *  self-contained for anywhere we reuse it without a Nextcloud
+   *  backend. */
+  function addImageFromNcOrUrl() {
+    if (onrequestncimage) {
+      onrequestncimage()
+      return
+    }
     const url = window.prompt('Image URL')
     if (url) {
       cmd().setImage({ src: url }).run()
+    }
+  }
+
+  // ── Font family picker ─────────────────────────────────────
+  //
+  // Families we expose in the toolbar. Each entry is `{label, css}`
+  // — label is what the user sees, `css` is the literal
+  // `font-family` value Tiptap writes into `<span style="font-
+  // family: …">`. Using system-font stacks (not single names)
+  // means the recipient's client renders something reasonable
+  // even when their OS doesn't have the exact face installed.
+  const FONT_FAMILIES: Array<{ label: string; css: string }> = [
+    { label: 'Default', css: '' },
+    {
+      label: 'Sans-serif',
+      css: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    },
+    { label: 'Serif', css: 'Georgia, "Times New Roman", Times, serif' },
+    {
+      label: 'Monospace',
+      css: '"SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    },
+    { label: 'Arial', css: 'Arial, Helvetica, sans-serif' },
+    { label: 'Times', css: '"Times New Roman", Times, serif' },
+  ]
+  let showFontPicker = $state(false)
+
+  function setFont(css: string) {
+    showFontPicker = false
+    if (!$editor) return
+    if (css === '') {
+      $editor.chain().focus().unsetFontFamily().run()
+    } else {
+      $editor.chain().focus().setFontFamily(css).run()
     }
   }
 
@@ -321,11 +501,73 @@
   :global(.tiptap ul) { list-style-type: disc; }
   :global(.tiptap ol) { list-style-type: decimal; }
   :global(.tiptap a) { color: var(--color-primary-500); text-decoration: underline; }
+
+  /* Image resize handle styling. Positioned at the bottom-right
+     corner of the wrapper span inserted by our NodeView (see
+     `addNodeView` on the Image extension). The handle stays
+     invisible until the image or wrapper is hovered so the editor
+     doesn't show UI chrome on every image on first render. */
+  :global(.tiptap .ev-resizable-img) {
+    line-height: 0;
+  }
+  :global(.tiptap .ev-resize-handle) {
+    position: absolute;
+    right: -4px;
+    bottom: -4px;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--color-primary-500);
+    background: var(--color-surface-50);
+    border-radius: 2px;
+    cursor: nwse-resize;
+    opacity: 0;
+    transition: opacity 120ms ease;
+    touch-action: none;
+  }
+  :global(.tiptap .ev-resizable-img:hover .ev-resize-handle) {
+    opacity: 1;
+  }
 </style>
 
 {#if $editor}
   <!-- Toolbar -->
   <div class="flex flex-wrap items-center gap-0.5 px-2 py-1.5 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 text-sm">
+    <!-- Font family picker — dropdown because 6 named families
+         wouldn't fit as individual toolbar buttons. The trigger
+         shows the generic "Font" label since the active selection
+         can span multiple families. Clicking outside closes the
+         menu (see global listener inside the `$effect` below). -->
+    <div class="relative inline-block">
+      <button
+        type="button"
+        class="tb"
+        title="Font family"
+        onclick={() => (showFontPicker = !showFontPicker)}
+      >
+        Font ▾
+      </button>
+      {#if showFontPicker}
+        <div
+          class="absolute z-20 mt-1 min-w-40 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md py-1"
+          role="menu"
+          tabindex="-1"
+          onclick={(e) => e.stopPropagation()}
+          onkeydown={(e) => e.key === 'Escape' && (showFontPicker = false)}
+        >
+          {#each FONT_FAMILIES as f (f.label)}
+            <button
+              type="button"
+              class="w-full text-left px-3 py-1 text-sm hover:bg-surface-200 dark:hover:bg-surface-800"
+              style={f.css ? `font-family: ${f.css};` : ''}
+              onclick={() => setFont(f.css)}
+            >{f.label}</button>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
+    <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
+
     <!-- Text style group -->
     <button class="tb {active('bold')}" title="Bold" onclick={() => $editor?.chain().focus().toggleBold().run()}>
       <strong>B</strong>
@@ -395,13 +637,23 @@
       Link
     </button>
 
-    <!-- Image: dropdown with File / URL options -->
+    <!-- Image: two entry points. "Image" picks a local file and
+         embeds it as a data URL. "NC" opens the parent's Nextcloud
+         file picker (via `onrequestncimage`) so the user can drop
+         in a file they already have on their Nextcloud without
+         saving it locally first — consistent with how attachments
+         work in the Compose toolbar. Falls back to a URL prompt if
+         the embedder didn't wire up the Nextcloud callback. -->
     <div class="relative inline-block">
-      <button class="tb" title="Insert image" onclick={() => addImageFromFile()}>
+      <button class="tb" title="Insert image from local file" onclick={() => addImageFromFile()}>
         Image
       </button>
-      <button class="tb text-[10px]" title="Insert image from URL" onclick={() => addImageFromUrl()}>
-        URL
+      <button
+        class="tb text-[10px]"
+        title={onrequestncimage ? 'Insert image from Nextcloud' : 'Insert image from URL'}
+        onclick={() => addImageFromNcOrUrl()}
+      >
+        {onrequestncimage ? 'NC' : 'URL'}
       </button>
     </div>
 
