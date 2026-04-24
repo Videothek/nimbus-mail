@@ -237,6 +237,40 @@ impl Cache {
         Ok(())
     }
 
+    /// Insert a single freshly-created calendar without pruning.
+    /// `upsert_calendars` is the reconcile path — it assumes the
+    /// incoming list is the complete server-side truth and deletes
+    /// anything missing. After a MKCALENDAR we only know about the
+    /// one new collection, so we add it directly and let the next
+    /// full sync fill in `ctag` / `sync_token`. Idempotent on the
+    /// (nc_account_id, path) uniqueness constraint — a replay after
+    /// discovery already grabbed the row is a no-op on the stored
+    /// values.
+    pub fn insert_calendar(
+        &self,
+        nc_account_id: &str,
+        row: &CalendarRow,
+    ) -> Result<String, CacheError> {
+        let conn = self.pool.get()?;
+        let id = format!("{nc_account_id}::{}", row.path);
+        conn.execute(
+            "INSERT INTO calendars
+                (id, nextcloud_account_id, path, display_name, color, ctag, hidden)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT (nextcloud_account_id, path) DO NOTHING",
+            params![
+                id,
+                nc_account_id,
+                row.path,
+                row.display_name,
+                row.color,
+                row.ctag,
+                row.hidden as i64,
+            ],
+        )?;
+        Ok(id)
+    }
+
     /// Patch an existing calendar's display name / color in place.
     /// Either argument may be `None`; both `None` is a no-op. The
     /// server-side change is driven separately via
