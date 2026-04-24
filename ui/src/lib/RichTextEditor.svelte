@@ -124,7 +124,6 @@
       // it stays under 80 lines and doesn't drag Svelte runtime
       // into ProseMirror's view layer.
       Image.extend({
-        inline: true,
         addAttributes() {
           return {
             ...this.parent?.(),
@@ -219,7 +218,7 @@
             }
           }
         },
-      }),
+      }).configure({ inline: true }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       // svelte-ignore state_referenced_locally
       Placeholder.configure({ placeholder }),
