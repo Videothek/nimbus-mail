@@ -10,9 +10,10 @@ mod badge;
 
 use nimbus_caldav::{
     Calendar as CaldavCalendar, RawEvent, build_ics as caldav_build_ics,
-    create_event as caldav_create_event, delete_event as caldav_delete_event,
+    create_calendar as caldav_create_calendar, create_event as caldav_create_event,
+    delete_calendar as caldav_delete_calendar, delete_event as caldav_delete_event,
     list_calendars as caldav_list_calendars, sync_calendar as caldav_sync_calendar,
-    update_event as caldav_update_event,
+    update_calendar as caldav_update_calendar, update_event as caldav_update_event,
 };
 use nimbus_carddav::{
     Addressbook, ParsedVcard, RawContact, build_vcard, create_contact as carddav_create_contact,
@@ -1082,6 +1083,12 @@ struct CalendarSummary {
     display_name: String,
     color: Option<String>,
     last_synced_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Local visibility flag. `true` means the user asked for this
+    /// calendar to stay off the sidebar + agenda. Surfaced on every
+    /// summary so both the Settings checkboxes and the CalendarView
+    /// filter can read straight off a single fetch.
+    #[serde(default)]
+    hidden: bool,
 }
 
 /// Summary returned to the UI after a calendar sync run.
@@ -1125,6 +1132,11 @@ async fn list_nextcloud_calendars(
             color: c.color,
             // Discovery alone doesn't produce a sync timestamp.
             last_synced_at: None,
+            // Raw discovery can't know about local toggles — the
+            // cache-backed `get_cached_calendars` path does. This
+            // command is only used by the setup probe, so defaulting
+            // to visible is fine.
+            hidden: false,
         })
         .collect())
 }
@@ -1260,8 +1272,134 @@ fn get_cached_calendars(
             display_name: c.display_name,
             color: c.color,
             last_synced_at: c.last_synced_at,
+            hidden: c.hidden,
         })
         .collect())
+}
+
+// ── Calendar management commands (Issue #82) ─────────────────
+//
+// CalDAV wrappers that add / rename / recolor / delete a calendar
+// collection on the server and keep the local cache in step. Each
+// mutates exactly one calendar row; the next `sync_nextcloud_
+// calendars` run reconciles etag / sync-token / event deltas.
+// `set_nextcloud_calendar_hidden` is the only one that doesn't
+// talk to the server — hidden is a local-only flag.
+
+/// Create a new calendar on the server and seed a cache row.
+///
+/// The path segment is a fresh UUID so two concurrent creates can't
+/// collide on the wire and so a later rename never rewrites URLs
+/// downstream (the slug stays stable regardless of display name).
+/// Returns the newly-inserted summary so the UI can add it to the
+/// sidebar without a follow-up fetch.
+#[tauri::command]
+async fn create_nextcloud_calendar(
+    nc_id: String,
+    display_name: String,
+    color: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<CalendarSummary, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    let server = account.server_url.trim_end_matches('/');
+    let home = format!("{server}/remote.php/dav/calendars/{}/", account.username);
+    let slug = uuid::Uuid::new_v4().to_string();
+
+    let url = caldav_create_calendar(
+        &home,
+        &account.username,
+        &app_password,
+        &slug,
+        &display_name,
+        color.as_deref(),
+    )
+    .await?;
+
+    // Seed the cache so the sidebar paints the new calendar
+    // instantly. `ctag` / `sync_token` land on the next full sync —
+    // no event rows yet anyway, so the bookkeeping gap is cosmetic.
+    let row = CalendarRow {
+        path: url.clone(),
+        display_name: display_name.clone(),
+        color: color.clone(),
+        ctag: None,
+        hidden: false,
+    };
+    let id = cache.insert_calendar(&nc_id, &row)?;
+
+    Ok(CalendarSummary {
+        id,
+        nextcloud_account_id: nc_id,
+        display_name,
+        color,
+        last_synced_at: None,
+        hidden: false,
+    })
+}
+
+/// Rename and/or recolor an existing calendar via a single CalDAV
+/// `PROPPATCH`. Either argument may be `None` — passing both `None`
+/// is a no-op server-side and cache-side.
+#[tauri::command]
+async fn update_nextcloud_calendar(
+    calendar_id: String,
+    display_name: Option<String>,
+    color: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let (nc_id, path) = cache
+        .get_calendar_server_path(&calendar_id)?
+        .ok_or_else(|| NimbusError::Other(format!("no cached calendar with id '{calendar_id}'")))?;
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    caldav_update_calendar(
+        &path,
+        &account.username,
+        &app_password,
+        display_name.as_deref(),
+        color.as_deref(),
+    )
+    .await?;
+
+    cache.update_calendar_metadata(&calendar_id, display_name.as_deref(), color.as_deref())?;
+    Ok(())
+}
+
+/// Delete a calendar on the server + drop the cached row (events
+/// cascade). The server's DELETE is destructive and irreversible on
+/// most Nextcloud setups — callers (i.e. the UI) are expected to
+/// confirm with the user before invoking this.
+#[tauri::command]
+async fn delete_nextcloud_calendar(
+    calendar_id: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let (nc_id, path) = cache
+        .get_calendar_server_path(&calendar_id)?
+        .ok_or_else(|| NimbusError::Other(format!("no cached calendar with id '{calendar_id}'")))?;
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    caldav_delete_calendar(&path, &account.username, &app_password).await?;
+    cache.remove_calendar(&calendar_id)?;
+    Ok(())
+}
+
+/// Flip a calendar's local visibility flag. Purely client-side — no
+/// CalDAV traffic — so the same server-side calendar can have
+/// different visibility on different devices without fighting over
+/// a single server setting.
+#[tauri::command]
+fn set_nextcloud_calendar_hidden(
+    calendar_id: String,
+    hidden: bool,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    cache.set_calendar_hidden(&calendar_id, hidden)?;
+    Ok(())
 }
 
 /// Events in `[range_start, range_end)` across the given calendars,
@@ -3584,6 +3722,10 @@ fn main() {
             list_nextcloud_calendars,
             sync_nextcloud_calendars,
             get_cached_calendars,
+            create_nextcloud_calendar,
+            update_nextcloud_calendar,
+            delete_nextcloud_calendar,
+            set_nextcloud_calendar_hidden,
             get_cached_events,
             create_calendar_event,
             update_calendar_event,
