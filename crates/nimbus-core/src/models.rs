@@ -106,6 +106,15 @@ pub struct Account {
     /// have to share one global list.
     #[serde(default)]
     pub folder_icons: Vec<FolderIconRule>,
+    /// Per-folder icon overrides keyed by the full folder path. This
+    /// is the "I right-clicked → Change icon" entry point — beats
+    /// every other icon source (including special-use attributes)
+    /// so if the user pins 📮 on their Inbox they actually get 📮,
+    /// not whatever our default would be. Keyed by full path so
+    /// `INBOX/Projects/2026` and `Projects/2026` can each carry
+    /// their own choice without one matching the other.
+    #[serde(default)]
+    pub folder_icon_overrides: std::collections::HashMap<String, String>,
     /// TLS certificates the user has explicitly trusted for this
     /// account — typically self-signed certs on a personal mail
     /// server that webpki-roots wouldn't normally accept. Each

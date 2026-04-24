@@ -66,6 +66,11 @@
         the active account to apply per-account theming. Optional
         because older `accounts.json` files predate the field. */
     folder_icons?: { keyword: string; icon: string }[]
+    /** Per-folder icon overrides (full path → emoji). Set via the
+        Sidebar's right-click → Change icon picker; wins over
+        special-use / keyword rules in `folderIcon`. Optional for
+        the same back-compat reason as `folder_icons`. */
+    folder_icon_overrides?: Record<string, string>
   }
   let accounts = $state<Account[]>([])
   let activeAccountId = $state<string | null>(null)
@@ -753,6 +758,7 @@
         unified={unifiedMode}
         onselectfolder={selectFolder}
         oncompose={() => openCompose()}
+        onaccountschanged={checkAccounts}
       />
       <!-- Mail-list column: SearchBar on top, then either MailList
            or SearchResults depending on whether the user is

@@ -37,12 +37,16 @@
   }
 
   /** Slim account row — only the folder-icon rules matter to the
-      Sidebar now that account switching has moved to the IconRail. */
+      Sidebar now that account switching has moved to the IconRail.
+      `folder_icon_overrides` is the per-folder picker state: maps
+      the full folder path to the user's chosen emoji and beats every
+      other icon source when it exists. */
   interface Account {
     id: string
     display_name: string
     email: string
     folder_icons?: FolderIconRule[]
+    folder_icon_overrides?: Record<string, string>
   }
 
   interface Props {
@@ -58,6 +62,12 @@
     unified?: boolean
     onselectfolder: (name: string) => void
     oncompose?: () => void
+    /** Called after the Sidebar has mutated an account record on
+     *  the backend (currently only: `set_folder_icon`). The parent
+     *  re-fetches its `accounts` state so the updated overrides
+     *  map flows back into the Sidebar's `accounts` prop on the
+     *  next render. */
+    onaccountschanged?: () => void
   }
   let {
     accounts = [],
@@ -67,6 +77,7 @@
     unified = false,
     onselectfolder,
     oncompose,
+    onaccountschanged,
   }: Props = $props()
 
   let folders = $state<Folder[]>([])
@@ -109,6 +120,66 @@
    *  command is in flight to keep the user from double-submitting. */
   let folderOpBusy = $state(false)
   let folderOpError = $state('')
+
+  /** Emoji-picker modal state. `null` = hidden; otherwise the
+   *  folder whose icon is being changed. The picker's free-text
+   *  input lives in its own `$state` so a cancel/close reliably
+   *  wipes it regardless of how the modal is dismissed. */
+  let iconPicker = $state<{ folder: Folder } | null>(null)
+  let iconPickerCustom = $state('')
+
+  /** Curated palette for the picker grid. Ordered by rough
+   *  intent-group (mail basics, work, storage, life, signals)
+   *  so the visual scan beats raw alphabetical / random order.
+   *  Users who want something outside this set can type any
+   *  emoji in the free-text input — the Rust command accepts any
+   *  non-empty string. */
+  const ICON_PRESETS: string[] = [
+    // mail-adjacent defaults
+    '\u{1F4C1}', '\u{1F4C2}', '\u{1F4E5}', '\u{1F4E4}', '\u{1F4EC}', '\u{1F4EE}',
+    '\u{1F4E7}', '\u{1F4E8}', '\u{1F4DD}', '\u{2B50}', '\u{1F3F7}\u{FE0F}', '\u{1F4CC}',
+    // storage / security
+    '\u{1F5C3}\u{FE0F}', '\u{1F5D1}\u{FE0F}', '\u{1F512}', '\u{1F511}', '\u{1F6AB}', '\u{2764}\u{FE0F}',
+    // work / project
+    '\u{1F4BC}', '\u{1F4CA}', '\u{1F3AF}', '\u{1F4A1}', '\u{1F4C5}', '\u{1F514}',
+    // life / topics
+    '\u{1F3E6}', '\u{1F6D2}', '\u{1F3E0}', '\u{2708}\u{FE0F}', '\u{2615}', '\u{1F393}',
+    // signals / fun
+    '\u{1F4F7}', '\u{1F3B5}', '\u{1F3AC}', '\u{1F3A8}', '\u{26A1}', '\u{1F680}',
+  ]
+
+  function openIconPicker(folder: Folder) {
+    iconPickerCustom = ''
+    iconPicker = { folder }
+  }
+
+  function closeIconPicker() {
+    iconPicker = null
+    iconPickerCustom = ''
+  }
+
+  /** Persist the icon choice via `set_folder_icon`. `emoji === null`
+   *  clears any existing override, restoring the folder to the
+   *  default resolution chain (special-use → keyword rule → 📁).
+   *  On success the parent re-fetches accounts so the new override
+   *  flows back into the `accounts` prop and the next render
+   *  paints it. */
+  async function commitFolderIcon(folder: Folder, emoji: string | null) {
+    folderOpBusy = true
+    try {
+      await invoke('set_folder_icon', {
+        accountId,
+        folderName: folder.name,
+        icon: emoji,
+      })
+      onaccountschanged?.()
+      closeIconPicker()
+    } catch (e) {
+      folderOpError = formatError(e) || 'Failed to set folder icon'
+    } finally {
+      folderOpBusy = false
+    }
+  }
 
   /** Close the context menu. Safe to call when already closed.
    *  Also clears any transient error left over from a prior
@@ -411,11 +482,23 @@
     )
   }
 
-  /** Pick an icon for a folder. Special-use attributes (and a few
-      name fallbacks) win first so INBOX/Sent/Drafts/etc. always show
-      their canonical icons; user-defined `folder_icons` rules then
-      apply to anything left over before the generic 📁 fallback. */
+  /** Pick an icon for a folder. Resolution chain, highest priority
+      first:
+        1. Per-folder override set via the emoji picker — absolute
+           winner so the user's explicit "I picked 📮 for my Inbox"
+           beats the special-use default.
+        2. IMAP special-use attributes (and a few name fallbacks)
+           so INBOX/Sent/Drafts/etc. get canonical icons without
+           the user having to pick anything.
+        3. Keyword rules from Account.folder_icons (the older
+           "folder name contains X → use Y" mechanism).
+        4. Generic 📁 fallback.
+     */
   function folderIcon(f: Folder): string {
+    const account = accounts.find((a) => a.id === accountId)
+    const override = account?.folder_icon_overrides?.[f.name]
+    if (override) return override
+
     const name = f.name.toLowerCase()
     const attrs = f.attributes.map((a) => a.toLowerCase())
 
@@ -428,13 +511,21 @@
     if (has('flagged') || has('starred')) return '\u{2B50}' // ⭐
     if (has('archive')) return '\u{1F5C3}' // 🗃️
 
-    const rules = accounts.find((a) => a.id === accountId)?.folder_icons ?? []
+    const rules = account?.folder_icons ?? []
     for (const rule of rules) {
       const kw = rule.keyword.trim().toLowerCase()
       if (kw && name.includes(kw)) return rule.icon
     }
 
     return '\u{1F4C1}' // 📁
+  }
+
+  /** True if an override is currently in effect for this folder —
+   *  drives whether the picker's "Reset to default" button is
+   *  enabled. */
+  function hasIconOverride(f: Folder): boolean {
+    const account = accounts.find((a) => a.id === accountId)
+    return !!account?.folder_icon_overrides?.[f.name]
   }
 
   // Short display name: strip the hierarchy prefix so "INBOX/Work" shows
@@ -688,6 +779,15 @@
     >New subfolder</button>
     <button
       class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 disabled:opacity-50 disabled:hover:bg-transparent"
+      disabled={folderOpBusy}
+      onclick={() => {
+        const f = contextMenu!.folder
+        contextMenu = null
+        openIconPicker(f)
+      }}
+    >Change icon…</button>
+    <button
+      class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 disabled:opacity-50 disabled:hover:bg-transparent"
       disabled={folderOpBusy || stdFolder}
       title={stdFolder ? "Standard folders can't be renamed" : ''}
       onclick={() => {
@@ -743,6 +843,90 @@
           disabled={folderOpBusy}
           onclick={() => void confirmDelete()}
         >{folderOpBusy ? 'Deleting…' : 'Delete'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Emoji picker for "Change icon". Grid of curated folder
+     emojis at the top, a free-text input below for anything not
+     in the grid, and a "Reset to default" that clears the override
+     on the backend. Clicking any grid emoji commits immediately —
+     snappier than a click-then-confirm flow and matches the way
+     GitHub / Slack / Linear reaction pickers work. -->
+{#if iconPicker}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onmousedown={(e) => { if (e.target === e.currentTarget) closeIconPicker() }}
+  >
+    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-104 max-w-full p-5">
+      <h3 class="text-base font-semibold mb-1">Choose an icon</h3>
+      <p class="text-xs text-surface-500 mb-4">
+        For <span class="font-medium text-surface-700 dark:text-surface-300">{displayName(iconPicker.folder)}</span>
+      </p>
+
+      <!-- Preset grid: 6 cols × 6 rows. Each cell is a square
+           button so the emoji centers cleanly regardless of font
+           metrics. -->
+      <div class="grid grid-cols-6 gap-1 mb-4">
+        {#each ICON_PRESETS as emoji (emoji)}
+          <button
+            class="w-12 h-12 rounded-md text-xl flex items-center justify-center
+                   hover:bg-surface-200 dark:hover:bg-surface-800 disabled:opacity-50
+                   transition-colors"
+            disabled={folderOpBusy}
+            title={emoji}
+            onclick={() => void commitFolderIcon(iconPicker!.folder, emoji)}
+          >{emoji}</button>
+        {/each}
+      </div>
+
+      <!-- Free-text escape hatch. Any single emoji the user
+           pastes / types here goes through the same command. -->
+      <div class="flex items-center gap-2 mb-4">
+        <label class="text-xs text-surface-500 shrink-0" for="icon-picker-custom">Or any emoji:</label>
+        <input
+          id="icon-picker-custom"
+          type="text"
+          class="input flex-1 text-sm px-2 py-1 rounded-md"
+          placeholder="🎨"
+          bind:value={iconPickerCustom}
+          disabled={folderOpBusy}
+          onkeydown={(e) => {
+            if (e.key === 'Enter' && iconPickerCustom.trim()) {
+              e.preventDefault()
+              void commitFolderIcon(iconPicker!.folder, iconPickerCustom.trim())
+            }
+          }}
+        />
+        <button
+          class="btn btn-sm preset-filled-primary-500"
+          disabled={folderOpBusy || !iconPickerCustom.trim()}
+          onclick={() => void commitFolderIcon(iconPicker!.folder, iconPickerCustom.trim())}
+        >Set</button>
+      </div>
+
+      {#if folderOpError}
+        <p class="text-xs text-red-500 mb-3 wrap-break-word">{folderOpError}</p>
+      {/if}
+
+      <div class="flex justify-between">
+        <button
+          class="btn preset-outlined-surface-500 text-xs"
+          disabled={folderOpBusy || !hasIconOverride(iconPicker.folder)}
+          title={hasIconOverride(iconPicker.folder)
+            ? 'Remove the custom icon — fall back to the default.'
+            : 'No custom icon set.'}
+          onclick={() => void commitFolderIcon(iconPicker!.folder, null)}
+        >Reset to default</button>
+        <button
+          class="btn preset-outlined-surface-500"
+          disabled={folderOpBusy}
+          onclick={closeIconPicker}
+        >Cancel</button>
       </div>
     </div>
   </div>
