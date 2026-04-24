@@ -52,6 +52,10 @@
     display_name: string
     color: string | null
     last_synced_at: string | null
+    /** Local visibility flag — `true` means the calendar is hidden
+     *  from the sidebar list and its events are skipped in the
+     *  agenda. Toggled per-calendar via NextcloudSettings. */
+    hidden?: boolean
   }
   interface EventAttendee {
     email: string
@@ -128,11 +132,186 @@
   let loadedRangeEnd = $state<Date>(new Date(0))
 
   // Per-calendar visibility — a Set of calendar ids that are
-  // currently *hidden*. Outlook-style "uncheck a calendar to remove
-  // its events from the grid". A Set rather than a positive list so
-  // newly-discovered calendars default to visible without needing a
-  // separate "show new calendars" workflow.
-  let hiddenCalendarIds = $state<Set<string>>(new Set())
+  // currently *hidden*. The toggle itself lives in NextcloudSettings
+  // (persisted to the cache's `hidden` column); here we just derive a
+  // Set from the `calendars` list so the agenda filter stays O(1) on
+  // every event lookup. A Set rather than a positive list so newly-
+  // discovered calendars default to visible automatically.
+  const hiddenCalendarIds = $derived(
+    new Set(calendars.filter((c) => c.hidden).map((c) => c.id)),
+  )
+  /** Calendars the sidebar list renders — everything except the
+   *  ones the user opted to hide from Settings. */
+  const visibleCalendars = $derived(calendars.filter((c) => !c.hidden))
+
+  // ── Calendar management (Issue #82) ─────────────────────────
+  // Right-click a calendar row → Rename / Change color / Delete.
+  // Top-level `+` button → new calendar modal with name + color.
+  // Each operation owns its own `$state` slot, mirroring the
+  // folder-management pattern in Sidebar.svelte so the same UX
+  // shape carries across the app.
+
+  /** Right-click menu state — anchors a popup at `{x, y}` for the
+   *  selected calendar. */
+  let calendarContextMenu = $state<{
+    calendar: CalendarSummary
+    x: number
+    y: number
+  } | null>(null)
+
+  /** Inline rename — `calendar_id` while the row's text is swapped
+   *  for an `<input>`. Matches the folder-rename pattern. */
+  let renamingCalendarId = $state<string | null>(null)
+  let calendarRenameValue = $state('')
+
+  /** Active color-picker modal, if any. `color` is the current
+   *  working swatch — `commit` writes it via `update_calendar`. */
+  let colorPicker = $state<{ calendar: CalendarSummary; color: string } | null>(null)
+
+  /** "New calendar" modal state. Only open when non-null; `ncId`
+   *  is the target Nextcloud account (auto-picked when there's
+   *  only one, user-picked otherwise via a small account select). */
+  let newCalendarForm = $state<{
+    ncId: string
+    displayName: string
+    color: string
+  } | null>(null)
+
+  /** Destructive-op confirm. */
+  let deleteCalendarConfirm = $state<CalendarSummary | null>(null)
+
+  /** Shared busy / error slots — gate double-clicks during an
+   *  in-flight CalDAV request, surface errors inline. */
+  let calendarOpBusy = $state(false)
+  let calendarOpError = $state('')
+
+  const COLOR_PRESETS = [
+    '#2bb0ed', '#4caf50', '#8e44ad', '#e67e22', '#e74c3c', '#f39c12',
+    '#16a085', '#34495e', '#c0392b', '#d35400', '#27ae60', '#2980b9',
+  ]
+
+  function openCalendarContextMenu(e: MouseEvent, calendar: CalendarSummary) {
+    e.preventDefault()
+    // Any existing edit loses focus when the menu opens on a
+    // different row — cleaner than juggling priorities.
+    renamingCalendarId = null
+    calendarContextMenu = { calendar, x: e.clientX, y: e.clientY }
+  }
+
+  function closeCalendarContextMenu() {
+    calendarContextMenu = null
+    calendarOpError = ''
+  }
+
+  $effect(() => {
+    if (!calendarContextMenu) return
+    const onDocMouseDown = () => closeCalendarContextMenu()
+    const onDocKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeCalendarContextMenu()
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    document.addEventListener('keydown', onDocKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown)
+      document.removeEventListener('keydown', onDocKey)
+    }
+  })
+
+  /** Refresh the calendar list + events from the cache after a
+   *  mutation. Uses the current visible range so the agenda picks
+   *  up any CASCADE deletes from the removed calendar. */
+  async function refreshCalendars() {
+    if (loadedRangeStart.getTime() > 0) {
+      await reloadFromCache(loadedRangeStart, loadedRangeEnd)
+    }
+  }
+
+  async function commitCalendarRename() {
+    if (!renamingCalendarId || calendarOpBusy) return
+    const id = renamingCalendarId
+    const current = calendars.find((c) => c.id === id)
+    const newName = calendarRenameValue.trim()
+    if (!current || !newName || newName === current.display_name) {
+      renamingCalendarId = null
+      calendarRenameValue = ''
+      return
+    }
+    calendarOpBusy = true
+    try {
+      await invoke('update_nextcloud_calendar', {
+        calendarId: id,
+        displayName: newName,
+        color: null,
+      })
+      renamingCalendarId = null
+      calendarRenameValue = ''
+      await refreshCalendars()
+    } catch (e) {
+      calendarOpError = formatError(e) || 'Failed to rename calendar'
+    } finally {
+      calendarOpBusy = false
+    }
+  }
+
+  function cancelCalendarRename() {
+    renamingCalendarId = null
+    calendarRenameValue = ''
+  }
+
+  async function commitColorChange() {
+    if (!colorPicker || calendarOpBusy) return
+    const { calendar, color } = colorPicker
+    calendarOpBusy = true
+    try {
+      await invoke('update_nextcloud_calendar', {
+        calendarId: calendar.id,
+        displayName: null,
+        color,
+      })
+      colorPicker = null
+      await refreshCalendars()
+    } catch (e) {
+      calendarOpError = formatError(e) || 'Failed to change color'
+    } finally {
+      calendarOpBusy = false
+    }
+  }
+
+  async function commitNewCalendar() {
+    if (!newCalendarForm || calendarOpBusy) return
+    const { ncId, displayName, color } = newCalendarForm
+    const trimmed = displayName.trim()
+    if (!trimmed) return
+    calendarOpBusy = true
+    try {
+      await invoke('create_nextcloud_calendar', {
+        ncId,
+        displayName: trimmed,
+        color,
+      })
+      newCalendarForm = null
+      await refreshCalendars()
+    } catch (e) {
+      calendarOpError = formatError(e) || 'Failed to create calendar'
+    } finally {
+      calendarOpBusy = false
+    }
+  }
+
+  async function confirmCalendarDelete() {
+    if (!deleteCalendarConfirm || calendarOpBusy) return
+    const { id } = deleteCalendarConfirm
+    calendarOpBusy = true
+    try {
+      await invoke('delete_nextcloud_calendar', { calendarId: id })
+      deleteCalendarConfirm = null
+      await refreshCalendars()
+    } catch (e) {
+      calendarOpError = formatError(e) || 'Failed to delete calendar'
+    } finally {
+      calendarOpBusy = false
+    }
+  }
 
   // ── Event editor state ──────────────────────────────────────
   // The editor is mounted lazily — only when one of these holds a
@@ -577,19 +756,6 @@
     return colorById.get(eventCalendarId(ev)) ?? '#2bb0ed'
   }
 
-  function toggleCalendar(id: string) {
-    // Svelte 5 reactivity for Sets/Maps requires reassignment — mutating
-    // in place won't trigger derived recomputation. Rebuild the Set
-    // each toggle so `weekBuckets` re-runs.
-    const next = new Set(hiddenCalendarIds)
-    if (next.has(id)) {
-      next.delete(id)
-    } else {
-      next.add(id)
-    }
-    hiddenCalendarIds = next
-  }
-
   // All-day overflow: if a day has more than the visible cap, show
   // the first N and a "+M more" affordance. Collapsed detail UI is a
   // follow-up — today this just prevents the strip from growing
@@ -793,33 +959,81 @@
       <aside
         class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100/60 dark:bg-surface-800/40 overflow-y-auto p-3"
       >
-        <div class="text-xs font-semibold uppercase tracking-wider text-surface-500 mb-2 px-1">
-          Calendars
+        <!-- Section header. The `+` mirrors the Mail sidebar's
+             "new folder" affordance so the add-calendar UX lives
+             where the user already expects to look for it. Visibility
+             toggles live in NextcloudSettings — this list only shows
+             the calendars the user actually wants to see. -->
+        <div class="flex items-center justify-between mb-2 px-1">
+          <span class="text-xs font-semibold uppercase tracking-wider text-surface-500">
+            Calendars
+          </span>
+          <button
+            class="w-5 h-5 rounded-md flex items-center justify-center text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700 disabled:opacity-50"
+            title="New calendar"
+            aria-label="New calendar"
+            disabled={calendarOpBusy || accounts.length === 0}
+            onclick={() => {
+              calendarContextMenu = null
+              renamingCalendarId = null
+              newCalendarForm = {
+                ncId: accounts[0]?.id ?? '',
+                displayName: '',
+                color: COLOR_PRESETS[0],
+              }
+              calendarOpError = ''
+            }}
+          >+</button>
         </div>
         <ul class="space-y-1">
-          {#each calendars as c (c.id)}
-            {@const visible = !hiddenCalendarIds.has(c.id)}
+          {#each visibleCalendars as c (c.id)}
             <li>
-              <label
-                class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-200/60 dark:hover:bg-surface-700/40 cursor-pointer text-sm"
-              >
-                <input
-                  type="checkbox"
-                  class="checkbox"
-                  checked={visible}
-                  onchange={() => toggleCalendar(c.id)}
-                />
-                <span
-                  class="w-3 h-3 rounded-sm shrink-0"
-                  style="background-color: {c.color ?? '#2bb0ed'};"
-                ></span>
-                <span class="truncate" title={c.display_name}>
-                  {c.display_name}
-                </span>
-              </label>
+              {#if renamingCalendarId === c.id}
+                <div class="flex items-center gap-2 px-2 py-1">
+                  <span
+                    class="w-3 h-3 rounded-sm shrink-0"
+                    style="background-color: {c.color ?? '#2bb0ed'};"
+                  ></span>
+                  <!-- svelte-ignore a11y_autofocus -->
+                  <input
+                    type="text"
+                    class="input flex-1 text-sm px-2 py-0.5 rounded"
+                    bind:value={calendarRenameValue}
+                    disabled={calendarOpBusy}
+                    autofocus
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter') { e.preventDefault(); void commitCalendarRename() }
+                      else if (e.key === 'Escape') { e.preventDefault(); cancelCalendarRename() }
+                    }}
+                    onblur={() => { if (renamingCalendarId) void commitCalendarRename() }}
+                  />
+                </div>
+              {:else}
+                <div
+                  class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-200/60 dark:hover:bg-surface-700/40 text-sm cursor-default"
+                  role="listitem"
+                  oncontextmenu={(e) => openCalendarContextMenu(e, c)}
+                >
+                  <span
+                    class="w-3 h-3 rounded-sm shrink-0"
+                    style="background-color: {c.color ?? '#2bb0ed'};"
+                  ></span>
+                  <span class="flex-1 truncate" title={c.display_name}>
+                    {c.display_name}
+                  </span>
+                </div>
+              {/if}
             </li>
           {/each}
+          {#if visibleCalendars.length === 0 && calendars.length > 0}
+            <li class="px-2 py-1 text-xs text-surface-500">
+              All calendars are hidden. Toggle visibility in Settings.
+            </li>
+          {/if}
         </ul>
+        {#if calendarOpError}
+          <p class="mt-2 px-1 text-xs text-red-500 wrap-break-word">{calendarOpError}</p>
+        {/if}
       </aside>
 
       <!-- Main grid area. Both header and time grid live in a single
@@ -1038,6 +1252,234 @@
     onclose={closeEditor}
     onsaved={onEditorSaved}
   />
+{/if}
+
+<!-- Right-click context menu for a calendar row. `position: fixed`
+     at the click point, z-60 so it sits above modal overlays. -->
+{#if calendarContextMenu}
+  <div
+    class="fixed z-60 min-w-44 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
+    style="left: {Math.min(calendarContextMenu.x, window.innerWidth - 200)}px; top: {Math.min(calendarContextMenu.y, window.innerHeight - 150)}px;"
+    role="menu"
+    tabindex="-1"
+    onmousedown={(e) => e.stopPropagation()}
+  >
+    <button
+      class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 disabled:opacity-50 disabled:hover:bg-transparent"
+      disabled={calendarOpBusy}
+      onclick={() => {
+        const c = calendarContextMenu!.calendar
+        calendarContextMenu = null
+        renamingCalendarId = c.id
+        calendarRenameValue = c.display_name
+      }}
+    >Rename</button>
+    <button
+      class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 disabled:opacity-50 disabled:hover:bg-transparent"
+      disabled={calendarOpBusy}
+      onclick={() => {
+        const c = calendarContextMenu!.calendar
+        calendarContextMenu = null
+        colorPicker = { calendar: c, color: c.color ?? COLOR_PRESETS[0] }
+      }}
+    >Change color…</button>
+    <button
+      class="w-full text-left px-3 py-1.5 hover:bg-red-500/10 text-red-600 dark:text-red-400 disabled:opacity-50 disabled:hover:bg-transparent"
+      disabled={calendarOpBusy}
+      onclick={() => {
+        const c = calendarContextMenu!.calendar
+        calendarContextMenu = null
+        deleteCalendarConfirm = c
+      }}
+    >Delete…</button>
+  </div>
+{/if}
+
+<!-- New calendar modal. Name + color swatch grid + optional NC
+     account picker (only rendered when the user has >1 connected). -->
+{#if newCalendarForm}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onmousedown={(e) => { if (e.target === e.currentTarget) newCalendarForm = null }}
+  >
+    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-96 max-w-full p-5">
+      <h3 class="text-base font-semibold mb-3">New calendar</h3>
+
+      {#if accounts.length > 1}
+        <label class="block text-xs text-surface-500 mb-1" for="new-cal-account">Nextcloud account</label>
+        <select
+          id="new-cal-account"
+          class="select w-full text-sm px-2 py-1.5 rounded-md mb-3"
+          bind:value={newCalendarForm.ncId}
+          disabled={calendarOpBusy}
+        >
+          {#each accounts as a (a.id)}
+            <option value={a.id}>{a.display_name || a.username}</option>
+          {/each}
+        </select>
+      {/if}
+
+      <label class="block text-xs text-surface-500 mb-1" for="new-cal-name">Name</label>
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        id="new-cal-name"
+        type="text"
+        class="input w-full text-sm px-2 py-1.5 rounded-md mb-3"
+        placeholder="Work, Family, …"
+        bind:value={newCalendarForm.displayName}
+        disabled={calendarOpBusy}
+        autofocus
+        onkeydown={(e) => {
+          if (e.key === 'Enter' && newCalendarForm?.displayName.trim()) {
+            e.preventDefault()
+            void commitNewCalendar()
+          }
+        }}
+      />
+
+      <!-- Color grid. Click-to-select; the chosen swatch shows a
+           ring. Kept as a fixed palette — matches what Nextcloud
+           web offers, and `MKCALENDAR` accepts any hex anyway if a
+           user wants a custom tone (there's a native color input
+           in the "Change color" flow for that). -->
+      <div class="text-xs text-surface-500 mb-1">Color</div>
+      <div class="flex flex-wrap gap-1.5 mb-4">
+        {#each COLOR_PRESETS as swatch (swatch)}
+          <button
+            type="button"
+            class="w-7 h-7 rounded-full transition-transform
+                   {newCalendarForm.color === swatch
+                     ? 'ring-2 ring-offset-2 ring-offset-surface-50 dark:ring-offset-surface-900 ring-primary-500'
+                     : 'hover:scale-110'}"
+            style="background-color: {swatch};"
+            title={swatch}
+            aria-label="Color {swatch}"
+            onclick={() => { newCalendarForm!.color = swatch }}
+          ></button>
+        {/each}
+      </div>
+
+      {#if calendarOpError}
+        <p class="text-xs text-red-500 mb-3 wrap-break-word">{calendarOpError}</p>
+      {/if}
+
+      <div class="flex justify-end gap-2">
+        <button
+          class="btn preset-outlined-surface-500"
+          disabled={calendarOpBusy}
+          onclick={() => (newCalendarForm = null)}
+        >Cancel</button>
+        <button
+          class="btn preset-filled-primary-500"
+          disabled={calendarOpBusy || !newCalendarForm.displayName.trim()}
+          onclick={() => void commitNewCalendar()}
+        >{calendarOpBusy ? 'Creating…' : 'Create'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Color picker modal. Presets + a native `<input type="color">`
+     for anything outside the palette. -->
+{#if colorPicker}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onmousedown={(e) => { if (e.target === e.currentTarget) colorPicker = null }}
+  >
+    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-96 max-w-full p-5">
+      <h3 class="text-base font-semibold mb-1">Change color</h3>
+      <p class="text-xs text-surface-500 mb-4">
+        For <span class="font-medium text-surface-700 dark:text-surface-300">{colorPicker.calendar.display_name}</span>
+      </p>
+
+      <div class="flex flex-wrap gap-1.5 mb-4">
+        {#each COLOR_PRESETS as swatch (swatch)}
+          <button
+            type="button"
+            class="w-7 h-7 rounded-full transition-transform
+                   {colorPicker.color === swatch
+                     ? 'ring-2 ring-offset-2 ring-offset-surface-50 dark:ring-offset-surface-900 ring-primary-500'
+                     : 'hover:scale-110'}"
+            style="background-color: {swatch};"
+            title={swatch}
+            aria-label="Color {swatch}"
+            onclick={() => { colorPicker!.color = swatch }}
+          ></button>
+        {/each}
+      </div>
+
+      <div class="flex items-center gap-2 mb-4">
+        <label class="text-xs text-surface-500 shrink-0" for="color-picker-custom">Custom:</label>
+        <input
+          id="color-picker-custom"
+          type="color"
+          class="w-10 h-8 border border-surface-300 dark:border-surface-600 rounded"
+          bind:value={colorPicker.color}
+          disabled={calendarOpBusy}
+        />
+        <span class="text-xs text-surface-500 font-mono">{colorPicker.color}</span>
+      </div>
+
+      {#if calendarOpError}
+        <p class="text-xs text-red-500 mb-3 wrap-break-word">{calendarOpError}</p>
+      {/if}
+
+      <div class="flex justify-end gap-2">
+        <button
+          class="btn preset-outlined-surface-500"
+          disabled={calendarOpBusy}
+          onclick={() => (colorPicker = null)}
+        >Cancel</button>
+        <button
+          class="btn preset-filled-primary-500"
+          disabled={calendarOpBusy}
+          onclick={() => void commitColorChange()}
+        >{calendarOpBusy ? 'Saving…' : 'Save'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Delete-calendar confirm. Destructive ops always pass through
+     an explicit confirm because the server-side DELETE is
+     irreversible on most Nextcloud setups. -->
+{#if deleteCalendarConfirm}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onmousedown={(e) => { if (e.target === e.currentTarget) deleteCalendarConfirm = null }}
+  >
+    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-96 max-w-full p-5">
+      <h3 class="text-base font-semibold mb-2">Delete calendar?</h3>
+      <p class="text-sm text-surface-700 dark:text-surface-300 mb-4">
+        Delete <span class="font-medium">{deleteCalendarConfirm.display_name}</span> and every event in it?
+        This can't be undone.
+      </p>
+      {#if calendarOpError}
+        <p class="text-xs text-red-500 mb-3 wrap-break-word">{calendarOpError}</p>
+      {/if}
+      <div class="flex justify-end gap-2">
+        <button
+          class="btn preset-outlined-surface-500"
+          disabled={calendarOpBusy}
+          onclick={() => (deleteCalendarConfirm = null)}
+        >Cancel</button>
+        <button
+          class="btn preset-filled-error-500"
+          disabled={calendarOpBusy}
+          onclick={() => void confirmCalendarDelete()}
+        >{calendarOpBusy ? 'Deleting…' : 'Delete'}</button>
+      </div>
+    </div>
+  </div>
 {/if}
 
 <style>

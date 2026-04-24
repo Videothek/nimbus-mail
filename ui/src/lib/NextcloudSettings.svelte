@@ -77,6 +77,47 @@
   let contactsState = $state<Record<string, SyncRowState>>({})
   let calendarsState = $state<Record<string, SyncRowState>>({})
 
+  // Per-account cached calendar list for the visibility checkboxes
+  // under "Calendars". Reloaded after a sync + after a visibility
+  // toggle so the UI reflects the current `hidden` column.
+  interface CalendarSummary {
+    id: string
+    nextcloud_account_id: string
+    display_name: string
+    color: string | null
+    last_synced_at: string | null
+    hidden?: boolean
+  }
+  let calendarsList = $state<Record<string, CalendarSummary[]>>({})
+
+  async function loadCalendarsList(ncId: string) {
+    try {
+      const list = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
+      calendarsList[ncId] = list
+    } catch (e) {
+      console.warn('get_cached_calendars failed for', ncId, e)
+    }
+  }
+
+  /** Flip a calendar's `hidden` flag. Optimistic: update the local
+   *  list first so the checkbox commits instantly, then invoke the
+   *  Rust command. If the command errors we roll back and surface
+   *  the error through the calendars sync row. */
+  async function toggleCalendarHidden(ncId: string, calendarId: string, hidden: boolean) {
+    const list = calendarsList[ncId] ?? []
+    const prev = list.slice()
+    calendarsList[ncId] = list.map((c) =>
+      c.id === calendarId ? { ...c, hidden } : c,
+    )
+    try {
+      await invoke('set_nextcloud_calendar_hidden', { calendarId, hidden })
+    } catch (e) {
+      calendarsList[ncId] = prev
+      const state = calendarsState[ncId]
+      if (state) state.error = formatError(e) || 'Failed to toggle calendar visibility'
+    }
+  }
+
   // Connect flow
   let serverInput = $state('')
   let connecting = $state(false)      // true while a login is in flight
@@ -102,6 +143,7 @@
         ensureRow(calendarsState, a.id)
         await refreshContactsStatus(a.id)
         await refreshCalendarsStatus(a.id)
+        await loadCalendarsList(a.id)
       }
     } catch (e) {
       error = formatError(e) || 'Failed to load Nextcloud connections'
@@ -180,6 +222,10 @@
         state.error = report.errors.join('; ')
       }
       await refreshCalendarsStatus(acct.id)
+      // A sync reconciles the calendar list server-side — could add,
+      // rename, or remove calendars. Refresh the per-account list so
+      // the visibility checkboxes reflect what's actually there now.
+      await loadCalendarsList(acct.id)
     } catch (e) {
       state.error = formatError(e) || 'Sync failed'
     } finally {
@@ -354,6 +400,47 @@
                   error={cls?.error ?? null}
                   onsync={() => syncCalendars(acct)}
                 />
+                <!-- Per-calendar visibility. Drives the `hidden`
+                     column via `set_nextcloud_calendar_hidden`, which
+                     the CalendarView sidebar reads when filtering.
+                     Only renders when there's something to toggle —
+                     a freshly-connected account without a sync yet
+                     sees just the sync row above. -->
+                {#if (calendarsList[acct.id]?.length ?? 0) > 0}
+                  <div class="pl-6 pb-2 pr-3">
+                    <div class="text-[10px] font-semibold text-surface-500 uppercase tracking-wider mb-1">
+                      Visibility
+                    </div>
+                    <ul class="space-y-0.5">
+                      {#each calendarsList[acct.id] as c (c.id)}
+                        <li>
+                          <label
+                            class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-200/60 dark:hover:bg-surface-700/40 cursor-pointer text-xs"
+                          >
+                            <input
+                              type="checkbox"
+                              class="checkbox"
+                              checked={!c.hidden}
+                              onchange={(e) =>
+                                void toggleCalendarHidden(
+                                  acct.id,
+                                  c.id,
+                                  !(e.currentTarget as HTMLInputElement).checked,
+                                )}
+                            />
+                            <span
+                              class="w-2.5 h-2.5 rounded-sm shrink-0"
+                              style="background-color: {c.color ?? '#2bb0ed'};"
+                            ></span>
+                            <span class="truncate" title={c.display_name}>
+                              {c.display_name}
+                            </span>
+                          </label>
+                        </li>
+                      {/each}
+                    </ul>
+                  </div>
+                {/if}
               {/if}
             {/if}
           </div>
