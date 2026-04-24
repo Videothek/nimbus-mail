@@ -104,60 +104,29 @@
   )
   const fromAddress = $derived(fromAccount?.email ?? '')
 
-  // Drafts are namespaced by the *initial* account so a reply draft
-  // doesn't collide with the new-mail draft sitting on a different
-  // account. Switching accounts mid-compose keeps using the same
-  // draft key — the saved draft was started from this account.
-  // svelte-ignore state_referenced_locally
-  const DRAFT_KEY = `nimbus-draft:${accountId}`
-
   // ── Form state ──────────────────────────────────────────────
-  // If we got an explicit initial (reply/forward), use it. Otherwise
-  // try to rehydrate a locally saved draft so the user doesn't lose
-  // work when they accidentally close the window. Props are snapshotted
-  // at mount — the modal is remounted when the parent opens a new one.
-  //
-  // We discriminate "this is a reply/forward" by the presence of `body`
-  // or `in_reply_to` rather than by `!initial`, because `openCompose()`
-  // defaults `initial` to `{}` (truthy) for blank composes — a plain
-  // `!initial` check would mis-classify every blank compose as a reply
-  // and skip both draft restoration and signature insertion.
-  // svelte-ignore state_referenced_locally
-  const saved = !isReplyOrForward(initial) ? loadMeaningfulDraft() : null
-
-  /** Load a persisted draft *only if* it has any user content — the
-      autosave effect writes an empty placeholder at mount, so a naive
-      `loadDraft()` on the next compose would return that empty object
-      and be treated as "there's work to restore". That mis-classifies
-      every subsequent blank compose as a draft-continuation and
-      suppresses the signature `$effect` below. Treating an empty
-      object as "no draft" brings the first-compose behavior (signature
-      appended, nothing to restore) back to every compose the user
-      didn't actually type into. */
-  function loadMeaningfulDraft() {
-    const d = loadDraft()
-    if (!d) return null
-    if (!d.to && !d.cc && !d.bcc && !d.subject && !d.body) return null
-    return d
-  }
+  // Seeded from `initial` (reply / forward / "share this file" entry
+  // points) or blank. Drafts are no longer kept in localStorage —
+  // persistence now goes through the Drafts IMAP folder via the
+  // Save draft button, so there's nothing to rehydrate from here.
 
   /** Does this initial prefill carry quoted reply / forward content?
       Other prefills (FilesView attachments, TalkView links) leave the
       body empty, so the user is effectively starting a blank compose
-      with extras and should still get their saved draft + signature. */
+      with extras and should still get the signature appended. */
   function isReplyOrForward(init?: ComposeInitial): boolean {
     return !!(init && (init.body || init.in_reply_to))
   }
   // svelte-ignore state_referenced_locally
-  let to = $state(initial?.to ?? saved?.to ?? '')
+  let to = $state(initial?.to ?? '')
   // svelte-ignore state_referenced_locally
-  let cc = $state(initial?.cc ?? saved?.cc ?? '')
+  let cc = $state(initial?.cc ?? '')
   // svelte-ignore state_referenced_locally
-  let bcc = $state(initial?.bcc ?? saved?.bcc ?? '')
+  let bcc = $state(initial?.bcc ?? '')
   // svelte-ignore state_referenced_locally
-  let subject = $state(initial?.subject ?? saved?.subject ?? '')
+  let subject = $state(initial?.subject ?? '')
   // svelte-ignore state_referenced_locally
-  let body = $state(initial?.body ?? saved?.body ?? '')
+  let body = $state(initial?.body ?? '')
   // svelte-ignore state_referenced_locally
   let attachments = $state<Attachment[]>(initial?.attachments ?? [])
   // Whether the Nextcloud file picker modal is mounted. Picker is lazy
@@ -232,10 +201,10 @@
       `$derived` that may evaluate to `undefined` during the
       `$state(initialBodyHtml())` synchronous init — the effect runs
       after that, by which time the props have flowed through.
-      Skipped for replies / forwards / restored drafts: those already
-      carry their intended body content. */
+      Skipped for replies / forwards: those already carry their
+      intended body content. */
   $effect(() => {
-    if (isReplyOrForward(initial) || saved) return
+    if (isReplyOrForward(initial)) return
     if (!editorApi || !fromAccount) return
     const nextSig = signatureBlock(fromAccount.signature)
 
@@ -320,7 +289,6 @@
 
   let sending = $state(false)
   let error = $state('')
-  let savedHint = $state('')
 
   // ── Talk room + Calendar event creation from Compose ────────
   // Both flows piggyback on the existing modals (`CreateTalkRoomModal`,
@@ -613,41 +581,35 @@
     }
   }
 
-  // Autosave draft whenever the user edits a field. Skip the write
-  // for replies/forwards because `loadDraft()` only restores blank
-  // composes — autosaving a reply here would otherwise leak its
-  // body into the next blank-compose's draft slot for this account.
-  $effect(() => {
-    const draft = { to, cc, bcc, subject, body: bodyHtml }
-    if (isReplyOrForward(initial)) return
+  /** Persist the current compose state to the account's IMAP Drafts
+      folder via `save_draft` on the backend. The draft lands in the
+      Drafts mailbox (visible across devices); the compose modal then
+      closes. `sending` gates the button so a second click mid-flight
+      doesn't double-APPEND the same draft. */
+  async function saveDraft() {
+    error = ''
+    sending = true
     try {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
-    } catch {
-      // localStorage full or disabled — silently ignore.
+      await invoke('save_draft', {
+        accountId: fromAccountId,
+        email: {
+          from: fromAddress,
+          to: splitAddrs(to),
+          cc: splitAddrs(cc),
+          bcc: splitAddrs(bcc),
+          reply_to: null,
+          subject,
+          body_text: htmlToText(bodyHtml),
+          body_html: bodyHtml || null,
+          attachments,
+        },
+      })
+      onclose()
+    } catch (e: any) {
+      error = formatError(e) || 'Failed to save draft'
+    } finally {
+      sending = false
     }
-  })
-
-  function loadDraft(): null | { to: string; cc: string; bcc: string; subject: string; body: string } {
-    try {
-      const raw = localStorage.getItem(DRAFT_KEY)
-      return raw ? JSON.parse(raw) : null
-    } catch {
-      return null
-    }
-  }
-
-  function clearDraft() {
-    try {
-      localStorage.removeItem(DRAFT_KEY)
-    } catch {
-      // ignore
-    }
-  }
-
-  function saveDraft() {
-    // The effect already wrote it — just give the user confirmation.
-    savedHint = 'Draft saved'
-    setTimeout(() => (savedHint = ''), 1500)
   }
 
   // Split a comma/semicolon-separated address list into trimmed addresses.
@@ -739,7 +701,6 @@
           attachments,
         },
       })
-      clearDraft()
       onclose()
     } catch (e: any) {
       error = formatError(e) || 'Failed to send'
@@ -749,7 +710,8 @@
   }
 
   function cancel() {
-    // Draft is kept in localStorage so the user can resume later.
+    // No local persistence — if the user wants to resume later they
+    // need to click "Save draft" first (which APPENDs to IMAP Drafts).
     onclose()
   }
 </script>
@@ -896,10 +858,7 @@
         }
         onclick={openEventEditor}
       >{openingEvent ? (createdTalkLink ? 'Loading…' : 'Creating Talk room…') : '📅 Add event'}</button>
-      <button class="btn preset-outlined-surface-500" onclick={saveDraft}>Save draft</button>
-      {#if savedHint}
-        <span class="text-xs text-surface-500">{savedHint}</span>
-      {/if}
+      <button class="btn preset-outlined-surface-500" disabled={sending} onclick={saveDraft}>Save draft</button>
       <button class="btn preset-outlined-surface-500 ml-auto" onclick={cancel}>Cancel</button>
     </footer>
   </div>
