@@ -60,7 +60,8 @@ fn read_all(cache: &Cache) -> Result<Vec<Account>, NimbusError> {
         .prepare(
             "SELECT id, display_name, email, imap_host, imap_port,
                     smtp_host, smtp_port, use_jmap, jmap_url, signature,
-                    folder_icons_json, trusted_certs_json
+                    folder_icons_json, trusted_certs_json,
+                    folder_icon_overrides_json
              FROM accounts
              ORDER BY rowid",
         )
@@ -83,6 +84,9 @@ fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
     let folder_icons = serde_json::from_str(&folder_icons_json).unwrap_or_default();
     let trusted_certs_json: String = r.get(11)?;
     let trusted_certs = serde_json::from_str(&trusted_certs_json).unwrap_or_default();
+    let folder_icon_overrides_json: String = r.get(12)?;
+    let folder_icon_overrides =
+        serde_json::from_str(&folder_icon_overrides_json).unwrap_or_default();
     Ok(Account {
         id: r.get(0)?,
         display_name: r.get(1)?,
@@ -96,6 +100,7 @@ fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         signature: r.get(9)?,
         folder_icons,
         trusted_certs,
+        folder_icon_overrides,
     })
 }
 
@@ -122,13 +127,16 @@ fn insert_one(cache: &Cache, account: &Account) -> Result<(), NimbusError> {
         .map_err(|e| NimbusError::Storage(format!("serialize folder_icons: {e}")))?;
     let trusted_certs_json = serde_json::to_string(&account.trusted_certs)
         .map_err(|e| NimbusError::Storage(format!("serialize trusted_certs: {e}")))?;
+    let folder_icon_overrides_json = serde_json::to_string(&account.folder_icon_overrides)
+        .map_err(|e| NimbusError::Storage(format!("serialize folder_icon_overrides: {e}")))?;
     let conn = conn(cache)?;
     conn.execute(
         "INSERT INTO accounts
             (id, display_name, email, imap_host, imap_port,
              smtp_host, smtp_port, use_jmap, jmap_url, signature,
-             folder_icons_json, trusted_certs_json, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             folder_icons_json, trusted_certs_json,
+             folder_icon_overrides_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             account.id,
             account.display_name,
@@ -142,6 +150,7 @@ fn insert_one(cache: &Cache, account: &Account) -> Result<(), NimbusError> {
             account.signature,
             folder_icons_json,
             trusted_certs_json,
+            folder_icon_overrides_json,
             chrono::Utc::now().timestamp(),
         ],
     )
@@ -172,21 +181,24 @@ pub fn update_account(cache: &Cache, updated: Account) -> Result<(), NimbusError
         .map_err(|e| NimbusError::Storage(format!("serialize folder_icons: {e}")))?;
     let trusted_certs_json = serde_json::to_string(&updated.trusted_certs)
         .map_err(|e| NimbusError::Storage(format!("serialize trusted_certs: {e}")))?;
+    let folder_icon_overrides_json = serde_json::to_string(&updated.folder_icon_overrides)
+        .map_err(|e| NimbusError::Storage(format!("serialize folder_icon_overrides: {e}")))?;
     let conn = conn(cache)?;
     let changed = conn
         .execute(
             "UPDATE accounts
-             SET display_name       = ?2,
-                 email              = ?3,
-                 imap_host          = ?4,
-                 imap_port          = ?5,
-                 smtp_host          = ?6,
-                 smtp_port          = ?7,
-                 use_jmap           = ?8,
-                 jmap_url           = ?9,
-                 signature          = ?10,
-                 folder_icons_json  = ?11,
-                 trusted_certs_json = ?12
+             SET display_name               = ?2,
+                 email                      = ?3,
+                 imap_host                  = ?4,
+                 imap_port                  = ?5,
+                 smtp_host                  = ?6,
+                 smtp_port                  = ?7,
+                 use_jmap                   = ?8,
+                 jmap_url                   = ?9,
+                 signature                  = ?10,
+                 folder_icons_json          = ?11,
+                 trusted_certs_json         = ?12,
+                 folder_icon_overrides_json = ?13
              WHERE id = ?1",
             params![
                 updated.id,
@@ -201,6 +213,7 @@ pub fn update_account(cache: &Cache, updated: Account) -> Result<(), NimbusError
                 updated.signature,
                 folder_icons_json,
                 trusted_certs_json,
+                folder_icon_overrides_json,
             ],
         )
         .map_err(|e| NimbusError::Storage(format!("update account: {e}")))?;
@@ -318,6 +331,7 @@ mod tests {
             signature: None,
             folder_icons: Vec::new(),
             trusted_certs: Vec::new(),
+            folder_icon_overrides: Default::default(),
         }
     }
 

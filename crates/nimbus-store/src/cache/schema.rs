@@ -557,6 +557,21 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE contacts ADD COLUMN addresses_json TEXT NOT NULL DEFAULT '[]';
     ALTER TABLE contacts ADD COLUMN urls_json TEXT NOT NULL DEFAULT '[]';
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v10 → v11: per-folder icon overrides on the account record.
+    //
+    // Backs the Sidebar's right-click → Change icon flow. Stored as
+    // a JSON blob keyed by the full folder path (same convention as
+    // `folder_icons_json` — the keyword-rule list that predates
+    // this) so nested paths like `INBOX/Projects/2026` don't
+    // collide with sibling folders that happen to share a leaf
+    // name. Empty map is the historical behaviour — every folder
+    // falls through to special-use detection + keyword rules + 📁.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE accounts
+        ADD COLUMN folder_icon_overrides_json TEXT NOT NULL DEFAULT '{}';
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

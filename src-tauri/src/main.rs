@@ -117,6 +117,37 @@ fn update_account(account: Account, cache: State<'_, Cache>) -> Result<(), Nimbu
     account_store::update_account(&cache, account)
 }
 
+/// Pin (or clear) a per-folder icon override for an account.
+///
+/// Passing `Some(emoji)` sets the override; `None` removes it so the
+/// folder falls back through the normal icon-resolution chain
+/// (special-use attributes → user keyword rules → 📁). The command
+/// loads the full `Account` server-side, mutates just
+/// `folder_icon_overrides`, and writes back — cheaper than round-
+/// tripping the whole struct through the UI, and avoids the UI
+/// having to know every field on `Account` just to change one map
+/// entry.
+#[tauri::command]
+fn set_folder_icon(
+    account_id: String,
+    folder_name: String,
+    icon: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let mut account = load_account(&cache, &account_id)?;
+    match icon {
+        Some(e) if !e.trim().is_empty() => {
+            account
+                .folder_icon_overrides
+                .insert(folder_name, e.trim().to_string());
+        }
+        _ => {
+            account.folder_icon_overrides.remove(&folder_name);
+        }
+    }
+    account_store::update_account(&cache, account)
+}
+
 /// Probe Mozilla autoconfig and DNS SRV records for the email's
 /// domain and return any IMAP/SMTP server settings discovered.
 /// Used by the AccountSetup wizard to prefill the form so most
@@ -3495,6 +3526,7 @@ fn main() {
             add_account,
             remove_account,
             update_account,
+            set_folder_icon,
             discover_account_settings,
             probe_server_certificate,
             test_connection,
