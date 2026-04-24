@@ -80,8 +80,13 @@
         in the Drafts folder, this points at the server-side copy we
         opened from. Once the user sends or re-saves, that copy needs
         to be expunged so the mailbox holds exactly one version of the
-        message. Unset for brand-new composes and replies/forwards. */
-    draftSource?: { folder: string; uid: number }
+        message. `accountId` is snapshotted separately from the
+        Compose-level `accountId` prop because the user might switch
+        the From: picker mid-edit — we always want to expunge against
+        the account the draft actually lives on, not whichever account
+        the outgoing copy is now headed for. Unset for brand-new
+        composes and replies/forwards. */
+    draftSource?: { accountId: string; folder: string; uid: number }
   }
 
   interface Props {
@@ -613,8 +618,14 @@
       // We APPEND a fresh copy to Drafts (the backend has no "replace
       // by UID" primitive); the previous copy, if any, is expunged
       // afterwards so the mailbox holds exactly one version of the
-      // draft the user is actively editing.
-      await expungeDraftSource()
+      // draft the user is actively editing. If the expunge fails the
+      // save itself was fine — we stay open with a hint so the user
+      // can see what went wrong and manually delete the stale copy.
+      const expungeErr = await expungeDraftSource()
+      if (expungeErr) {
+        error = `Draft saved, but removing the old copy failed: ${expungeErr}`
+        return
+      }
       onclose()
     } catch (e: any) {
       error = formatError(e) || 'Failed to save draft'
@@ -714,8 +725,15 @@
       })
       // Clean up the server-side draft we opened from (if any) so
       // the user doesn't end up with a "sent" copy in Sent AND the
-      // unfinished draft still sitting in Drafts.
-      await expungeDraftSource()
+      // unfinished draft still sitting in Drafts. A failure here is
+      // non-fatal — the mail already went out — but we still want
+      // the user to notice so they can manually discard the stale
+      // draft rather than find it sitting in Drafts days later.
+      const expungeErr = await expungeDraftSource()
+      if (expungeErr) {
+        error = `Sent, but removing the original draft failed: ${expungeErr}`
+        return
+      }
       onclose()
     } catch (e: any) {
       error = formatError(e) || 'Failed to send'
@@ -733,20 +751,23 @@
   /** Expunge the server-side draft the user opened Compose from, if
       any. Called after a successful send or re-save so a single
       editing session can't leave orphan copies piling up in the
-      Drafts folder. Failures are logged but not surfaced — the send
-      / re-save already succeeded, and the stale draft will catch up
-      on the next sync or be cleaned up manually. */
-  async function expungeDraftSource() {
+      Drafts folder. A failure here means the new copy made it but the
+      old one didn't — we surface a clear hint so the user knows to
+      clean up manually (and so we notice the bug in testing) rather
+      than silently ending up with two copies. */
+  async function expungeDraftSource(): Promise<string | null> {
     const src = initial?.draftSource
-    if (!src) return
+    if (!src) return null
     try {
       await invoke('delete_message', {
-        accountId: fromAccountId,
+        accountId: src.accountId,
         folder: src.folder,
         uid: src.uid,
       })
+      return null
     } catch (e) {
       console.warn('Failed to delete source draft:', e)
+      return formatError(e) || 'Failed to remove the old draft copy'
     }
   }
 </script>
