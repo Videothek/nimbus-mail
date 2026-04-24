@@ -732,7 +732,19 @@
 </script>
 
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" role="dialog" aria-modal="true">
-  <div class="w-[720px] max-h-[90vh] bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col">
+  <!-- Resizable via native CSS `resize: both`. We seed a comfortable
+       720 × 80vh default and then constrain:
+         min-w/h — keep the form usable once labels and toolbar fit;
+         max-w/h — always leave 5vw of breathing room around the edges
+                   so the dialog doesn't clip under the title bar.
+       `overflow: hidden` is required for the resize handle to appear
+       (browsers only show it on overflow-managed elements); the inner
+       flex-column already scrolls the body region, so the modal
+       itself never needs to scroll. -->
+  <div
+    class="compose-modal bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col"
+    style="resize: both; overflow: hidden; width: 720px; height: 80vh; min-width: 480px; min-height: 420px; max-width: 95vw; max-height: 95vh;"
+  >
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
       <h2 class="text-base font-semibold">New message</h2>
       <button class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100" onclick={cancel} aria-label="Close">✕</button>
@@ -812,7 +824,14 @@
       {/if}
     </div>
 
-    <footer class="px-5 py-3 border-t border-surface-200 dark:border-surface-700 flex items-center gap-2">
+    <!-- Footer with wrap-on-narrow. Primary actions (Send + the
+         attach / NC / Talk / event buttons) stay left-aligned and
+         reflow onto a second row when the modal is narrow — the
+         `flex-wrap` is what keeps "Creating Talk room…" from
+         pushing Cancel off the edge on smaller widths. Cancel is
+         pinned to the trailing edge by the `ml-auto` spacer so the
+         user always has a consistent escape hatch. -->
+    <footer class="px-5 py-3 border-t border-surface-200 dark:border-surface-700 flex flex-wrap items-center gap-2">
       <button class="btn preset-filled-primary-500" disabled={sending} onclick={send}>
         {sending ? 'Sending…' : 'Send'}
       </button>
@@ -846,8 +865,7 @@
       {#if savedHint}
         <span class="text-xs text-surface-500">{savedHint}</span>
       {/if}
-      <div class="flex-1"></div>
-      <button class="btn preset-outlined-surface-500" onclick={cancel}>Cancel</button>
+      <button class="btn preset-outlined-surface-500 ml-auto" onclick={cancel}>Cancel</button>
     </footer>
   </div>
 </div>
