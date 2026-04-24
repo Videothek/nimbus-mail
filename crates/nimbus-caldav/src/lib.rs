@@ -22,6 +22,7 @@
 //!   editor builds a `CalendarEvent`, [`ical::build_ics`] renders it,
 //!   and [`write::create_event`] / [`write::update_event`] PUTs it.
 
+pub mod calendars;
 pub mod client;
 pub mod discovery;
 pub mod expand;
@@ -30,6 +31,7 @@ pub mod sync;
 pub mod write;
 mod xml_util;
 
+pub use calendars::{create_calendar, delete_calendar, update_calendar};
 pub use discovery::{Calendar, list_calendars};
 pub use expand::expand_event;
 pub use ical::{build_ics, parse_ics};

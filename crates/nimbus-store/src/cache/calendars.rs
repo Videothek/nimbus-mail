@@ -54,6 +54,13 @@ pub struct CalendarRow {
     /// agents don't set it.
     pub color: Option<String>,
     pub ctag: Option<String>,
+    /// When `true`, the CalendarView sidebar filters this calendar
+    /// out of the per-account list and its events don't paint in the
+    /// agenda. Local-only state — never written back to the server,
+    /// so the same Nextcloud account can have different "hidden"
+    /// sets across devices without stepping on each other. Toggled
+    /// from NextcloudSettings' per-calendar visibility checkboxes.
+    pub hidden: bool,
 }
 
 /// One VEVENT ready for upsert. Mirrors `nimbus_caldav::RawEvent`'s
@@ -109,6 +116,11 @@ pub struct CachedCalendar {
     /// the server on the next sync to get "what's changed since".
     pub sync_token: Option<String>,
     pub last_synced_at: Option<DateTime<Utc>>,
+    /// Local visibility toggle. When `true` the CalendarView sidebar
+    /// hides the row and the agenda skips its events. Mirrors the
+    /// `hidden` column on the cache and never round-trips to the
+    /// server, so per-device preferences stay local.
+    pub hidden: bool,
 }
 
 /// Sync bookmark for a single calendar. Separate from `CachedCalendar`
@@ -172,10 +184,15 @@ impl Cache {
         // here — those are only valid after a real sync, and a
         // discovery run shouldn't pretend otherwise.
         {
+            // `hidden` is deliberately NOT in the UPDATE set — it's a
+            // local-only toggle and the server doesn't know about it,
+            // so a post-sync upsert shouldn't overwrite what the user
+            // picked in Settings. On first insert we stamp whatever
+            // the row carries (defaults to `false` from discovery).
             let mut stmt = tx.prepare(
                 "INSERT INTO calendars
-                    (id, nextcloud_account_id, path, display_name, color, ctag)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    (id, nextcloud_account_id, path, display_name, color, ctag, hidden)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT (nextcloud_account_id, path) DO UPDATE SET
                     display_name = excluded.display_name,
                     color        = COALESCE(excluded.color, calendars.color),
@@ -190,6 +207,7 @@ impl Cache {
                     r.display_name,
                     r.color,
                     r.ctag,
+                    r.hidden as i64,
                 ])?;
             }
         }
@@ -219,6 +237,58 @@ impl Cache {
         Ok(())
     }
 
+    /// Patch an existing calendar's display name / color in place.
+    /// Either argument may be `None`; both `None` is a no-op. The
+    /// server-side change is driven separately via
+    /// `nimbus_caldav::update_calendar` — this only keeps our cache
+    /// in sync so the UI paints the new value without waiting for
+    /// the next full sync.
+    pub fn update_calendar_metadata(
+        &self,
+        calendar_id: &str,
+        display_name: Option<&str>,
+        color: Option<&str>,
+    ) -> Result<(), CacheError> {
+        if display_name.is_none() && color.is_none() {
+            return Ok(());
+        }
+        let conn = self.pool.get()?;
+        conn.execute(
+            "UPDATE calendars
+             SET display_name = COALESCE(?2, display_name),
+                 color        = COALESCE(?3, color)
+             WHERE id = ?1",
+            params![calendar_id, display_name, color],
+        )?;
+        Ok(())
+    }
+
+    /// Toggle a calendar's local visibility. Purely client-side —
+    /// never touches the server. Drives the CalendarView sidebar
+    /// filter and the agenda's event query.
+    pub fn set_calendar_hidden(
+        &self,
+        calendar_id: &str,
+        hidden: bool,
+    ) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "UPDATE calendars SET hidden = ?2 WHERE id = ?1",
+            params![calendar_id, hidden as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Drop a calendar row + all its cached events (via CASCADE on
+    /// `calendar_events.calendar_id`). Called after a successful
+    /// CalDAV DELETE so the sidebar forgets the collection without
+    /// waiting for the next discovery sweep to prune it.
+    pub fn remove_calendar(&self, calendar_id: &str) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        conn.execute("DELETE FROM calendars WHERE id = ?1", params![calendar_id])?;
+        Ok(())
+    }
+
     /// All cached calendars for one Nextcloud account, alphabetised
     /// by display name.
     pub fn list_calendars(
@@ -228,13 +298,14 @@ impl Cache {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
             "SELECT id, nextcloud_account_id, path, display_name, color,
-                    ctag, sync_token, last_synced_at
+                    ctag, sync_token, last_synced_at, hidden
              FROM calendars
              WHERE nextcloud_account_id = ?1
              ORDER BY display_name COLLATE NOCASE",
         )?;
         let rows = stmt.query_map(params![nc_account_id], |r| {
             let ts: Option<i64> = r.get(7)?;
+            let hidden: i64 = r.get(8)?;
             Ok(CachedCalendar {
                 id: r.get(0)?,
                 nextcloud_account_id: r.get(1)?,
@@ -244,6 +315,7 @@ impl Cache {
                 ctag: r.get(5)?,
                 sync_token: r.get(6)?,
                 last_synced_at: ts.and_then(|t| Utc.timestamp_opt(t, 0).single()),
+                hidden: hidden != 0,
             })
         })?;
         let mut out = Vec::new();
@@ -875,6 +947,7 @@ mod tests {
             display_name: name.into(),
             color: Some("#2bb0ed".into()),
             ctag: Some(format!("ctag-{path}")),
+            hidden: false,
         }
     }
 

@@ -1165,6 +1165,10 @@ async fn sync_nextcloud_calendars(
             display_name: c.display_name.clone().unwrap_or_else(|| c.name.clone()),
             color: c.color.clone(),
             ctag: c.ctag.clone(),
+            // Fresh inserts default to visible; the `upsert_calendars`
+            // ON CONFLICT clause leaves `hidden` untouched on updates
+            // so an existing local toggle survives re-sync.
+            hidden: false,
         })
         .collect();
     cache.upsert_calendars(&nc_id, &rows)?;

@@ -572,6 +572,19 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE accounts
         ADD COLUMN folder_icon_overrides_json TEXT NOT NULL DEFAULT '{}';
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v11 → v12: per-calendar visibility toggle (Issue #82).
+    //
+    // Local-only state — never synced to the server. Drives the
+    // "hide this calendar from the sidebar" checkboxes in
+    // NextcloudSettings and the `hidden` filter in CalendarView.
+    // Default 0 (visible) so existing calendars roll forward
+    // unchanged; the toggle is opt-in per calendar.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE calendars
+        ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
