@@ -158,7 +158,14 @@
   // Imperative handle into the rich-text editor — populated once the
   // editor mounts. We use it to append Nextcloud share links into the
   // body without disturbing the user's cursor or undo history.
-  let editorApi: EditorApi | null = null
+  // `$state` (rather than a plain `let`) is load-bearing here: the
+  // signature `$effect` below depends on this becoming non-null to
+  // know when to append. With a plain `let`, the effect's first run
+  // happens before the child `RichTextEditor`'s `onready` fires, it
+  // sees `editorApi` still null and exits — and because plain `let`s
+  // aren't tracked, it never re-runs when the handle is finally set.
+  // Making it `$state` subscribes the effect to the assignment.
+  let editorApi = $state<EditorApi | null>(null)
   // The editor content as HTML — kept in sync via the RichTextEditor's
   // onchange callback. The initial body (from reply/forward/draft) is
   // plain text, so we convert newlines to <br> for the WYSIWYG view.
