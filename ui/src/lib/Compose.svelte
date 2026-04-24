@@ -76,6 +76,12 @@
         action — the latter creates the room first and then opens
         Compose to invite the participants. */
     talkLink?: { name: string; url: string }
+    /** When Compose is opened by clicking "Edit" on an existing draft
+        in the Drafts folder, this points at the server-side copy we
+        opened from. Once the user sends or re-saves, that copy needs
+        to be expunged so the mailbox holds exactly one version of the
+        message. Unset for brand-new composes and replies/forwards. */
+    draftSource?: { folder: string; uid: number }
   }
 
   interface Props {
@@ -604,6 +610,11 @@
           attachments,
         },
       })
+      // We APPEND a fresh copy to Drafts (the backend has no "replace
+      // by UID" primitive); the previous copy, if any, is expunged
+      // afterwards so the mailbox holds exactly one version of the
+      // draft the user is actively editing.
+      await expungeDraftSource()
       onclose()
     } catch (e: any) {
       error = formatError(e) || 'Failed to save draft'
@@ -701,6 +712,10 @@
           attachments,
         },
       })
+      // Clean up the server-side draft we opened from (if any) so
+      // the user doesn't end up with a "sent" copy in Sent AND the
+      // unfinished draft still sitting in Drafts.
+      await expungeDraftSource()
       onclose()
     } catch (e: any) {
       error = formatError(e) || 'Failed to send'
@@ -713,6 +728,26 @@
     // No local persistence — if the user wants to resume later they
     // need to click "Save draft" first (which APPENDs to IMAP Drafts).
     onclose()
+  }
+
+  /** Expunge the server-side draft the user opened Compose from, if
+      any. Called after a successful send or re-save so a single
+      editing session can't leave orphan copies piling up in the
+      Drafts folder. Failures are logged but not surfaced — the send
+      / re-save already succeeded, and the stale draft will catch up
+      on the next sync or be cleaned up manually. */
+  async function expungeDraftSource() {
+    const src = initial?.draftSource
+    if (!src) return
+    try {
+      await invoke('delete_message', {
+        accountId: fromAccountId,
+        folder: src.folder,
+        uid: src.uid,
+      })
+    } catch (e) {
+      console.warn('Failed to delete source draft:', e)
+    }
   }
 </script>
 

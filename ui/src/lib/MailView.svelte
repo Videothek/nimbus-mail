@@ -55,6 +55,14 @@
         subject + thread participants. Wired from `App.svelte` so the
         resulting Compose window stacks on top of the inbox view. */
     oncreatetalk?: (mail: Email) => void
+    /** True when the currently selected folder is the account's
+        Drafts mailbox. Swaps the toolbar over from the reply/forward
+        cluster to a single "Edit" action, because Reply-to-a-draft
+        doesn't model anything useful. */
+    isDraftsFolder?: boolean
+    /** Open the shown draft back in Compose for editing. Fires only
+        from the "Edit" button inside the drafts toolbar. */
+    oneditdraft?: (mail: Email) => void
   }
   let {
     accountId,
@@ -65,6 +73,8 @@
     onreplyall,
     onforward,
     oncreatetalk,
+    isDraftsFolder = false,
+    oneditdraft,
   }: Props = $props()
 
   let email = $state<Email | null>(null)
@@ -380,23 +390,34 @@
       {/if}
     </div>
 
-    <!-- Action bar -->
+    <!-- Action bar. The Drafts folder shows an "Edit" action instead
+         of the reply/forward/mark-read cluster — a draft is the user's
+         own unfinished work, so re-opening it in Compose is the only
+         gesture that makes sense. -->
     <div class="flex items-center gap-2 px-6 py-2 border-b border-surface-200 dark:border-surface-700 text-sm">
-      <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onreply?.(email)}>Reply</button>
-      <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onreplyall?.(email)}>Reply All</button>
-      <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onforward?.(email)}>Forward</button>
-      {#if oncreatetalk}
+      {#if isDraftsFolder}
         <button
-          class="btn btn-sm preset-outlined-primary-500"
-          onclick={() => email && oncreatetalk?.(email)}
-          title="Create a Nextcloud Talk room with the participants of this thread"
-        >💬 Talk</button>
+          class="btn btn-sm preset-filled-primary-500"
+          onclick={() => email && oneditdraft?.(email)}
+          title="Open this draft in Compose to keep editing"
+        >✏️ Edit draft</button>
+      {:else}
+        <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onreply?.(email)}>Reply</button>
+        <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onreplyall?.(email)}>Reply All</button>
+        <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onforward?.(email)}>Forward</button>
+        {#if oncreatetalk}
+          <button
+            class="btn btn-sm preset-outlined-primary-500"
+            onclick={() => email && oncreatetalk?.(email)}
+            title="Create a Nextcloud Talk room with the participants of this thread"
+          >💬 Talk</button>
+        {/if}
+        <button
+          class="btn btn-sm preset-outlined-surface-500"
+          onclick={toggleRead}
+          title={email.is_read ? 'Mark this message as unread' : 'Mark this message as read'}
+        >{email.is_read ? 'Mark unread' : 'Mark read'}</button>
       {/if}
-      <button
-        class="btn btn-sm preset-outlined-surface-500"
-        onclick={toggleRead}
-        title={email.is_read ? 'Mark this message as unread' : 'Mark this message as read'}
-      >{email.is_read ? 'Mark unread' : 'Mark read'}</button>
       <div class="flex-1"></div>
       <button class="btn btn-sm preset-outlined-surface-500">Archive</button>
       <button class="btn btn-sm preset-outlined-surface-500">Delete</button>

@@ -496,6 +496,69 @@
     })
   }
 
+  /** Does the given folder name look like the account's Drafts folder?
+   *  Mirrors the Rust-side `pick_drafts_folder` name-hint list (the
+   *  authoritative `\Drafts` special-use attribute lives on the server
+   *  and we don't propagate it to the frontend yet, so this is the
+   *  pragmatic "good enough" heuristic). */
+  const DRAFTS_NAME_HINTS = ['drafts', 'draft', 'entwürfe', 'entwurf', 'brouillons', 'brouillon']
+  function isDraftsFolderName(name: string): boolean {
+    const lower = name.toLowerCase()
+    return DRAFTS_NAME_HINTS.some((h) => lower.includes(h))
+  }
+  const isDraftsFolder = $derived(isDraftsFolderName(selectedFolder))
+
+  /** Open a draft from the Drafts folder back in Compose for editing.
+   *  Mirrors the reply/forward entry points but additionally:
+   *    - downloads every attachment's bytes so the user can re-send
+   *      or re-save without the attachments silently dropping;
+   *    - records the source UID/folder in `draftSource` so Compose
+   *      can expunge the server-side copy once the edit is sent or
+   *      re-saved (otherwise the Drafts mailbox accumulates one
+   *      copy per edit).
+   *  The reply-style guard fields (`in_reply_to`) stay unset: this is
+   *  a continuation of the user's own work, not a response to someone
+   *  else, so the signature effect correctly skips re-inserting. */
+  type DraftMail = OpenMail & {
+    account_id: string
+    folder: string
+    bcc?: string[]
+    body_html: string | null
+    attachments: { filename: string; content_type: string; part_id: number }[]
+  }
+  async function onEditDraft(mail: DraftMail) {
+    if (selectedUid == null) return
+    const uid = selectedUid
+    // Pull every attachment's bytes. Parallel — even mid-size drafts
+    // rarely have more than a couple of attachments, and the IMAP
+    // backend already reuses one connection per `fetch_message`
+    // command internally.
+    const attachments = await Promise.all(
+      mail.attachments.map(async (att) => ({
+        filename: att.filename,
+        content_type: att.content_type,
+        data: await invoke<number[]>('download_email_attachment', {
+          accountId: mail.account_id,
+          folder: mail.folder,
+          uid,
+          partId: att.part_id,
+        }),
+      })),
+    )
+    openCompose({
+      to: mail.to.join(', '),
+      cc: mail.cc.join(', '),
+      bcc: (mail.bcc ?? []).join(', '),
+      subject: mail.subject,
+      // Prefer the HTML body — the editor is a rich-text editor and
+      // will pass the HTML through unchanged (`textToHtml` detects
+      // tags). Fall back to plain text for the rare HTML-less draft.
+      body: mail.body_html ?? mail.body_text ?? '',
+      attachments,
+      draftSource: { folder: mail.folder, uid },
+    })
+  }
+
   function onForward(mail: OpenMail) {
     // Forwards use the same blockquote treatment as replies so the
     // original message sits inside a visually distinct container.
@@ -801,6 +864,8 @@
       onreplyall={onReplyAll}
       onforward={onForward}
       oncreatetalk={onCreateTalkFromMail}
+      isDraftsFolder={isDraftsFolder}
+      oneditdraft={onEditDraft}
     />
     {#if composeInitial !== null}
       <Compose
