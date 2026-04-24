@@ -2227,6 +2227,103 @@ async fn append_to_sent(
     result
 }
 
+/// Save an in-progress message to the account's IMAP Drafts folder.
+///
+/// Mirrors `send_email` structurally (same `OutgoingEmail` input, same
+/// MIME builder) but skips SMTP entirely — the point is to hand the
+/// message to the server so it shows up in the Drafts mailbox across
+/// devices and the user can finish / send it later. IMAP-only for now;
+/// JMAP accounts get a clear error until the equivalent `Email/set`
+/// create-in-Drafts flow is wired up (tracked separately).
+#[tauri::command]
+async fn save_draft(
+    account_id: String,
+    email: OutgoingEmail,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let account = load_account(&cache, &account_id)?;
+
+    if uses_jmap(&account) {
+        return Err(NimbusError::Other(
+            "Saving drafts via JMAP is not yet implemented — this account uses JMAP".into(),
+        ));
+    }
+
+    let message = build_outgoing_message(&email)?;
+    let raw = message.formatted();
+    append_to_drafts(&account, &raw, &cache).await
+}
+
+/// Locate the account's Drafts folder (via the IMAP `\Drafts` attribute,
+/// or a name-based fallback) and `APPEND` the raw RFC 822 bytes there
+/// with the `\Draft` flag set — that's what tells other clients and the
+/// server that this message is a work-in-progress rather than a
+/// received or already-sent mail.
+async fn append_to_drafts(
+    account: &Account,
+    raw: &[u8],
+    cache: &Cache,
+) -> Result<(), NimbusError> {
+    let drafts_folder = pick_drafts_folder(&account.id, cache);
+    let Some(drafts) = drafts_folder else {
+        return Err(NimbusError::Other(
+            "no Drafts folder found in cached folder list".into(),
+        ));
+    };
+
+    let password = credentials::get_imap_password(&account.id)?;
+    let mut client = ImapClient::connect(
+        &account.imap_host,
+        account.imap_port,
+        &account.email,
+        &password,
+        &account.trusted_certs,
+    )
+    .await?;
+    // `\Draft` is the IMAP flag that marks a message as an unfinished
+    // draft. `\Seen` keeps it out of the unread badge — there's no
+    // point notifying the user about a mail they themselves are
+    // composing.
+    let result = client
+        .append_message(&drafts, raw, &["\\Draft", "\\Seen"])
+        .await;
+    let _ = client.logout().await;
+    result
+}
+
+/// Pick the most likely Drafts folder name from the cached folder list.
+/// Same strategy as `pick_sent_folder`: prefer the IMAP `\Drafts`
+/// special-use attribute, fall back to common English / German / French
+/// names so accounts that haven't been synced yet still land in the
+/// right place.
+fn pick_drafts_folder(account_id: &str, cache: &Cache) -> Option<String> {
+    let folders = cache.get_folders(account_id).ok()?;
+
+    if let Some(by_attr) = folders.iter().find(|f| {
+        f.attributes
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case("drafts") || a.eq_ignore_ascii_case("\\drafts"))
+    }) {
+        return Some(by_attr.name.clone());
+    }
+
+    const NAME_HINTS: &[&str] = &[
+        "drafts",
+        "draft",
+        "entwürfe",
+        "entwurf",
+        "brouillons",
+        "brouillon",
+    ];
+    folders
+        .iter()
+        .find(|f| {
+            let lower = f.name.to_lowercase();
+            NAME_HINTS.iter().any(|h| lower.contains(h))
+        })
+        .map(|f| f.name.clone())
+}
+
 /// Pick the most likely Sent folder name from the cached folder list.
 /// Prefers folders flagged with the IMAP `\Sent` special-use attribute
 /// (the canonical, locale-independent answer) and falls back to common
@@ -3003,6 +3100,7 @@ fn main() {
             mark_as_read,
             set_message_read,
             send_email,
+            save_draft,
             get_cached_envelopes,
             get_unified_cached_envelopes,
             get_cached_message,
