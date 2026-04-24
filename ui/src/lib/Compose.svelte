@@ -750,7 +750,15 @@
       <button class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100" onclick={cancel} aria-label="Close">✕</button>
     </header>
 
-    <div class="flex-1 overflow-y-auto p-5 space-y-3">
+    <!-- Body is a flex column so the RichTextEditor slot can claim
+         `flex-1` and grow as the user resizes the modal taller.
+         `min-h-0` is the usual incantation that lets a flex child
+         actually shrink below its content size; without it the editor
+         would never release height back to the container. We drop the
+         outer `overflow-y-auto` because the editor manages its own
+         internal scroll, and swap `space-y-3` (margins don't play well
+         with `flex-1` siblings) for `gap-3`. -->
+    <div class="flex-1 min-h-0 flex flex-col p-5 gap-3">
       <!-- From: picker. Shown as a real <select> when the user has
            more than one account, otherwise collapsed to a static label
            so single-account users see no extra chrome. -->
@@ -801,12 +809,16 @@
         <input id="compose-subject" class="input flex-1 px-3 py-2 text-sm rounded-md" bind:value={subject} />
       </div>
 
-      <RichTextEditor
-        content={bodyHtml}
-        onchange={(html) => { bodyHtml = html }}
-        onready={(api) => { editorApi = api }}
-        onrequestncimage={() => { showNcImagePicker = true }}
-      />
+      <!-- `flex-1 min-h-0` makes this the stretchy slot in the body
+           column; the editor inside uses `h-full` to fill it. -->
+      <div class="flex-1 min-h-0 flex flex-col">
+        <RichTextEditor
+          content={bodyHtml}
+          onchange={(html) => { bodyHtml = html }}
+          onready={(api) => { editorApi = api }}
+          onrequestncimage={() => { showNcImagePicker = true }}
+        />
+      </div>
 
       {#if attachments.length > 0}
         <div class="flex flex-wrap gap-2">
