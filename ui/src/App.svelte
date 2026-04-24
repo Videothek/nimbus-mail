@@ -415,6 +415,12 @@
 
   function closeCompose() {
     composeInitial = null
+    // Force the mail list + sidebar to re-query the server. Compose's
+    // save-draft / send paths modify the Drafts and Sent folders
+    // (APPEND + expunge) without touching the envelope cache, so the
+    // UI would otherwise stay on the pre-compose view until the user
+    // clicked another folder.
+    refreshToken++
   }
 
   /** Build a quoted reply body as HTML.
@@ -555,7 +561,7 @@
       // tags). Fall back to plain text for the rare HTML-less draft.
       body: mail.body_html ?? mail.body_text ?? '',
       attachments,
-      draftSource: { folder: mail.folder, uid },
+      draftSource: { accountId: mail.account_id, folder: mail.folder, uid },
     })
   }
 
