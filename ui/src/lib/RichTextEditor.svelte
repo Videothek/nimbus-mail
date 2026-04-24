@@ -364,14 +364,60 @@
   ]
   let showFontPicker = $state(false)
 
+  /** Label for the toolbar button, reflecting the font at the current
+      cursor position. `$editor` is a svelte-tiptap store that re-emits
+      on every editor transaction, so this function re-runs after every
+      selection change or edit — the label flips in step with the
+      cursor. Falls back to the generic "Font" when the cursor sits in
+      text carrying a family we don't have a pretty label for. */
+  function currentFontLabel(): string {
+    if (!$editor) return 'Font'
+    const css = ($editor.getAttributes('textStyle')?.fontFamily as string | undefined) ?? ''
+    const match = FONT_FAMILIES.find((f) => f.css === css)
+    return match?.label ?? 'Font'
+  }
+
   function setFont(css: string) {
     showFontPicker = false
     if (!$editor) return
-    if (css === '') {
-      $editor.chain().focus().unsetFontFamily().run()
-    } else {
-      $editor.chain().focus().setFontFamily(css).run()
+    const ed = $editor
+
+    // Non-empty selection: apply the mark to the selected range. This
+    // has always worked via Tiptap's `setFontFamily` helper and we
+    // keep using it so existing behavior (selected text rewrites to
+    // the new face) is unchanged.
+    if (!ed.state.selection.empty) {
+      if (css === '') {
+        ed.chain().focus().unsetFontFamily().run()
+      } else {
+        ed.chain().focus().setFontFamily(css).run()
+      }
+      return
     }
+
+    // Empty selection: we want the *next* typed characters to use the
+    // picked font. Tiptap's `setFontFamily` delegates to ProseMirror's
+    // `setMark`, which on an empty selection adds to `storedMarks` —
+    // in theory that's enough. In practice, because the toolbar
+    // button steals focus on click and the click-to-editor focus
+    // handoff produces an extra selection transaction, the stored
+    // mark was getting cleared before the user's next keystroke.
+    //
+    // Dispatching `addStoredMark` as a standalone transaction —
+    // *after* we explicitly return focus to the editor — sidesteps
+    // the focus-handoff race: by the time this tr lands, the editor
+    // owns focus and the selection is stable, so the mark stays
+    // attached to the cursor position and rides along with the next
+    // character the user types.
+    ed.commands.focus()
+    const { state, view } = ed
+    const markType = state.schema.marks.textStyle
+    if (!markType) return
+    let tr = state.tr
+    tr = css === ''
+      ? tr.removeStoredMark(markType)
+      : tr.addStoredMark(markType.create({ fontFamily: css }))
+    view.dispatch(tr)
   }
 
   // ── Table grid picker state ────────────────────────────────
@@ -540,9 +586,12 @@
   <div class="flex flex-wrap items-center gap-0.5 px-2 py-1.5 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 text-sm">
     <!-- Font family picker — dropdown because 6 named families
          wouldn't fit as individual toolbar buttons. The trigger
-         shows the generic "Font" label since the active selection
-         can span multiple families. Clicking outside closes the
-         menu (see global listener inside the `$effect` below). -->
+         label tracks the font at the cursor: `currentFontLabel`
+         reads Tiptap's active textStyle attrs via `$editor`, which
+         re-emits on every transaction, so the button reflects
+         moves through text of different faces in real time.
+         Clicking outside closes the menu (see global listener
+         inside the `$effect` below). -->
     <div class="relative inline-block">
       <button
         type="button"
@@ -550,7 +599,7 @@
         title="Font family"
         onclick={() => (showFontPicker = !showFontPicker)}
       >
-        Font ▾
+        {currentFontLabel()} ▾
       </button>
       {#if showFontPicker}
         <div
