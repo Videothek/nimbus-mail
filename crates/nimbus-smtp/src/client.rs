@@ -3,7 +3,7 @@
 use lettre::address::Envelope;
 use lettre::message::{
     Attachment as LettreAttachment, Mailbox, MessageBuilder, MultiPart, SinglePart,
-    header::ContentType,
+    header::{ContentDisposition, ContentId, ContentType},
 };
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
@@ -357,10 +357,29 @@ fn build_with_attachments(
             .parse::<ContentType>()
             .unwrap_or(ContentType::parse("application/octet-stream").unwrap());
 
-        let lettre_attachment = LettreAttachment::new(attachment.filename.clone())
-            .body(attachment.data.clone(), content_type);
+        let part = match &attachment.content_id {
+            // No content-id: use lettre's stock Attachment helper. Emits
+            // `Content-Disposition: attachment; filename=...` + the
+            // content type; exactly the previous behaviour.
+            None => LettreAttachment::new(attachment.filename.clone())
+                .body(attachment.data.clone(), content_type),
+            // With a content-id: we need *both* disposition=attachment
+            // (so recipients see it in their attachment tray) AND a
+            // Content-ID header (so `<a href="cid:<id>">` in the HTML
+            // body can resolve back to this part). Lettre's
+            // `Attachment::new_inline` sets Content-ID but flips
+            // disposition to `inline`, and `Attachment::new` can't
+            // add Content-ID at all — so we build the SinglePart by
+            // hand instead, stacking exactly the three headers we
+            // need. Angle brackets on the id are the RFC 2392 shape.
+            Some(cid) => SinglePart::builder()
+                .header(ContentDisposition::attachment(&attachment.filename))
+                .header(ContentId::from(format!("<{cid}>")))
+                .header(content_type)
+                .body(attachment.data.clone()),
+        };
 
-        mp.singlepart(lettre_attachment)
+        mp.singlepart(part)
     });
 
     builder
