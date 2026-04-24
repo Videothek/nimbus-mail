@@ -171,7 +171,14 @@
       aria-label="All inboxes"
       onclick={() => onselectaccount('__all__')}
     >
-      ALL
+      <!-- Inbox glyph matches the Mail rail icon + the "All
+           Inboxes" folder entry, so the "this is the aggregate"
+           meaning carries across every surface the user sees. The
+           `text-lg` override pushes the emoji up from the parent's
+           `text-xs` (sized for the other avatars' two-letter
+           initials) so it reads at the same visual weight as the
+           nav icons below the divider. -->
+      <span class="text-lg leading-none">&#x1F4E5;</span>
     </button>
   {/if}
   {#each accounts as a (a.id)}
