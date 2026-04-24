@@ -63,6 +63,10 @@
     /** Open the shown draft back in Compose for editing. Fires only
         from the "Edit" button inside the drafts toolbar. */
     oneditdraft?: (mail: Email) => void
+    /** Fires after the message has been successfully archived or
+        deleted on the server. The parent clears the selected UID and
+        bumps the MailList refresh so the row disappears. */
+    onmessageremoved?: () => void
   }
   let {
     accountId,
@@ -75,6 +79,7 @@
     oncreatetalk,
     isDraftsFolder = false,
     oneditdraft,
+    onmessageremoved,
   }: Props = $props()
 
   let email = $state<Email | null>(null)
@@ -352,6 +357,52 @@
       setBusy(att.part_id, false)
     }
   }
+
+  // ---------------------------------------------------------------------
+  // Archive / Delete — top-bar actions that remove the current message
+  // from the visible folder. Both follow the same optimistic shape:
+  // disable the buttons, run the Tauri command, and notify the parent
+  // so it can deselect + refresh the mail list. Errors bubble back into
+  // the same `error` banner the load path uses.
+  // ---------------------------------------------------------------------
+  let removing = $state(false)
+
+  async function archiveMessage() {
+    if (!email || uid == null) return
+    removing = true
+    try {
+      await invoke('archive_message', {
+        accountId: email.account_id,
+        folder: email.folder,
+        uid,
+      })
+      onmessageremoved?.()
+    } catch (e) {
+      error = formatError(e) || 'Failed to archive'
+    } finally {
+      removing = false
+    }
+  }
+
+  async function deleteMessage() {
+    if (!email || uid == null) return
+    // No confirm dialog yet — matches the "click = commit" shape of
+    // the rest of the toolbar. A Trash-folder intermediate (and
+    // undo) can come later; for now Delete is outright expunge.
+    removing = true
+    try {
+      await invoke('delete_message', {
+        accountId: email.account_id,
+        folder: email.folder,
+        uid,
+      })
+      onmessageremoved?.()
+    } catch (e) {
+      error = formatError(e) || 'Failed to delete'
+    } finally {
+      removing = false
+    }
+  }
 </script>
 
 <main class="flex-1 flex flex-col overflow-hidden">
@@ -419,8 +470,18 @@
         >{email.is_read ? 'Mark unread' : 'Mark read'}</button>
       {/if}
       <div class="flex-1"></div>
-      <button class="btn btn-sm preset-outlined-surface-500">Archive</button>
-      <button class="btn btn-sm preset-outlined-surface-500">Delete</button>
+      <button
+        class="btn btn-sm preset-outlined-surface-500"
+        disabled={removing}
+        onclick={archiveMessage}
+        title="Move this message to the Archive folder"
+      >{removing ? '…' : 'Archive'}</button>
+      <button
+        class="btn btn-sm preset-outlined-surface-500"
+        disabled={removing}
+        onclick={deleteMessage}
+        title="Permanently delete this message from the server"
+      >{removing ? '…' : 'Delete'}</button>
     </div>
 
     <!-- Attachments — only renders when the message actually has any. -->

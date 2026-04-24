@@ -407,6 +407,16 @@
     refreshToken++
   }
 
+  /** The currently shown message has been archived or deleted on the
+   *  server. Drop the selection so the reading pane returns to the
+   *  "pick a message" placeholder, and bump `refreshToken` so MailList
+   *  + Sidebar re-query the server and the row disappears. */
+  function onMessageRemoved() {
+    selectedUid = null
+    selectedMessageAccountId = null
+    refreshToken++
+  }
+
   // Open the Compose modal. Called with no arg for a blank new message,
   // or with a prefill for reply/reply-all/forward.
   function openCompose(initial: ComposeInitial = {}) {
@@ -872,6 +882,7 @@
       oncreatetalk={onCreateTalkFromMail}
       isDraftsFolder={isDraftsFolder}
       oneditdraft={onEditDraft}
+      onmessageremoved={onMessageRemoved}
     />
     {#if composeInitial !== null}
       <Compose

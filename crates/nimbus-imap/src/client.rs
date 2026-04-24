@@ -762,6 +762,67 @@ impl ImapClient {
         Ok(())
     }
 
+    /// Move a message between folders via `UID COPY` + delete.
+    ///
+    /// Why not `UID MOVE` (RFC 6851)? MOVE is cleaner but requires the
+    /// server to advertise the `MOVE` capability, which still isn't
+    /// universal in 2026 — the COPY+EXPUNGE fallback works on every
+    /// IMAP4rev1 server. We pay for one extra round-trip vs MOVE but
+    /// never surprise the user with a "your server doesn't support
+    /// that" error on an Archive/Delete button press.
+    ///
+    /// Used by the Archive and (future) Trash flows in MailView. The
+    /// destination folder must already exist — callers locate it via
+    /// `pick_archive_folder` / `pick_trash_folder` before calling.
+    pub async fn move_message(
+        &mut self,
+        from_folder: &str,
+        uid: u32,
+        to_folder: &str,
+    ) -> Result<(), NimbusError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        session.select(to_wire(from_folder)).await.map_err(|e| {
+            NimbusError::Protocol(format!("Failed to select folder '{from_folder}': {e}"))
+        })?;
+
+        // UID COPY leaves the source copy in place with its flags
+        // intact; the destination gets a server-assigned UID that
+        // we don't need to track here.
+        session
+            .uid_copy(uid.to_string(), to_wire(to_folder))
+            .await
+            .map_err(|e| {
+                NimbusError::Protocol(format!(
+                    "UID COPY {uid} from '{from_folder}' to '{to_folder}' failed: {e}"
+                ))
+            })?;
+
+        // Now remove the source: mark + expunge, same dance as
+        // `delete_message` below.
+        let _updates: Vec<_> = session
+            .uid_store(uid.to_string(), "+FLAGS (\\Deleted)")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID STORE (\\Deleted) failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read UID STORE: {e}")))?;
+
+        let _expunged: Vec<_> = session
+            .expunge()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("EXPUNGE failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read EXPUNGE: {e}")))?;
+
+        info!("Moved UID {uid} from '{from_folder}' to '{to_folder}'");
+        Ok(())
+    }
+
     /// Permanently remove a message from a folder via the two-step IMAP
     /// dance: `UID STORE +FLAGS (\Deleted)` to mark it, then `EXPUNGE`
     /// to actually reclaim it from the mailbox. Without the EXPUNGE the
