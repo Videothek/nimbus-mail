@@ -225,6 +225,62 @@
     const parts = f.name.split(delim)
     return parts[parts.length - 1] || f.name
   }
+
+  /** Rank each folder into the "standard" tier (Inbox / Drafts / Sent /
+      Flagged / Archive / Junk / Trash) or the "user" tier. Standard
+      folders get a numeric rank that drives the top-of-list order;
+      user folders get -1 and are sorted alphabetically instead. The
+      ordering mirrors what every major mail client shows — Inbox is
+      where mail arrives, then the user's own outgoing queues, then
+      the storage-ish folders at the bottom. */
+  function standardRank(f: Folder): number {
+    const name = f.name.toLowerCase()
+    const attrs = f.attributes.map((a) => a.toLowerCase())
+    const has = (k: string) => attrs.some((a) => a.includes(k))
+
+    if (name === 'inbox' || has('inbox')) return 0
+    if (has('draft')) return 1
+    if (has('sent')) return 2
+    if (has('flagged') || has('starred')) return 3
+    if (has('archive')) return 4
+    if (
+      has('junk') ||
+      has('spam') ||
+      name === 'spam' ||
+      name === 'junk'
+    )
+      return 5
+    if (
+      has('trash') ||
+      has('deleted') ||
+      name === 'trash' ||
+      name === 'papierkorb'
+    )
+      return 6
+    return -1
+  }
+
+  // Split the flat server-returned list into the two tiers so the
+  // template renders them in distinct `{#each}` blocks with a
+  // divider in between. `$derived` so the sort work only re-runs when
+  // `folders` actually changes.
+  const standardFolders = $derived(
+    folders
+      .filter((f) => standardRank(f) !== -1)
+      .sort((a, b) => standardRank(a) - standardRank(b)),
+  )
+  const customFolders = $derived(
+    folders
+      .filter((f) => standardRank(f) === -1)
+      // `localeCompare` so non-ASCII folder names (Entwürfe, Übersicht…)
+      // sort the way the user's locale expects instead of by code point.
+      .sort((a, b) =>
+        displayName(a).localeCompare(displayName(b), undefined, {
+          sensitivity: 'base',
+          numeric: true,
+        }),
+      ),
+  )
 </script>
 
 <aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col">
@@ -261,7 +317,41 @@
     {:else if folders.length === 0}
       <p class="px-3 py-2 text-xs text-surface-500">No folders.</p>
     {:else}
-      {#each folders as folder (folder.name)}
+      <!-- Standard folders first (Inbox / Drafts / Sent / Flagged /
+           Archive / Junk / Trash), in a fixed use-frequency order so
+           every account lands the user in the same muscle-memory
+           layout regardless of whatever order the server happened
+           to return the LIST in. -->
+      {#each standardFolders as folder (folder.name)}
+        <button
+          class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors
+            {selectedFolder === folder.name
+              ? 'bg-primary-500/10 text-primary-500 font-medium'
+              : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+          onclick={() => onselectfolder(folder.name)}
+        >
+          <span>{folderIcon(folder)}</span>
+          <span class="flex-1 text-left truncate">{displayName(folder)}</span>
+          {#if folder.unread_count && folder.unread_count > 0 && !isTrashOrJunk(folder)}
+            <span class="badge preset-filled-primary-500 text-xs">{folder.unread_count}</span>
+          {/if}
+        </button>
+      {/each}
+
+      <!-- Divider between the standard tier and the user's own
+           folders. Only painted when *both* sides are non-empty —
+           an account that's all inbox-and-sent shouldn't show a
+           lonely orphan line, and a fresh server that hasn't
+           advertised any special-use attributes shouldn't show the
+           line above the whole list either. -->
+      {#if standardFolders.length > 0 && customFolders.length > 0}
+        <hr class="my-2 mx-2 border-surface-200 dark:border-surface-700" />
+      {/if}
+
+      <!-- User-defined folders, locale-sorted alphabetically by
+           their display name (last segment of the hierarchy, so
+           "INBOX/Work" sorts as "Work" next to "Archive" etc.). -->
+      {#each customFolders as folder (folder.name)}
         <button
           class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors
             {selectedFolder === folder.name
