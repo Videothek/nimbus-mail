@@ -160,7 +160,14 @@
   }
 
   async function commitRename() {
-    if (!renamingFolder) return
+    // Re-entrancy guard: Enter→commit + the subsequent blur (when
+    // unmounting the input or when the user clicks away during the
+    // in-flight invoke) can each fire commit, producing two
+    // parallel RENAMEs — the first succeeds, the second hits a
+    // stale target and errors. `folderOpBusy` stays `true` for
+    // the duration of the first call, which short-circuits the
+    // duplicate cleanly.
+    if (!renamingFolder || folderOpBusy) return
     const oldName = renamingFolder
     const newLeaf = renameValue.trim()
     if (!newLeaf || newLeaf === displayNameFromPath(oldName)) {
@@ -201,7 +208,12 @@
   }
 
   async function commitNewFolder() {
-    if (!newFolderInput) return
+    // Same re-entrancy guard as `commitRename` — Enter + blur can
+    // both fire commit during a single in-flight invoke, yielding
+    // a second CREATE that gets the server's ALREADYEXISTS error
+    // even though the first CREATE succeeded. `folderOpBusy`
+    // short-circuits the second call until the first settles.
+    if (!newFolderInput || folderOpBusy) return
     const leaf = newFolderInput.value.trim()
     if (!leaf) {
       newFolderInput = null
