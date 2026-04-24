@@ -480,7 +480,7 @@
         class="btn btn-sm preset-outlined-surface-500"
         disabled={removing}
         onclick={deleteMessage}
-        title="Permanently delete this message from the server"
+        title="Move this message to Trash (permanently deletes if already in Trash or if the account has no Trash folder)"
       >{removing ? '…' : 'Delete'}</button>
     </div>
 
