@@ -2138,6 +2138,43 @@ async fn set_message_read(
     result
 }
 
+/// Permanently remove a message from a folder on the server.
+///
+/// Used by the "edit draft" flow: the user opens a draft in Compose,
+/// edits, and clicks Send or Save draft. In either case the old
+/// draft needs to go away so the Drafts mailbox doesn't accumulate
+/// a copy per edit. IMAP-only for now — JMAP would use
+/// `Email/set { destroy }` and is deferred alongside the matching
+/// `save_draft` path.
+#[tauri::command]
+async fn delete_message(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let account = load_account(&cache, &account_id)?;
+
+    if uses_jmap(&account) {
+        return Err(NimbusError::Other(
+            "Deleting messages via JMAP is not yet implemented — this account uses JMAP".into(),
+        ));
+    }
+
+    let password = credentials::get_imap_password(&account.id)?;
+    let mut client = ImapClient::connect(
+        &account.imap_host,
+        account.imap_port,
+        &account.email,
+        &password,
+        &account.trusted_certs,
+    )
+    .await?;
+    let result = client.delete_message(&folder, uid).await;
+    let _ = client.logout().await;
+    result
+}
+
 // ── SMTP commands ───────────────────────────────────────────────
 
 /// Send an email via the account's configured SMTP server.
@@ -3101,6 +3138,7 @@ fn main() {
             set_message_read,
             send_email,
             save_draft,
+            delete_message,
             get_cached_envelopes,
             get_unified_cached_envelopes,
             get_cached_message,

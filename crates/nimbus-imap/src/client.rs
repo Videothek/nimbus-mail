@@ -762,6 +762,50 @@ impl ImapClient {
         Ok(())
     }
 
+    /// Permanently remove a message from a folder via the two-step IMAP
+    /// dance: `UID STORE +FLAGS (\Deleted)` to mark it, then `EXPUNGE`
+    /// to actually reclaim it from the mailbox. Without the EXPUNGE the
+    /// message would stay visible in every other client until the next
+    /// sync.
+    ///
+    /// Used by the "replace a draft" flow: after appending the edited
+    /// copy to the Drafts folder, we delete the source UID the user
+    /// started editing from so there's exactly one draft on the server
+    /// per mail the user is composing.
+    pub async fn delete_message(&mut self, folder: &str, uid: u32) -> Result<(), NimbusError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        session.select(to_wire(folder)).await.map_err(|e| {
+            NimbusError::Protocol(format!("Failed to select folder '{folder}': {e}"))
+        })?;
+
+        let _updates: Vec<_> = session
+            .uid_store(uid.to_string(), "+FLAGS (\\Deleted)")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID STORE (\\Deleted) failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read UID STORE: {e}")))?;
+
+        // `expunge` streams the list of removed sequence numbers. We
+        // don't care about them specifically — we just need the server
+        // to actually drop the message, which only happens once the
+        // stream is fully drained.
+        let _expunged: Vec<_> = session
+            .expunge()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("EXPUNGE failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read EXPUNGE: {e}")))?;
+
+        info!("Deleted UID {uid} from '{folder}'");
+        Ok(())
+    }
+
     /// Server-side search fallback for messages that aren't cached locally.
     ///
     /// Runs `UID SEARCH` on the given folder with a criterion built from
