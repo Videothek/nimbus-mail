@@ -16,9 +16,12 @@
    * is tracked separately.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
-  import RichTextEditor, { type EditorApi } from './RichTextEditor.svelte'
+  import RichTextEditor, {
+    type EditorApi,
+    type ContactSuggestion,
+  } from './RichTextEditor.svelte'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
   import NextcloudFilePicker from './NextcloudFilePicker.svelte'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
@@ -659,6 +662,149 @@
     return m ? m[1].trim() : trimmed
   }
 
+  /** Same parser as `bareAddr`, but also pulls the display name out
+      of the `"Name" <addr>` wrapper so the @ picker can show the
+      friendly form for participants the user has typed without a
+      matching address-book entry. */
+  function parseAddress(piece: string): { name: string; email: string } {
+    const trimmed = piece.trim()
+    if (!trimmed) return { name: '', email: '' }
+    const m = trimmed.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/)
+    if (m) return { name: m[1].trim(), email: m[2].trim() }
+    return { name: '', email: trimmed }
+  }
+
+  // ── Contact picker (`@` mention) data plumbing ─────────────
+  // Cache the full address book once at mount; the `@` query then
+  // filters in-memory. Cheap because contacts rarely number above
+  // a few hundred per Nextcloud account, and the alternative
+  // (round-tripping `search_contacts` on every keystroke) would
+  // both add latency and complicate the participants-first
+  // ordering we owe the user.
+  interface ContactKindValue { kind: string; value: string }
+  interface ContactRow {
+    id: string
+    nextcloud_account_id: string
+    display_name: string
+    email: ContactKindValue[]
+    phone: ContactKindValue[]
+    organization: string | null
+    photo_mime: string | null
+  }
+  let allContacts = $state<ContactRow[]>([])
+  $effect(() => {
+    invoke<ContactRow[]>('get_contacts')
+      .then((rows) => {
+        allContacts = rows
+      })
+      .catch((e) => {
+        // No Nextcloud accounts / sync hasn't run / etc. — we
+        // degrade to "participants only" silently rather than
+        // breaking the @ flow with an error toast.
+        console.warn('get_contacts failed (mention picker continues with participants only):', e)
+      })
+  })
+
+  /** Materialize the parts of the contact-row Tiptap needs. The
+   *  full ContactRow has multiple emails per contact; the picker
+   *  is per-email so each address gets its own row. */
+  function suggestionFor(c: ContactRow, email: string): ContactSuggestion {
+    return {
+      id: email,
+      label: c.display_name || email,
+      email,
+      photoUrl: c.photo_mime ? convertFileSrc(c.id, 'contact-photo') : null,
+      hint: c.organization ?? null,
+    }
+  }
+
+  /** Hand the editor's `@` picker the two-tier list:
+   *  - `participants`: addresses the user has already added to To/Cc
+   *    (in that order, deduped). These show first in the popup so
+   *    the most likely target — someone already on the mail — is
+   *    one keystroke away.
+   *  - `others`: address-book matches that aren't already a
+   *    participant. Capped to 8 to keep the popup tight. */
+  async function contactQuery(query: string) {
+    const q = query.trim().toLowerCase()
+    const participantEmails = new Set<string>()
+    const participants: ContactSuggestion[] = []
+
+    for (const field of [to, cc]) {
+      for (const piece of splitAddrs(field)) {
+        const { name, email } = parseAddress(piece)
+        if (!email) continue
+        const key = email.toLowerCase()
+        if (participantEmails.has(key)) continue
+        participantEmails.add(key)
+        // Enrich with the address-book row if we have one — gives
+        // the row a photo + organization hint, and a real display
+        // name when the user typed only the bare address.
+        const full = allContacts.find((c) =>
+          c.email.some((e) => e.value.toLowerCase() === key),
+        )
+        if (full) {
+          participants.push(suggestionFor(full, email))
+        } else {
+          participants.push({
+            id: email,
+            label: name || email,
+            email,
+            photoUrl: null,
+            hint: null,
+          })
+        }
+      }
+    }
+
+    const matchesQuery = (s: ContactSuggestion) =>
+      !q || s.label.toLowerCase().includes(q) || s.email.toLowerCase().includes(q)
+    const filteredParticipants = participants.filter(matchesQuery)
+
+    const others: ContactSuggestion[] = []
+    const seenOthers = new Set<string>()
+    for (const c of allContacts) {
+      for (const e of c.email) {
+        const email = e.value
+        const key = email.toLowerCase()
+        if (!email || participantEmails.has(key) || seenOthers.has(key)) continue
+        const sug = suggestionFor(c, email)
+        if (!matchesQuery(sug)) continue
+        seenOthers.add(key)
+        others.push(sug)
+        if (others.length >= 8) break
+      }
+      if (others.length >= 8) break
+    }
+
+    return { participants: filteredParticipants, others }
+  }
+
+  /** Auto-add the picked contact to Cc when the email isn't already
+      somewhere on the recipient list. Issue #61 specifically asks
+      for Cc (not To) so a tangential `@`-mention doesn't promote
+      a side reference into a primary recipient. */
+  function onContactPicked(c: ContactSuggestion) {
+    const seen = new Set<string>()
+    for (const f of [to, cc, bcc]) {
+      for (const piece of splitAddrs(f)) {
+        const e = bareAddr(piece).toLowerCase()
+        if (e) seen.add(e)
+      }
+    }
+    if (seen.has(c.email.toLowerCase())) return
+    const formatted = c.label && c.label !== c.email
+      ? `"${c.label.replace(/"/g, '\\"')}" <${c.email}>`
+      : c.email
+    const trimmed = cc.trim()
+    cc = trimmed
+      ? `${trimmed}${trimmed.endsWith(',') ? ' ' : ', '}${formatted}, `
+      : `${formatted}, `
+    // Make sure the user can see the Cc field they were just
+    // auto-credited into — otherwise the change feels invisible.
+    showCcBcc = true
+  }
+
   /**
    * Merge newly invited addresses back into the email's To field.
    * Used by both the Talk-room-created and calendar-event-saved
@@ -878,6 +1024,11 @@
           onchange={(html) => { bodyHtml = html }}
           onready={(api) => { editorApi = api }}
           onrequestncimage={() => { showNcImagePicker = true }}
+          oncontactquery={contactQuery}
+          oncontactpicked={onContactPicked}
+          attachmentsForRef={attachments
+            .filter((a): a is Attachment & { content_id: string } => !!a.content_id)
+            .map((a) => ({ content_id: a.content_id, filename: a.filename }))}
         />
       </div>
 

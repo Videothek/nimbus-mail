@@ -27,6 +27,8 @@
   import TableRow from '@tiptap/extension-table-row'
   import TableCell from '@tiptap/extension-table-cell'
   import TableHeader from '@tiptap/extension-table-header'
+  import Mention from '@tiptap/extension-mention'
+  import type { Range } from '@tiptap/core'
 
   /**
    * Imperative handle the parent gets via `onready`. Tiptap is
@@ -67,6 +69,48 @@
      *  the button falls back to the plain URL prompt so embedders
      *  without Nextcloud (tests, future standalone usage) still work. */
     onrequestncimage?: () => void
+    /** Async query for the `@` contact picker. Returns two parallel
+     *  lists — `participants` (currently in To/Cc/Bcc) shown above the
+     *  divider, `others` (rest of the address book matching `query`)
+     *  below. The popup wires the keyboard / click → `oncontactpicked`. */
+    oncontactquery?: (query: string) => Promise<{
+      participants: ContactSuggestion[]
+      others: ContactSuggestion[]
+    }>
+    /** Fires after a `@` contact mention has been inserted. Compose
+     *  uses this to add the contact to Cc when the email isn't
+     *  already on To/Cc/Bcc — keeps the recipient list and the
+     *  body's mentions in sync. */
+    oncontactpicked?: (contact: ContactSuggestion) => void
+    /** Live attachment list for the `/` reference picker. Each entry
+     *  needs `content_id` (the cid: target) and `filename`. The
+     *  editor reads this snapshot at every keystroke of the picker —
+     *  no separate event needed when the parent's attachments
+     *  change. */
+    attachmentsForRef?: AttachmentRef[]
+  }
+
+  /** A row in the `@` contact picker. */
+  export interface ContactSuggestion {
+    /** Stable key — typically the email. */
+    id: string
+    /** Display name shown in the chip and the popup. */
+    label: string
+    /** Email address used in the mailto: href and plain-text
+     *  serialization. */
+    email: string
+    /** Optional avatar URL (e.g. `convertFileSrc(id, 'contact-photo')`). */
+    photoUrl?: string | null
+    /** Optional secondary line in the popup row (e.g. organization). */
+    hint?: string | null
+  }
+
+  /** A row in the `/` attachment picker. */
+  export interface AttachmentRef {
+    /** RFC 2392 Content-ID, used as the `cid:` target on the
+     *  inserted link. Stamped at attachment-pick time in Compose. */
+    content_id: string
+    filename: string
   }
   let {
     content = '',
@@ -74,7 +118,113 @@
     onchange,
     onready,
     onrequestncimage,
+    oncontactquery,
+    oncontactpicked,
+    attachmentsForRef = [],
   }: Props = $props()
+
+  // \u2500\u2500 Inline `@` and `/` picker state \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // Tiptap's suggestion plugin owns the trigger detection and
+  // emits lifecycle hooks; we mirror the relevant bits into Svelte
+  // state so the popup renders declaratively below the editor.
+  // Two independent slots so `@` and `/` can't both be open at once
+  // wins out by sharing `pickerKey` \u2014 only one is mounted at a time.
+  interface PickerPosition {
+    left: number
+    top: number
+  }
+  interface MentionPickerState {
+    visible: boolean
+    items: ContactSuggestion[]
+    /** Number of `participants` items at the head of `items`. The
+     *  popup draws a divider after `participantsCount - 1` so the
+     *  user can tell "already on this mail" from "rest of the
+     *  address book". Zero = no divider. */
+    participantsCount: number
+    selectedIndex: number
+    position: PickerPosition
+    command: ((c: ContactSuggestion) => void) | null
+  }
+  let mentionPicker = $state<MentionPickerState>({
+    visible: false,
+    items: [],
+    participantsCount: 0,
+    selectedIndex: 0,
+    position: { left: 0, top: 0 },
+    command: null,
+  })
+
+  interface AttachmentPickerState {
+    visible: boolean
+    items: AttachmentRef[]
+    selectedIndex: number
+    position: PickerPosition
+    command: ((a: AttachmentRef) => void) | null
+  }
+  let attachmentPicker = $state<AttachmentPickerState>({
+    visible: false,
+    items: [],
+    selectedIndex: 0,
+    position: { left: 0, top: 0 },
+    command: null,
+  })
+
+  /** Compute the popup anchor from the trigger char's bounding
+   *  rect. Clamped to the viewport so a `@` typed near the right
+   *  edge of the modal doesn't push the popup off-screen. */
+  function anchorBelow(rect: DOMRect | null | undefined): PickerPosition {
+    if (!rect) return { left: 8, top: 8 }
+    const gap = 4
+    return {
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - 280)),
+      top: rect.bottom + gap,
+    }
+  }
+
+  /** Forward editor keystrokes to the visible picker (arrows /
+   *  enter / tab / escape) and return whether we consumed them.
+   *  Tiptap suggestion uses the boolean to decide whether to let
+   *  the keystroke fall through to the editor. Each picker has
+   *  its own handler because they own different state slots, but
+   *  both share the same key-mapping. */
+  function handleMentionKey(event: KeyboardEvent): boolean {
+    const len = mentionPicker.items.length
+    if (len === 0) return event.key === 'Escape'
+    if (event.key === 'ArrowDown') {
+      mentionPicker.selectedIndex = (mentionPicker.selectedIndex + 1) % len
+      return true
+    }
+    if (event.key === 'ArrowUp') {
+      mentionPicker.selectedIndex =
+        (mentionPicker.selectedIndex - 1 + len) % len
+      return true
+    }
+    if (event.key === 'Enter' || event.key === 'Tab') {
+      const item = mentionPicker.items[mentionPicker.selectedIndex]
+      if (item && mentionPicker.command) mentionPicker.command(item)
+      return true
+    }
+    return event.key === 'Escape'
+  }
+  function handleAttachmentKey(event: KeyboardEvent): boolean {
+    const len = attachmentPicker.items.length
+    if (len === 0) return event.key === 'Escape'
+    if (event.key === 'ArrowDown') {
+      attachmentPicker.selectedIndex = (attachmentPicker.selectedIndex + 1) % len
+      return true
+    }
+    if (event.key === 'ArrowUp') {
+      attachmentPicker.selectedIndex =
+        (attachmentPicker.selectedIndex - 1 + len) % len
+      return true
+    }
+    if (event.key === 'Enter' || event.key === 'Tab') {
+      const item = attachmentPicker.items[attachmentPicker.selectedIndex]
+      if (item && attachmentPicker.command) attachmentPicker.command(item)
+      return true
+    }
+    return event.key === 'Escape'
+  }
 
   // svelte-ignore state_referenced_locally
   const editor = createEditor({
@@ -233,6 +383,207 @@
       TableRow,
       TableCell,
       TableHeader,
+      // ── `@` contact mention ────────────────────────────────
+      // Renamed from the default `mention` so it can coexist with
+      // the `/` attachment-ref extension below (Tiptap's Mention is
+      // a single Node type — to register two we extend twice with
+      // different `name`s). Renders to the wire as
+      // `<a href="mailto:…" data-contact-mention>@Alice</a>` so
+      // non-Tiptap clients see a clickable mailto link, while the
+      // `data-` marker lets us re-parse it on draft round-trip.
+      Mention.extend({
+        name: 'contactMention',
+        renderHTML({ node, HTMLAttributes }) {
+          const email = node.attrs.id ?? ''
+          const label = node.attrs.label ?? email
+          return [
+            'a',
+            { ...HTMLAttributes, href: `mailto:${email}` },
+            `@${label}`,
+          ]
+        },
+        // Plain-text serialization: feed `body_text` an RFC-style
+        // address rather than just the bare display name so the
+        // text-only fallback still tells a recipient who Alice is.
+        renderText({ node }) {
+          const label = node.attrs.label ?? node.attrs.id ?? ''
+          const email = node.attrs.id ?? ''
+          if (label && email && label !== email) return `${label} <${email}>`
+          return email || label
+        },
+        parseHTML() {
+          return [
+            {
+              tag: 'a[data-contact-mention]',
+              getAttrs: (el) => {
+                const href = (el as HTMLElement).getAttribute('href') ?? ''
+                const email = href.replace(/^mailto:/, '')
+                const text = (el as HTMLElement).textContent ?? ''
+                const label = text.replace(/^@/, '') || email
+                return { id: email, label }
+              },
+            },
+          ]
+        },
+      }).configure({
+        HTMLAttributes: {
+          'data-contact-mention': '',
+          class:
+            'inline-block px-1 rounded bg-primary-500/15 text-primary-700 dark:text-primary-300 no-underline',
+        },
+        suggestion: {
+          char: '@',
+          // `items` is called every time the query changes. We
+          // delegate to the parent's `oncontactquery` (Compose hands
+          // back the merged participants + address-book list) and
+          // stash `participantsCount` on the array so the popup
+          // hooks can read it back without changing Tiptap's
+          // expected return shape.
+          items: async ({ query }) => {
+            if (!oncontactquery) return []
+            const { participants, others } = await oncontactquery(query)
+            const merged = [...participants, ...others]
+            ;(merged as unknown as { __pcount: number }).__pcount = participants.length
+            return merged
+          },
+          command: ({ editor, range, props }) => {
+            const c = props as ContactSuggestion
+            editor
+              .chain()
+              .focus()
+              .insertContentAt(range, [
+                { type: 'contactMention', attrs: { id: c.email, label: c.label } },
+                { type: 'text', text: ' ' },
+              ])
+              .run()
+            oncontactpicked?.(c)
+          },
+          render: () => ({
+            onStart: (props) => {
+              const items = props.items as ContactSuggestion[]
+              const pcount =
+                (items as unknown as { __pcount?: number }).__pcount ?? 0
+              mentionPicker.items = items
+              mentionPicker.participantsCount = pcount
+              mentionPicker.selectedIndex = 0
+              mentionPicker.command = (c) =>
+                (props.command as (data: ContactSuggestion) => void)(c)
+              mentionPicker.position = anchorBelow(props.clientRect?.())
+              mentionPicker.visible = true
+            },
+            onUpdate: (props) => {
+              const items = props.items as ContactSuggestion[]
+              const pcount =
+                (items as unknown as { __pcount?: number }).__pcount ?? 0
+              mentionPicker.items = items
+              mentionPicker.participantsCount = pcount
+              mentionPicker.selectedIndex = 0
+              mentionPicker.command = (c) =>
+                (props.command as (data: ContactSuggestion) => void)(c)
+              mentionPicker.position = anchorBelow(props.clientRect?.())
+            },
+            onKeyDown: ({ event }) => handleMentionKey(event),
+            onExit: () => {
+              mentionPicker.visible = false
+              mentionPicker.items = []
+              mentionPicker.command = null
+            },
+          }),
+        },
+      }),
+
+      // ── `/` attachment reference ───────────────────────────
+      // Same Mention machinery, different node + char + render. The
+      // inserted node is a clickable `cid:` link — recipients on
+      // Nimbus (or any client that resolves `cid:` href) get a
+      // direct jump to the attachment; on Gmail / web clients it
+      // falls back to plain link text with the attachment still
+      // visible in the message's attachment tray.
+      Mention.extend({
+        name: 'attachmentRef',
+        renderHTML({ node, HTMLAttributes }) {
+          const cid = node.attrs.id ?? ''
+          const label = node.attrs.label ?? cid
+          return [
+            'a',
+            { ...HTMLAttributes, href: `cid:${cid}` },
+            `📎 ${label}`,
+          ]
+        },
+        renderText({ node }) {
+          // Plain-text fallback is just the filename — `cid:` URIs
+          // mean nothing to a human reading the text/plain part.
+          return node.attrs.label ?? ''
+        },
+        parseHTML() {
+          return [
+            {
+              tag: 'a[data-attachment-ref]',
+              getAttrs: (el) => {
+                const href = (el as HTMLElement).getAttribute('href') ?? ''
+                const id = href.replace(/^cid:/, '')
+                const text = (el as HTMLElement).textContent ?? ''
+                const label = text.replace(/^📎\s*/, '') || id
+                return { id, label }
+              },
+            },
+          ]
+        },
+      }).configure({
+        HTMLAttributes: {
+          'data-attachment-ref': '',
+          class: 'inline-block text-primary-600 dark:text-primary-400 underline',
+        },
+        suggestion: {
+          char: '/',
+          items: ({ query }) => {
+            const q = query.trim().toLowerCase()
+            return attachmentsForRef
+              .filter((a) => a.content_id)
+              .filter((a) => !q || a.filename.toLowerCase().includes(q))
+              .slice(0, 8)
+          },
+          command: ({ editor, range, props }) => {
+            // Tiptap types `props` as MentionNodeAttrs; we always
+            // pass our own AttachmentRef shape from `items` above,
+            // so the unknown-cast is the standard escape hatch.
+            const a = props as unknown as AttachmentRef
+            editor
+              .chain()
+              .focus()
+              .insertContentAt(range, [
+                { type: 'attachmentRef', attrs: { id: a.content_id, label: a.filename } },
+                { type: 'text', text: ' ' },
+              ])
+              .run()
+          },
+          render: () => ({
+            onStart: (props) => {
+              attachmentPicker.items = props.items as unknown as AttachmentRef[]
+              attachmentPicker.selectedIndex = 0
+              attachmentPicker.command = props.command as unknown as (
+                data: AttachmentRef,
+              ) => void
+              attachmentPicker.position = anchorBelow(props.clientRect?.())
+              attachmentPicker.visible = true
+            },
+            onUpdate: (props) => {
+              attachmentPicker.items = props.items as unknown as AttachmentRef[]
+              attachmentPicker.selectedIndex = 0
+              attachmentPicker.command = props.command as unknown as (
+                data: AttachmentRef,
+              ) => void
+              attachmentPicker.position = anchorBelow(props.clientRect?.())
+            },
+            onKeyDown: ({ event }) => handleAttachmentKey(event),
+            onExit: () => {
+              attachmentPicker.visible = false
+              attachmentPicker.items = []
+              attachmentPicker.command = null
+            },
+          }),
+        },
+      }),
     ],
     // svelte-ignore state_referenced_locally
     content,
@@ -773,4 +1124,101 @@
     <EditorContent editor={$editor} />
   </div>
 </div>
+
+<!-- ── `@` contact picker popup ────────────────────────────
+     `position: fixed` anchored to the trigger char's bounding rect
+     (computed in `anchorBelow`). z-60 so we sit on top of the
+     Compose modal's z-50 backdrop. The whole panel only renders
+     while the suggestion plugin says it should be visible — the
+     popup never lingers in the DOM tree when no `@` is active. -->
+{#if mentionPicker.visible}
+  <ul
+    class="fixed z-60 max-h-72 min-w-72 overflow-y-auto rounded-md border border-surface-300
+           dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
+    style="left: {mentionPicker.position.left}px; top: {mentionPicker.position.top}px;"
+    role="listbox"
+  >
+    {#if mentionPicker.items.length === 0}
+      <li class="px-3 py-2 text-xs text-surface-500">No matching contacts</li>
+    {:else}
+      {#each mentionPicker.items as c, i (c.id)}
+        <li
+          role="option"
+          aria-selected={i === mentionPicker.selectedIndex}
+          class="flex items-center gap-3 px-3 py-1.5 cursor-pointer
+                 {i === mentionPicker.selectedIndex
+                   ? 'bg-primary-500/15'
+                   : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
+          onmousedown={(e) => {
+            // mousedown so we commit before the editor sees a
+            // focus-loss and tears the popup down.
+            e.preventDefault()
+            mentionPicker.command?.(c)
+          }}
+        >
+          {#if c.photoUrl}
+            <img src={c.photoUrl} alt="" loading="lazy"
+                 class="w-7 h-7 rounded-full object-cover shrink-0" />
+          {:else}
+            <div class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-700
+                        flex items-center justify-center text-[10px] font-semibold shrink-0">
+              {c.label.trim().charAt(0).toUpperCase() || '?'}
+            </div>
+          {/if}
+          <div class="flex-1 min-w-0">
+            <p class="font-medium truncate">{c.label}</p>
+            <p class="text-xs text-surface-500 truncate">
+              {c.email}{#if c.hint} · {c.hint}{/if}
+            </p>
+          </div>
+        </li>
+        <!-- Divider after the last `participants` row, but only when
+             there are also `others` below it. Pure visual separator
+             — not selectable, not in the keyboard cycle. -->
+        {#if i === mentionPicker.participantsCount - 1
+              && i < mentionPicker.items.length - 1}
+          <li
+            aria-hidden="true"
+            class="my-1 mx-2 border-t border-surface-200 dark:border-surface-700"
+          ></li>
+        {/if}
+      {/each}
+    {/if}
+  </ul>
+{/if}
+
+<!-- ── `/` attachment picker popup ─────────────────────────
+     Same shape as the contact picker, narrower because rows are
+     just a filename + a paperclip glyph. Only attachments with a
+     `content_id` show up — everything else has nothing to link to. -->
+{#if attachmentPicker.visible}
+  <ul
+    class="fixed z-60 max-h-72 min-w-64 overflow-y-auto rounded-md border border-surface-300
+           dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
+    style="left: {attachmentPicker.position.left}px; top: {attachmentPicker.position.top}px;"
+    role="listbox"
+  >
+    {#if attachmentPicker.items.length === 0}
+      <li class="px-3 py-2 text-xs text-surface-500">No attachments to reference</li>
+    {:else}
+      {#each attachmentPicker.items as a, i (a.content_id)}
+        <li
+          role="option"
+          aria-selected={i === attachmentPicker.selectedIndex}
+          class="flex items-center gap-2 px-3 py-1.5 cursor-pointer
+                 {i === attachmentPicker.selectedIndex
+                   ? 'bg-primary-500/15'
+                   : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
+          onmousedown={(e) => {
+            e.preventDefault()
+            attachmentPicker.command?.(a)
+          }}
+        >
+          <span class="text-base shrink-0">📎</span>
+          <span class="truncate">{a.filename}</span>
+        </li>
+      {/each}
+    {/if}
+  </ul>
+{/if}
 {/if}
