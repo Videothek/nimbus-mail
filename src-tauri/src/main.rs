@@ -2181,15 +2181,19 @@ async fn set_message_read(
     result
 }
 
-/// Permanently remove a message from a folder on the server.
+/// Remove a message from a folder.
 ///
-/// Used by the "edit draft" flow: the user opens a draft in Compose,
-/// edits, and clicks Send. The old draft needs to go away so the
-/// Drafts mailbox doesn't accumulate a copy per edit. Also used by
-/// MailView's "Delete" button for outright removal (no Trash
-/// intermediate — callers that want Trash semantics use
-/// `move_to_trash` instead). IMAP-only for now; JMAP would use
-/// `Email/set { destroy }` and is deferred alongside `save_draft`.
+/// UX shape matches every major mail client: a first "Delete" press
+/// moves the message to Trash (reversible), a second press (from
+/// Trash itself, or from any folder on accounts without a Trash
+/// folder) permanently expunges it.
+///
+/// Entry points:
+///   - MailView "Delete" button → here.
+///   - `save_draft` replace flow → bypasses this command and calls
+///     the low-level `ImapClient::delete_message` directly, because
+///     "replace this draft with a new version" is update-in-place
+///     and shouldn't litter Trash with editing history.
 #[tauri::command]
 async fn delete_message(
     account_id: String,
@@ -2205,6 +2209,16 @@ async fn delete_message(
         ));
     }
 
+    // Decide move-to-Trash vs permanent. Already-in-Trash comparison
+    // is case-insensitive because the folder name the frontend hands
+    // us is the server-reported name but mail servers don't
+    // guarantee case stability across listings.
+    let trash = pick_trash_folder(&account.id, cache.inner());
+    let destination = match trash.as_deref() {
+        Some(trash) if !folder.eq_ignore_ascii_case(trash) => Some(trash.to_string()),
+        _ => None,
+    };
+
     let password = credentials::get_imap_password(&account.id)?;
     let mut client = ImapClient::connect(
         &account.imap_host,
@@ -2214,7 +2228,10 @@ async fn delete_message(
         &account.trusted_certs,
     )
     .await?;
-    let result = client.delete_message(&folder, uid).await;
+    let result = match destination.as_deref() {
+        Some(trash) => client.move_message(&folder, uid, trash).await,
+        None => client.delete_message(&folder, uid).await,
+    };
     let _ = client.logout().await;
 
     // Clear the cache row whether the delete succeeded OR failed with
@@ -2230,6 +2247,40 @@ async fn delete_message(
     }
 
     result
+}
+
+/// Locate the account's Trash folder via the IMAP `\Trash` special-use
+/// attribute or a name-based fallback. Same strategy as the Sent /
+/// Drafts / Archive pickers. Returns `None` if nothing matches — the
+/// delete path interprets that as "no Trash on this account, fall back
+/// to permanent expunge".
+fn pick_trash_folder(account_id: &str, cache: &Cache) -> Option<String> {
+    let folders = cache.get_folders(account_id).ok()?;
+
+    if let Some(by_attr) = folders.iter().find(|f| {
+        f.attributes
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case("trash") || a.eq_ignore_ascii_case("\\trash"))
+    }) {
+        return Some(by_attr.name.clone());
+    }
+
+    const NAME_HINTS: &[&str] = &[
+        "trash",
+        "bin",
+        "deleted items",
+        "deleted messages",
+        "papierkorb",
+        "corbeille",
+        "[gmail]/trash",
+    ];
+    folders
+        .iter()
+        .find(|f| {
+            let lower = f.name.to_lowercase();
+            NAME_HINTS.iter().any(|h| lower.contains(h))
+        })
+        .map(|f| f.name.clone())
 }
 
 /// Did this delete_message result leave the cache holding a definitely-
