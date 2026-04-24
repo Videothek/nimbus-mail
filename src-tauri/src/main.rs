@@ -3237,6 +3237,27 @@ fn main() {
     // is broken, and the user would silently lose offline capability.
     let cache = Cache::open_default().expect("failed to open local mail cache");
 
+    // Scrub orphan cache rows left behind by removed accounts.
+    // `cache.wipe_account(...)` runs on account removal, but if it ever
+    // missed (crash, disk error, older build before the wipe landed)
+    // the unified inbox would surface envelopes whose owning account
+    // no longer exists — every click on one throws "no account with
+    // id 'X'". Running the scrub on boot guarantees the shell never
+    // paints an orphan past the first frame, regardless of how the
+    // cache got into that state.
+    match account_store::load_accounts(&cache) {
+        Ok(accounts) => {
+            let active_ids: Vec<String> =
+                accounts.iter().map(|a| a.id.clone()).collect();
+            if let Err(e) = cache.prune_orphan_accounts(&active_ids) {
+                tracing::warn!("startup orphan-account prune failed: {e}");
+            }
+        }
+        Err(e) => tracing::warn!(
+            "skipping startup orphan-account prune — load_accounts failed: {e}"
+        ),
+    }
+
     // App-wide preferences (Issue #16). A missing file is fine on first
     // run — `load_settings` returns defaults. We wrap in Arc<RwLock<..>>
     // so the background sync loop can re-snapshot per tick while the
