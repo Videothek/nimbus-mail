@@ -49,6 +49,10 @@
     display_name: string
     color: string | null
     last_synced_at: string | null
+    /** Local visibility flag — hidden calendars are filtered out
+     *  before the event-editor dropdown sees them so the "Add
+     *  event" flow matches the CalendarView sidebar. */
+    hidden?: boolean
   }
 
   interface Attachment {
@@ -458,9 +462,16 @@
           console.warn('get_cached_calendars failed:', e)
         }
       }
-      calendars = all
-      if (all.length === 0) {
-        error = 'No calendars cached yet. Open the Calendar tab once to sync.'
+      // Hidden calendars stay out of the "Add event" picker —
+      // consistent with the CalendarView sidebar. The flag is
+      // local-only, so the same Nextcloud account can expose
+      // different sets on different devices without server round-
+      // trips.
+      calendars = all.filter((c) => !c.hidden)
+      if (calendars.length === 0) {
+        error = all.length === 0
+          ? 'No calendars cached yet. Open the Calendar tab once to sync.'
+          : 'All calendars are hidden. Toggle visibility in Settings.'
         return
       }
       // Auto-create a Talk room so the event's URL field carries the
