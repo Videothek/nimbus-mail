@@ -529,6 +529,13 @@
 </style>
 
 {#if $editor}
+<!-- Wrapper: `h-full flex flex-col min-h-0` lets the editor fill whatever
+     vertical space its parent gives it (e.g. when the Compose modal is
+     resized taller). The toolbar stays at natural height; the content
+     area below claims the remaining space via `flex-1`. Works in a
+     block parent too — `h-full` is simply ignored and the editor falls
+     back to its intrinsic 200 px minimum. -->
+<div class="h-full flex flex-col min-h-0">
   <!-- Toolbar -->
   <div class="flex flex-wrap items-center gap-0.5 px-2 py-1.5 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 text-sm">
     <!-- Font family picker — dropdown because 6 named families
@@ -709,8 +716,12 @@
     </button>
   </div>
 
-  <!-- Editor area -->
-  <div class="border border-surface-200 dark:border-surface-700 rounded-b-md bg-surface-50 dark:bg-surface-950 overflow-y-auto" style="max-height: 360px;">
+  <!-- Editor area. `flex-1 min-h-0` lets it shrink/grow with the
+       wrapper's available height; `overflow-y-auto` scrolls internally
+       once the content exceeds what fits. When the Compose modal is
+       resized taller, this is what absorbs the new space. -->
+  <div class="flex-1 min-h-0 border border-surface-200 dark:border-surface-700 rounded-b-md bg-surface-50 dark:bg-surface-950 overflow-y-auto">
     <EditorContent editor={$editor} />
   </div>
+</div>
 {/if}
