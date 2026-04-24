@@ -18,6 +18,7 @@
     requestPermission,
     sendNotification,
   } from '@tauri-apps/plugin-notification'
+  import IconRail, { type RailView } from './lib/IconRail.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import MailList from './lib/MailList.svelte'
   import MailView from './lib/MailView.svelte'
@@ -50,11 +51,6 @@
     | 'talk'
   let currentView = $state<View>('loading')
 
-  // Which integration tab is active in the sidebar. Lives next to
-  // `currentView` because the inbox shell and the integration views
-  // share the same sidebar, and the sidebar needs to show the active
-  // tab even when we're not in the mail-list view anymore.
-  let activeIntegration = $state<string | null>(null)
 
   // ── Inbox state ─────────────────────────────────────────────
   // All configured mail accounts and which one the user is currently
@@ -299,10 +295,9 @@
   // ── Navigation handlers ─────────────────────────────────────
   function goToInbox() {
     currentView = 'inbox'
-    activeIntegration = null
     // The user may have added / removed accounts in settings; re-read
-    // the list so the sidebar switcher and the active selection reflect
-    // the current state.
+    // the list so the IconRail avatars and the active selection
+    // reflect the current state.
     void checkAccounts()
   }
 
@@ -349,28 +344,31 @@
     currentView = 'setup'
   }
 
-  function goToSettings() {
-    currentView = 'settings'
+  /** IconRail nav click. Maps the rail's view enum directly to the
+   *  router's `currentView` — the old `onSelectIntegration` took
+   *  string labels like "Contacts" / "Nextcloud Talk" because the
+   *  Sidebar rendered those display names verbatim; the rail uses
+   *  a typed `RailView` instead so this handler is just a
+   *  structural pass-through with no case map. */
+  function onSelectView(view: RailView) {
+    currentView = view
   }
 
-  // Sidebar "Integrations" click. Routes Contacts / Calendar to their
-  // dedicated views; the other entries fall through until their
-  // feature lands.
-  function onSelectIntegration(name: string) {
-    if (name === 'Contacts') {
-      activeIntegration = name
-      currentView = 'contacts'
-    } else if (name === 'Calendar') {
-      activeIntegration = name
-      currentView = 'calendar'
-    } else if (name === 'Nextcloud Files') {
-      activeIntegration = name
-      currentView = 'files'
-    } else if (name === 'Nextcloud Talk') {
-      activeIntegration = name
-      currentView = 'talk'
+  /** Fire a `check_mail_now` whenever the user transitions into the
+   *  mail view. The background sync loop already runs on its own
+   *  cadence (`background_sync_interval_secs`, default 60s), but a
+   *  fresh poll on view-switch matches what users expect — the
+   *  mailbox you just opened should reflect the server, not whatever
+   *  state the background loop last landed. The first run fires on
+   *  initial load into `'inbox'`, which is redundant with the bg
+   *  loop's startup poll but cheap and predictable. */
+  $effect(() => {
+    if (currentView === 'inbox') {
+      void invoke('check_mail_now').catch((e) =>
+        console.warn('auto check_mail_now on view switch failed:', e),
+      )
     }
-  }
+  })
 
   async function onSetupComplete() {
     // After adding an account, refresh the account list so we pick
@@ -393,11 +391,6 @@
   function selectFolder(name: string) {
     selectedFolder = name
     selectedUid = null
-  }
-
-  // Triggered by the sidebar's refresh button.
-  function refreshAll() {
-    refreshToken++
   }
 
   // MailView fires this after it successfully marks a message \Seen on
@@ -691,220 +684,135 @@
   }
 </script>
 
-<!-- Loading state: shown briefly while we check for accounts -->
+<!-- Loading / Setup both run before the user has an account, so the
+     IconRail (which is keyed by accounts) isn't mounted. -->
 {#if currentView === 'loading'}
   <div class="h-full flex items-center justify-center bg-surface-50 dark:bg-surface-900">
     <p class="text-surface-500">Loading...</p>
   </div>
-
-<!-- Setup wizard: first-time experience -->
 {:else if currentView === 'setup'}
   <AccountSetup oncomplete={onSetupComplete} />
-
-<!-- Account settings -->
-{:else if currentView === 'settings'}
-  <AccountSettings
-    onclose={goToInbox}
-    onaddaccount={goToSetup}
-    onappprefschanged={(p) => (appPrefs = p)}
-  />
-
-<!-- Contacts view: sidebar stays put so the user can jump back to mail. -->
-{:else if currentView === 'contacts' && activeAccountId}
-  <div class="h-full flex">
-    <Sidebar
-      accounts={accounts}
-      accountId={activeAccountId}
-      selectedFolder={selectedFolder}
-      refreshToken={refreshToken}
-      activeIntegration={activeIntegration}
-      onselectaccount={selectAccount}
-      onselectfolder={(f) => {
-        selectFolder(f)
-        goToInbox()
-      }}
-      onsettings={goToSettings}
-      onrefresh={refreshAll}
-      oncompose={() => openCompose()}
-      onselectintegration={onSelectIntegration}
-    />
-    <div class="flex-1">
-      <ContactsView onclose={goToInbox} />
-    </div>
-  </div>
-
-<!-- Calendar view: same split as Contacts — sidebar on the left, the
-     integration fills the rest of the window. -->
-{:else if currentView === 'calendar' && activeAccountId}
-  <div class="h-full flex">
-    <Sidebar
-      accounts={accounts}
-      accountId={activeAccountId}
-      selectedFolder={selectedFolder}
-      refreshToken={refreshToken}
-      activeIntegration={activeIntegration}
-      onselectaccount={selectAccount}
-      onselectfolder={(f) => {
-        selectFolder(f)
-        goToInbox()
-      }}
-      onsettings={goToSettings}
-      onrefresh={refreshAll}
-      oncompose={() => openCompose()}
-      onselectintegration={onSelectIntegration}
-    />
-    <div class="flex-1">
-      <CalendarView onclose={goToInbox} />
-    </div>
-  </div>
-
-<!-- Nextcloud Files view: same shape as Calendar / Contacts. The
-     "New mail with link" / "New mail with attachment" buttons inside
-     `FilesView` route through the same `openCompose` everything else
-     uses, so the resulting draft sits on top of whichever view the
-     user came from. -->
-{:else if currentView === 'files' && activeAccountId}
-  <div class="h-full flex">
-    <Sidebar
-      accounts={accounts}
-      accountId={activeAccountId}
-      selectedFolder={selectedFolder}
-      refreshToken={refreshToken}
-      activeIntegration={activeIntegration}
-      onselectaccount={selectAccount}
-      onselectfolder={(f) => {
-        selectFolder(f)
-        goToInbox()
-      }}
-      onsettings={goToSettings}
-      onrefresh={refreshAll}
-      oncompose={() => openCompose()}
-      onselectintegration={onSelectIntegration}
-    />
-    <div class="flex-1">
-      <FilesView onclose={goToInbox} oncompose={openCompose} />
-    </div>
-    {#if composeInitial !== null}
-      <Compose
-        accounts={accounts}
-        accountId={activeAccountId}
-        initial={composeInitial}
-        onclose={closeCompose}
-      />
-    {/if}
-  </div>
-
-<!-- Nextcloud Talk view: same shape as Files. The "Share link"
-     button inside `TalkView` opens Compose with the room URL pre-
-     rendered into the body. -->
-{:else if currentView === 'talk' && activeAccountId}
-  <div class="h-full flex">
-    <Sidebar
-      accounts={accounts}
-      accountId={activeAccountId}
-      selectedFolder={selectedFolder}
-      refreshToken={refreshToken}
-      activeIntegration={activeIntegration}
-      onselectaccount={selectAccount}
-      onselectfolder={(f) => {
-        selectFolder(f)
-        goToInbox()
-      }}
-      onsettings={goToSettings}
-      onrefresh={refreshAll}
-      oncompose={() => openCompose()}
-      onselectintegration={onSelectIntegration}
-    />
-    <div class="flex-1">
-      <TalkView onclose={goToInbox} oncompose={openCompose} />
-    </div>
-    {#if composeInitial !== null}
-      <Compose
-        accounts={accounts}
-        accountId={activeAccountId}
-        initial={composeInitial}
-        onclose={closeCompose}
-      />
-    {/if}
-  </div>
-
-<!-- Main inbox: the 3-panel mail client layout -->
-{:else if activeAccountId}
-  <div class="h-full flex">
-    <Sidebar
-      accounts={accounts}
-      accountId={activeAccountId}
-      selectedFolder={selectedFolder}
-      refreshToken={refreshToken}
-      activeIntegration={activeIntegration}
-      unified={unifiedMode}
-      onselectaccount={selectAccount}
-      onselectfolder={selectFolder}
-      onsettings={goToSettings}
-      onrefresh={refreshAll}
-      oncompose={() => openCompose()}
-      onselectintegration={onSelectIntegration}
-    />
-    <!-- Mail-list column: SearchBar on top, then either MailList
-         or SearchResults depending on whether the user is searching.
-         Search isn't wired for unified mode yet — searching while
-         unified is enabled scopes back to the active account, which
-         is the safer default than silently returning nothing. -->
-    <div class="flex flex-col w-80 shrink-0 border-r border-surface-200 dark:border-surface-700">
-      <SearchBar
-        accountId={activeAccountId}
-        currentFolder={selectedFolder}
-        onsearch={onSearch}
-      />
-      <div class="flex-1 min-h-0 flex">
-        {#if searchActive}
-          <SearchResults
-            accountId={activeAccountId}
-            currentFolder={selectedFolder}
-            query={searchQuery}
-            scope={searchScope}
-            filters={searchFilters}
-            selectedUid={selectedUid}
-            onselect={onSelectSearchHit}
-          />
-        {:else}
-          <MailList
-            accounts={accounts}
-            accountId={activeAccountId}
-            folder={selectedFolder}
-            unified={unifiedMode}
-            selectedUid={selectedUid}
-            refreshToken={refreshToken}
-            onselect={selectMessage}
-          />
-        {/if}
-      </div>
-    </div>
-    <MailView
-      accountId={selectedMessageAccountId ?? activeAccountId}
-      folder={selectedFolder}
-      uid={selectedUid}
-      onread={onMessageRead}
-      onreply={onReply}
-      onreplyall={onReplyAll}
-      onforward={onForward}
-      oncreatetalk={onCreateTalkFromMail}
-      isDraftsFolder={isDraftsFolder}
-      oneditdraft={onEditDraft}
-      onmessageremoved={onMessageRemoved}
-    />
-    {#if composeInitial !== null}
-      <Compose
-        accounts={accounts}
-        accountId={activeAccountId}
-        initial={composeInitial}
-        onclose={closeCompose}
-      />
-    {/if}
-  </div>
 {:else}
-  <div class="h-full flex items-center justify-center bg-surface-50 dark:bg-surface-900">
-    <p class="text-surface-500">No account selected.</p>
+  <!-- Post-setup shell: IconRail is mounted *once* outside the
+       currentView branches, so switching between Mail, Contacts,
+       Calendar, Files, Talk, or Settings never remounts the rail
+       (keeps the Talk unread poll warm, avatars stable, ring
+       transitions smooth). Every view below sits inside the same
+       flex row so the rail is always on the far left.
+
+       Compose is also mounted here — it's an overlay modal, so it
+       stacks on top of whichever view the user came from without
+       the view needing to know about it. -->
+  <div class="h-full flex">
+    <IconRail
+      accounts={accounts}
+      accountId={activeAccountId}
+      unified={unifiedMode}
+      currentView={currentView}
+      onselectaccount={selectAccount}
+      onselectview={onSelectView}
+    />
+
+    {#if !activeAccountId}
+      <div class="flex-1 flex items-center justify-center bg-surface-50 dark:bg-surface-900">
+        <p class="text-surface-500">No account selected.</p>
+      </div>
+    {:else if currentView === 'settings'}
+      <div class="flex-1 min-w-0 overflow-auto">
+        <AccountSettings
+          onclose={goToInbox}
+          onaddaccount={goToSetup}
+          onappprefschanged={(p) => (appPrefs = p)}
+        />
+      </div>
+    {:else if currentView === 'contacts'}
+      <div class="flex-1 min-w-0">
+        <ContactsView onclose={goToInbox} />
+      </div>
+    {:else if currentView === 'calendar'}
+      <div class="flex-1 min-w-0">
+        <CalendarView onclose={goToInbox} />
+      </div>
+    {:else if currentView === 'files'}
+      <div class="flex-1 min-w-0">
+        <FilesView onclose={goToInbox} oncompose={openCompose} />
+      </div>
+    {:else if currentView === 'talk'}
+      <div class="flex-1 min-w-0">
+        <TalkView onclose={goToInbox} oncompose={openCompose} />
+      </div>
+    {:else}
+      <!-- Mail view: Sidebar (folders) + mail-list column + MailView.
+           Sidebar is now much leaner — just Compose + folder tree —
+           since the shell chrome lives on the rail. -->
+      <Sidebar
+        accounts={accounts}
+        accountId={activeAccountId}
+        selectedFolder={selectedFolder}
+        refreshToken={refreshToken}
+        unified={unifiedMode}
+        onselectfolder={selectFolder}
+        oncompose={() => openCompose()}
+      />
+      <!-- Mail-list column: SearchBar on top, then either MailList
+           or SearchResults depending on whether the user is
+           searching. Search isn't wired for unified mode yet —
+           searching while unified is enabled scopes back to the
+           active account, which is the safer default than silently
+           returning nothing. -->
+      <div class="flex flex-col w-80 shrink-0 border-r border-surface-200 dark:border-surface-700">
+        <SearchBar
+          accountId={activeAccountId}
+          currentFolder={selectedFolder}
+          onsearch={onSearch}
+        />
+        <div class="flex-1 min-h-0 flex">
+          {#if searchActive}
+            <SearchResults
+              accountId={activeAccountId}
+              currentFolder={selectedFolder}
+              query={searchQuery}
+              scope={searchScope}
+              filters={searchFilters}
+              selectedUid={selectedUid}
+              onselect={onSelectSearchHit}
+            />
+          {:else}
+            <MailList
+              accounts={accounts}
+              accountId={activeAccountId}
+              folder={selectedFolder}
+              unified={unifiedMode}
+              selectedUid={selectedUid}
+              refreshToken={refreshToken}
+              onselect={selectMessage}
+            />
+          {/if}
+        </div>
+      </div>
+      <MailView
+        accountId={selectedMessageAccountId ?? activeAccountId}
+        folder={selectedFolder}
+        uid={selectedUid}
+        onread={onMessageRead}
+        onreply={onReply}
+        onreplyall={onReplyAll}
+        onforward={onForward}
+        oncreatetalk={onCreateTalkFromMail}
+        isDraftsFolder={isDraftsFolder}
+        oneditdraft={onEditDraft}
+        onmessageremoved={onMessageRemoved}
+      />
+    {/if}
+
+    {#if composeInitial !== null}
+      <Compose
+        accounts={accounts}
+        accountId={activeAccountId ?? ''}
+        initial={composeInitial}
+        onclose={closeCompose}
+      />
+    {/if}
   </div>
 {/if}
 
