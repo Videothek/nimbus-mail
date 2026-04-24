@@ -165,6 +165,58 @@ impl Cache {
         &self.pool
     }
 
+    /// Drop every cached row whose `account_id` isn't in `active_ids`.
+    ///
+    /// Called on app startup as a defense-in-depth scrub for the case
+    /// where `wipe_account` at removal time didn't run (crash, disk
+    /// error, older build without the wipe) or where an account was
+    /// re-added under a fresh UUID leaving the old id's rows behind.
+    /// Unified-inbox views would otherwise hand the UI envelopes
+    /// whose owning account no longer exists and `load_account`
+    /// would fail on every click.
+    ///
+    /// Returns the count of orphan account ids that were pruned —
+    /// zero on a clean cache, any other number is worth a log line.
+    pub fn prune_orphan_accounts(
+        &self,
+        active_ids: &[String],
+    ) -> Result<usize, CacheError> {
+        let conn = self.pool.get()?;
+        // Collect every distinct account_id across the three tables
+        // that might hold orphans. Using a union keeps this robust
+        // against one table drifting ahead of another (e.g. a past
+        // bug only cleaning `messages` on removal).
+        let mut stmt = conn.prepare(
+            "SELECT account_id FROM messages
+             UNION
+             SELECT account_id FROM folders
+             UNION
+             SELECT account_id FROM folder_sync_state",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let active: std::collections::HashSet<&str> =
+            active_ids.iter().map(String::as_str).collect();
+        let orphans: Vec<String> = rows
+            .filter_map(Result::ok)
+            .filter(|id| !active.contains(id.as_str()))
+            .collect();
+        drop(stmt);
+        for id in &orphans {
+            // Reuse `wipe_account`'s three DELETE statements so any
+            // tables it learns about in the future are automatically
+            // covered by the scrub too.
+            self.wipe_account(id)?;
+        }
+        if !orphans.is_empty() {
+            warn!(
+                "Pruned {} orphan account id(s) from cache: {:?}",
+                orphans.len(),
+                orphans
+            );
+        }
+        Ok(orphans.len())
+    }
+
     /// Clears the cache for a specific account — called when an account
     /// is removed, or when `UIDVALIDITY` changes and we need to start fresh.
     pub fn wipe_account(&self, account_id: &str) -> Result<(), CacheError> {
