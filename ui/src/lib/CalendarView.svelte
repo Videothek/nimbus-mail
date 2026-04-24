@@ -886,8 +886,8 @@
                     {#each allDayVisible(b.allDay) as ev (ev.id)}
                       <button
                         type="button"
-                        class="text-[11px] truncate rounded px-1.5 text-white text-left"
-                        style="background-color: {eventColor(ev)}; height: {ALL_DAY_ROW_HEIGHT_PX}px; line-height: {ALL_DAY_ROW_HEIGHT_PX}px;"
+                        class="ev-block ev-allday text-[11px] truncate rounded px-1.5 text-left"
+                        style="--ev-color: {eventColor(ev)}; height: {ALL_DAY_ROW_HEIGHT_PX}px; line-height: {ALL_DAY_ROW_HEIGHT_PX}px;"
                         title={`${ev.summary || '(no title)'} — All-day${ev.location ? ` @ ${ev.location}` : ''}`}
                         onclick={() => openEditor(ev)}
                       >
@@ -975,8 +975,8 @@
                       : 1}
                   {@const showLocationInline = p.event.location && p.heightPx > 80}
                   <div
-                    class="absolute rounded-md text-[11px] text-white overflow-hidden px-1.5 py-1 shadow-sm cursor-pointer leading-tight"
-                    style="top: {p.topPx}px; height: {p.heightPx}px; left: calc({(p.lane / p.laneCount) * 100}% + 2px); width: calc({(1 / p.laneCount) * 100}% - 4px); background-color: {eventColor(p.event)};"
+                    class="ev-block ev-timed absolute rounded-md text-[11px] overflow-hidden px-1.5 py-1 cursor-pointer leading-tight"
+                    style="--ev-color: {eventColor(p.event)}; top: {p.topPx}px; height: {p.heightPx}px; left: calc({(p.lane / p.laneCount) * 100}% + 2px); width: calc({(1 / p.laneCount) * 100}% - 4px);"
                     title={`${p.event.summary || '(no title)'} — ${fmtTime(p.event.start)}–${fmtTime(p.event.end)}${p.event.location ? ` @ ${p.event.location}` : ''}`}
                     onmousedown={(ev) => ev.stopPropagation()}
                     onclick={(ev) => { ev.stopPropagation(); openEditor(p.event) }}
@@ -1039,3 +1039,61 @@
     onsaved={onEditorSaved}
   />
 {/if}
+
+<style>
+  /*
+   * Modern event block: a translucent tint of the calendar colour
+   * with a solid accent bar on the leading edge and saturated text
+   * in the same hue. The background always uses the same CSS
+   * custom property, so each event just sets `--ev-color: <hex>`
+   * inline and the rest falls out.
+   *
+   * Why this shape:
+   * - `color-mix(... <n>%, transparent)` gives us a tint that
+   *   lets the grid lines underneath show through; adjacent events
+   *   (even of the same colour) stay visibly distinct because the
+   *   accent bar and saturated text make each block's edge
+   *   unambiguous.
+   * - We use full saturation for the accent bar and for the text,
+   *   so Nextcloud-assigned colours read the same way they do in
+   *   every other calendar client — yellow stays yellow, teal
+   *   stays teal.
+   * - The tint % is higher in dark mode (28 vs. 18) because
+   *   `color-mix(..., transparent)` loses punch against a near-black
+   *   surface; 18% looks ghostly in `[data-mode='dark']`.
+   *
+   * Browser support: `color-mix()` is shipping in Chrome 111+,
+   * Safari 16.2+, Firefox 113+ — all well within Tauri 2's system
+   * webview requirements.
+   */
+  .ev-block {
+    background-color: color-mix(in srgb, var(--ev-color) 18%, transparent);
+    color: var(--ev-color);
+    border: 1px solid color-mix(in srgb, var(--ev-color) 35%, transparent);
+    /* The inset box-shadow is the coloured left accent bar — the
+       primary visual separator between stacked events, and why
+       adjacent blocks of the same colour no longer blur together. */
+    box-shadow: inset 3px 0 0 0 var(--ev-color);
+    padding-left: 8px;
+  }
+
+  /* Dark mode: bump the tint so the block reads clearly against a
+     near-black surface. Text + accent stay saturated in both modes
+     — the full-colour hue is already high-contrast against a dark
+     background. */
+  :global([data-mode='dark']) .ev-block {
+    background-color: color-mix(in srgb, var(--ev-color) 28%, transparent);
+    border-color: color-mix(in srgb, var(--ev-color) 45%, transparent);
+  }
+
+  /* Subtle hover lift signals clickability without the old shadow
+     that used to make adjacent blocks blur together. */
+  .ev-block.ev-timed:hover,
+  .ev-block.ev-allday:hover {
+    background-color: color-mix(in srgb, var(--ev-color) 28%, transparent);
+  }
+  :global([data-mode='dark']) .ev-block.ev-timed:hover,
+  :global([data-mode='dark']) .ev-block.ev-allday:hover {
+    background-color: color-mix(in srgb, var(--ev-color) 38%, transparent);
+  }
+</style>
