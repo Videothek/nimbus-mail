@@ -57,7 +57,15 @@ impl Default for AppSettings {
         Self {
             minimize_to_tray: true,
             background_sync_enabled: true,
-            background_sync_interval_secs: 300,
+            // Tightened from 5 minutes to 60s as part of the icon-
+            // rail shell pass: the manual "Refresh" button is gone
+            // from the sidebar, so the background loop is the only
+            // thing keeping the inbox fresh between the on-view-
+            // switch poll and the user's next interaction. 60s is
+            // the modern-client floor; users who care about server
+            // load can bump it in Settings (30s hard floor still
+            // enforced at runtime).
+            background_sync_interval_secs: 60,
             notifications_enabled: true,
             start_minimized: false,
             theme_name: "cerberus".to_string(),
