@@ -839,11 +839,19 @@ impl ImapClient {
             .as_mut()
             .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
 
+        info!("delete_message: SELECT '{folder}' for UID {uid}");
         session.select(to_wire(folder)).await.map_err(|e| {
             NimbusError::Protocol(format!("Failed to select folder '{folder}': {e}"))
         })?;
 
-        let _updates: Vec<_> = session
+        // STORE the `\Deleted` flag and keep the returned FETCH
+        // responses — if the set is empty the server didn't find our
+        // UID, which is the single biggest failure mode of this flow
+        // (envelope cache had a UID that the server has since
+        // renumbered / expunged out from under us). Surfacing that
+        // explicitly beats silently "succeeding" while the draft
+        // stays put.
+        let updates: Vec<_> = session
             .uid_store(uid.to_string(), "+FLAGS (\\Deleted)")
             .await
             .map_err(|e| NimbusError::Protocol(format!("UID STORE (\\Deleted) failed: {e}")))?
@@ -851,17 +859,83 @@ impl ImapClient {
             .await
             .map_err(|e| NimbusError::Protocol(format!("Failed to read UID STORE: {e}")))?;
 
-        // `expunge` streams the list of removed sequence numbers. We
-        // don't care about them specifically — we just need the server
-        // to actually drop the message, which only happens once the
-        // stream is fully drained.
-        let _expunged: Vec<_> = session
-            .expunge()
-            .await
-            .map_err(|e| NimbusError::Protocol(format!("EXPUNGE failed: {e}")))?
-            .try_collect()
-            .await
-            .map_err(|e| NimbusError::Protocol(format!("Failed to read EXPUNGE: {e}")))?;
+        if updates.is_empty() {
+            return Err(NimbusError::Protocol(format!(
+                "UID STORE (\\Deleted) on UID {uid} in '{folder}' returned no updates — \
+                 the message likely doesn't exist on the server anymore. \
+                 Refresh the folder and try again."
+            )));
+        }
+        info!(
+            "delete_message: UID STORE flagged {uid} as \\Deleted ({} response(s))",
+            updates.len()
+        );
+
+        // Prefer `UID EXPUNGE` (RFC 4315 / UIDPLUS) — it only expunges
+        // the specific UID we just marked, leaving any other
+        // `\Deleted`-flagged messages other clients might be juggling
+        // in the same mailbox untouched. Most servers advertise
+        // UIDPLUS; on the ones that don't we fall back to the
+        // broader plain EXPUNGE below, which is still correct for
+        // our use (we only flagged one UID in this session).
+        //
+        // The inner helper consumes the returned stream fully before
+        // returning, which is what lets us fall back to a second
+        // mutable borrow of `session` on the outer error branch
+        // without tripping the borrow checker — if we kept the
+        // Stream around we'd be holding a mutable borrow into the
+        // Err arm.
+        let uid_set = uid.to_string();
+        let try_uid_expunge = async {
+            let stream = session
+                .uid_expunge(&uid_set)
+                .await
+                .map_err(|e| format!("UID EXPUNGE failed: {e}"))?;
+            stream
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|e| format!("Failed to read UID EXPUNGE: {e}"))
+        };
+
+        let expunged_count = match try_uid_expunge.await {
+            Ok(expunged) => {
+                info!(
+                    "delete_message: UID EXPUNGE {uid} removed {} message(s)",
+                    expunged.len()
+                );
+                expunged.len()
+            }
+            Err(e) => {
+                // UIDPLUS not supported (or the server rejected the
+                // command for another reason). Fall back to plain
+                // EXPUNGE — we only flagged one UID in this session
+                // so the broader command is still targeted enough.
+                tracing::warn!(
+                    "delete_message: UID EXPUNGE failed ({e}), falling back to EXPUNGE"
+                );
+                let expunged: Vec<_> = session
+                    .expunge()
+                    .await
+                    .map_err(|e| NimbusError::Protocol(format!("EXPUNGE failed: {e}")))?
+                    .try_collect()
+                    .await
+                    .map_err(|e| {
+                        NimbusError::Protocol(format!("Failed to read EXPUNGE: {e}"))
+                    })?;
+                info!(
+                    "delete_message: EXPUNGE removed {} message(s) (fallback)",
+                    expunged.len()
+                );
+                expunged.len()
+            }
+        };
+
+        if expunged_count == 0 {
+            return Err(NimbusError::Protocol(format!(
+                "EXPUNGE in '{folder}' removed 0 messages after flagging UID {uid} — \
+                 the \\Deleted flag didn't stick on this server"
+            )));
+        }
 
         info!("Deleted UID {uid} from '{folder}'");
         Ok(())
