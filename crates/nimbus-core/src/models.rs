@@ -298,6 +298,13 @@ pub struct Attachment {
     pub content_type: String,
     /// Raw file contents
     pub data: Vec<u8>,
+    /// RFC 2392 Content-ID, used when the body HTML contains a
+    /// `<a href="cid:…">` reference to this attachment (the `/`
+    /// attachment-picker shortcut in Compose). Optional because
+    /// legacy attachment payloads predate the field — we treat an
+    /// absent `content_id` the same as "no inline reference".
+    #[serde(default)]
+    pub content_id: Option<String>,
 }
 
 /// A persistent Nextcloud connection.

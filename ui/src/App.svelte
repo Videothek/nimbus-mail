@@ -559,6 +559,15 @@
           uid,
           partId: att.part_id,
         }),
+        // Fresh content_id — the `/` editor shortcut references
+        // attachments by this id, so each one needs a value even
+        // when we're rehydrating a draft. Any `cid:` refs already
+        // baked into the old draft body are intentionally broken
+        // by this: fixing them up would mean parsing the stored
+        // HTML and rewriting refs, which is scope-heavier and can
+        // wait. For a freshly-edited draft you just re-pick the
+        // attachment via `/` to relink.
+        content_id: crypto.randomUUID().replaceAll('-', ''),
       })),
     )
     openCompose({

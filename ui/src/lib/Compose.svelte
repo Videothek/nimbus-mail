@@ -52,6 +52,13 @@
     filename: string
     content_type: string
     data: number[]
+    /** RFC 2392 Content-ID, assigned when the attachment is picked
+     *  so the body HTML can reference it via `<a href="cid:…">`.
+     *  The `/` attachment-picker shortcut in the editor inserts
+     *  those links; recipients' mail clients that honour cid: get a
+     *  clickable anchor, others see a plain-text link that falls
+     *  through to the attachment tray below the message. */
+    content_id?: string
   }
 
   export interface ComposeInitial {
@@ -681,6 +688,17 @@
     to = [...current, ...additions].join(', ')
   }
 
+  /** Generate a stable, collision-resistant RFC 2392 Content-ID for
+      a freshly picked attachment. We tag every attachment the user
+      adds so the `/` shortcut in the editor can reference any of
+      them — even the ones the user ultimately doesn't link to just
+      carry an unused id, which is cheap. UUID v4 from the
+      browser's Web Crypto API; we strip the hyphens so the id
+      round-trips cleanly through headers without extra quoting. */
+  function makeContentId(): string {
+    return crypto.randomUUID().replaceAll('-', '')
+  }
+
   async function onPickFiles(e: Event) {
     const input = e.target as HTMLInputElement
     if (!input.files) return
@@ -691,6 +709,7 @@
         filename: file.name,
         content_type: file.type || 'application/octet-stream',
         data: Array.from(new Uint8Array(buf)),
+        content_id: makeContentId(),
       })
     }
     attachments = [...attachments, ...picked]
@@ -923,7 +942,14 @@
 
 {#if showNcPicker}
   <NextcloudFilePicker
-    onpicked={(picked) => { attachments = [...attachments, ...picked] }}
+    onpicked={(picked) => {
+      // Stamp a content_id on each newly-arrived attachment so the
+      // `/` editor shortcut can reference it — the Nextcloud picker
+      // doesn't carry the field in its own `Attachment` shape, so
+      // Compose is the earliest point where we can assign one.
+      const stamped = picked.map((a) => ({ ...a, content_id: makeContentId() }))
+      attachments = [...attachments, ...stamped]
+    }}
     onlinks={(links) => {
       // Drop a small "Shared via Nextcloud" block at the end of the
       // message body. Each link is its own paragraph so it survives
