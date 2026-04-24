@@ -1,5 +1,6 @@
 //! SMTP client — connects to a mail server and sends emails.
 
+use lettre::address::Envelope;
 use lettre::message::{
     Attachment as LettreAttachment, Mailbox, MessageBuilder, MultiPart, SinglePart,
     header::ContentType,
@@ -194,7 +195,7 @@ pub fn build_outgoing_message(email: &OutgoingEmail) -> Result<Message, NimbusEr
     })?;
 
     let mut builder: MessageBuilder = Message::builder()
-        .from(from_mailbox)
+        .from(from_mailbox.clone())
         .subject(&email.subject);
 
     for addr in &email.to {
@@ -221,6 +222,24 @@ pub fn build_outgoing_message(email: &OutgoingEmail) -> Result<Message, NimbusEr
             NimbusError::Protocol(format!("Invalid 'reply-to' address '{reply_to}': {e}"))
         })?;
         builder = builder.reply_to(mailbox);
+    }
+
+    // When there are no recipients (a draft the user hasn't addressed
+    // yet), lettre's `build()` would otherwise reject the message with
+    // "missing destination address". The SMTP envelope is irrelevant
+    // for the IMAP-APPEND path that drafts take, so we substitute a
+    // placeholder envelope that reuses From as both sender and
+    // receiver — just enough to satisfy the type, without leaking a
+    // synthetic recipient into the RFC 822 headers the reader sees.
+    // The SMTP send path validates recipients in the UI before
+    // reaching this function, so this branch only trips for drafts.
+    if email.to.is_empty() && email.cc.is_empty() && email.bcc.is_empty() {
+        let envelope = Envelope::new(
+            Some(from_mailbox.email.clone()),
+            vec![from_mailbox.email.clone()],
+        )
+        .map_err(|e| NimbusError::Protocol(format!("Failed to build draft envelope: {e}")))?;
+        builder = builder.envelope(envelope);
     }
 
     if email.attachments.is_empty() {
