@@ -840,17 +840,47 @@ impl ImapClient {
             .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
 
         info!("delete_message: SELECT '{folder}' for UID {uid}");
-        session.select(to_wire(folder)).await.map_err(|e| {
+        let mailbox = session.select(to_wire(folder)).await.map_err(|e| {
             NimbusError::Protocol(format!("Failed to select folder '{folder}': {e}"))
         })?;
+        info!(
+            "delete_message: selected '{folder}' (exists={}, uidvalidity={:?}, uidnext={:?})",
+            mailbox.exists, mailbox.uid_validity, mailbox.uid_next
+        );
+
+        // Probe the UID first. If this comes back empty, the UID we
+        // were handed isn't in this folder at all — the envelope
+        // cache is out of sync with the server, or (far more likely
+        // in practice) the backend is driving the wrong folder for
+        // the message the user is looking at. Surfacing *which* of
+        // those it is saves a guessing game next time this fails.
+        let probe: Vec<_> = session
+            .uid_fetch(uid.to_string(), "UID")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID FETCH probe failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read UID FETCH probe: {e}")))?;
+        info!(
+            "delete_message: UID FETCH {uid} in '{folder}' -> {} hit(s)",
+            probe.len()
+        );
+        if probe.is_empty() {
+            return Err(NimbusError::Protocol(format!(
+                "UID {uid} isn't in folder '{folder}' (exists={}, uidvalidity={:?}). \
+                 The envelope cache is out of sync with the server, or the delete is \
+                 being driven against the wrong folder.",
+                mailbox.exists, mailbox.uid_validity
+            )));
+        }
 
         // STORE the `\Deleted` flag and keep the returned FETCH
-        // responses — if the set is empty the server didn't find our
-        // UID, which is the single biggest failure mode of this flow
-        // (envelope cache had a UID that the server has since
-        // renumbered / expunged out from under us). Surfacing that
-        // explicitly beats silently "succeeding" while the draft
-        // stays put.
+        // responses — if the set is empty the server accepted the
+        // STORE but didn't actually modify anything, which almost
+        // always means the SELECT landed on a read-only view or the
+        // server suppresses the FETCH echo for \Deleted (rare). We
+        // press on to EXPUNGE anyway, but log loudly so it shows up
+        // in traces.
         let updates: Vec<_> = session
             .uid_store(uid.to_string(), "+FLAGS (\\Deleted)")
             .await
@@ -860,16 +890,17 @@ impl ImapClient {
             .map_err(|e| NimbusError::Protocol(format!("Failed to read UID STORE: {e}")))?;
 
         if updates.is_empty() {
-            return Err(NimbusError::Protocol(format!(
-                "UID STORE (\\Deleted) on UID {uid} in '{folder}' returned no updates — \
-                 the message likely doesn't exist on the server anymore. \
-                 Refresh the folder and try again."
-            )));
+            tracing::warn!(
+                "delete_message: UID STORE (\\Deleted) on UID {uid} in '{folder}' \
+                 returned no FETCH updates even though the UID probe found the message — \
+                 proceeding to EXPUNGE anyway, the flag may have been set silently"
+            );
+        } else {
+            info!(
+                "delete_message: UID STORE flagged {uid} as \\Deleted ({} response(s))",
+                updates.len()
+            );
         }
-        info!(
-            "delete_message: UID STORE flagged {uid} as \\Deleted ({} response(s))",
-            updates.len()
-        );
 
         // Prefer `UID EXPUNGE` (RFC 4315 / UIDPLUS) — it only expunges
         // the specific UID we just marked, leaving any other
