@@ -132,16 +132,24 @@
   // ── TLS-trust prompt state ─────────────────────────────────
   // When test_connection fails because the IMAP server's cert
   // can't be validated, we show a prompt that lets the user trust
-  // the cert and retry. The flow:
+  // the chain and retry. The flow:
   //   1. submit() catches the cert error from test_connection
-  //   2. invoke probe_server_certificate to capture the leaf cert
-  //   3. show ProbedCert details + "Trust this server" button
-  //   4. user confirms → trustedCerts gets the cert → retry submit
+  //   2. invoke probe_server_certificate to capture the full chain
+  //   3. show fingerprints + "Trust this server" button
+  //   4. user confirms → every cert in the chain gets added to
+  //      trustedCerts → retry submit
   // The list rides through to add_account so the saved account
   // remembers the trust decision and uses it on future connects.
-  interface ProbedCert {
+  // Trusting the whole chain (not just the leaf) means a leaf
+  // reissue under the same intermediate, or a server that
+  // reorders its chain, doesn't drop the user back into this
+  // prompt.
+  interface ProbedCertEntry {
     der: number[]
     sha256: string
+  }
+  interface ProbedCert {
+    chain: ProbedCertEntry[]
     host: string
   }
   /** Full Rust `TrustedCert` shape — what `test_connection` and
@@ -190,14 +198,20 @@
 
   function trustPendingCert() {
     if (!pendingCert) return
-    // Promote `ProbedCert` → `TrustedCert` by stamping the trust
-    // timestamp here. The retried `test_connection` and the
-    // eventual `add_account` both deserialize this as the full
-    // Rust `TrustedCert` struct, so the shape has to match.
-    trustedCerts = [
-      ...trustedCerts,
-      { ...pendingCert, added_at: Math.floor(Date.now() / 1000) },
-    ]
+    // Promote every cert in the probed chain → `TrustedCert`. We
+    // trust the whole chain, not just the leaf, so a server that
+    // reorders the chain on a future connect (or reissues the leaf
+    // under the same intermediate) still validates without
+    // re-prompting the user.
+    const addedAt = Math.floor(Date.now() / 1000)
+    const host = pendingCert.host
+    const additions: TrustedCert[] = pendingCert.chain.map((entry) => ({
+      der: entry.der,
+      sha256: entry.sha256,
+      host,
+      added_at: addedAt,
+    }))
+    trustedCerts = [...trustedCerts, ...additions]
     pendingCert = null
     void submit()
   }
@@ -442,10 +456,20 @@
             with your server's actual certificate before trusting.
           </p>
           <p class="text-xs mb-1"><span class="text-surface-500">Host:</span> <span class="font-mono">{pendingCert.host}</span></p>
-          <p class="text-xs mb-3 break-all">
-            <span class="text-surface-500">SHA-256:</span>
-            <span class="font-mono">{pendingCert.sha256}</span>
-          </p>
+          <div class="text-xs mb-3">
+            <p class="text-surface-500 mb-1">
+              SHA-256 fingerprint{pendingCert.chain.length === 1 ? '' : 's'}
+              ({pendingCert.chain.length === 1 ? 'leaf' : `leaf + ${pendingCert.chain.length - 1} intermediate${pendingCert.chain.length === 2 ? '' : 's'}`}):
+            </p>
+            <ul class="space-y-1">
+              {#each pendingCert.chain as entry, i (entry.sha256)}
+                <li class="font-mono break-all">
+                  <span class="text-surface-500">{i === 0 ? 'leaf:' : `int${i}:`}</span>
+                  {entry.sha256}
+                </li>
+              {/each}
+            </ul>
+          </div>
           <div class="flex gap-2">
             <button
               type="button"

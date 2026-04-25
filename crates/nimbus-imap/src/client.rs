@@ -60,16 +60,22 @@ async fn tls_connect(
 /// Probe the IMAP server's TLS certificate without verifying it.
 /// Used by the "trust this server?" flow: when the regular connect
 /// fails because the cert isn't in any trust store we know about,
-/// the UI calls this to capture the leaf cert (DER) so the user
-/// can be shown its fingerprint and decide whether to trust it.
+/// the UI calls this to capture the chain (leaf + intermediates)
+/// so the user can be shown the fingerprints and decide whether to
+/// trust the server.
 ///
-/// Returns the leaf (end-entity) cert's DER bytes. Caller is
+/// Returns every cert the server presented in handshake order
+/// (leaf first, then intermediates). Trusting the whole chain — not
+/// just the leaf — is the robust thing to do: the server may
+/// reorder certs, the active leaf may be reissued under the same
+/// intermediate, and the verifier matches against the trust list
+/// by walking the entire presented chain anyway. Caller is
 /// responsible for never using this for actual mail traffic — we
 /// drop the connection immediately after the handshake succeeds.
 pub async fn probe_server_certificate(
     host: &str,
     port: u16,
-) -> Result<Vec<u8>, NimbusError> {
+) -> Result<Vec<Vec<u8>>, NimbusError> {
     let addr = format!("{host}:{port}");
     let tcp = TcpStream::connect(&addr)
         .await
@@ -84,12 +90,16 @@ pub async fn probe_server_certificate(
         .map_err(|e| NimbusError::Network(format!("TLS probe failed with {host}: {e}")))?;
 
     let (_io, conn) = tls.get_ref();
-    let leaf = conn
+    let chain: Vec<Vec<u8>> = conn
         .peer_certificates()
-        .and_then(|chain| chain.first())
-        .ok_or_else(|| NimbusError::Protocol(format!("server '{host}' returned no certificate")))?
-        .to_vec();
-    Ok(leaf)
+        .map(|certs| certs.iter().map(|c| c.to_vec()).collect())
+        .unwrap_or_default();
+    if chain.is_empty() {
+        return Err(NimbusError::Protocol(format!(
+            "server '{host}' returned no certificate"
+        )));
+    }
+    Ok(chain)
 }
 
 use tracing::{debug, info, warn};

@@ -171,37 +171,50 @@ async fn discover_account_settings(
     }
 }
 
-/// Shape returned to the UI by [`probe_server_certificate`]. Lets
-/// the "trust this server?" prompt show the SHA-256 fingerprint
-/// the user should compare against their server, plus the host
-/// they were trying to reach (for sanity-checking).
+/// One cert in a probed chain — DER bytes plus its SHA-256
+/// fingerprint formatted for display. The frontend uses `der` to
+/// build a `TrustedCert` entry and `sha256` to render the
+/// "compare this against your server" prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProbedCertEntry {
+    der: Vec<u8>,
+    sha256: String,
+}
+
+/// Shape returned to the UI by [`probe_server_certificate`]. The
+/// full chain (leaf first, then intermediates) is round-tripped
+/// back so the UI can trust every cert the server presented — not
+/// just the leaf. This survives chain reordering and reissues of
+/// the leaf under the same intermediate without a re-prompt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ProbedCert {
-    /// Raw DER bytes — round-tripped back via `add_account` /
-    /// `update_account` so the cert can be added to the account's
-    /// `trusted_certs` list. Frontend treats it as opaque.
-    der: Vec<u8>,
-    /// `aa:bb:cc:…` SHA-256 of `der`. Displayed verbatim in the
-    /// trust prompt.
-    sha256: String,
+    /// Probed certificates in handshake order (leaf at index 0).
+    chain: Vec<ProbedCertEntry>,
     host: String,
 }
 
 /// Open a no-verify TLS handshake to a mail server and capture the
-/// leaf certificate. Used by the AccountSetup wizard's "trust this
-/// server?" path: when [`test_connection`] fails because the cert
-/// isn't trusted, the UI calls this to get the fingerprint, asks
-/// the user, and on confirm passes the DER back into `add_account`
-/// as a `trusted_certs` entry.
+/// presented certificate chain. Used by the AccountSetup wizard's
+/// "trust this server?" path and AccountSettings' re-trust button:
+/// when [`test_connection`] fails because the cert isn't trusted,
+/// the UI calls this to get the fingerprints, asks the user, and on
+/// confirm passes every DER back into `add_account` /
+/// `update_account` as `trusted_certs` entries.
 ///
-/// **Safety**: the captured cert is never used for actual mail
+/// **Safety**: the captured certs are never used for actual mail
 /// traffic — the connection is dropped immediately after the
-/// handshake. The user explicitly chooses whether to trust it.
+/// handshake. The user explicitly chooses whether to trust them.
 #[tauri::command]
 async fn probe_server_certificate(host: String, port: u16) -> Result<ProbedCert, NimbusError> {
-    let der = nimbus_imap::probe_server_certificate(&host, port).await?;
-    let sha256 = nimbus_core::tls::fingerprint_sha256(&der);
-    Ok(ProbedCert { der, sha256, host })
+    let chain_der = nimbus_imap::probe_server_certificate(&host, port).await?;
+    let chain = chain_der
+        .into_iter()
+        .map(|der| {
+            let sha256 = nimbus_core::tls::fingerprint_sha256(&der);
+            ProbedCertEntry { der, sha256 }
+        })
+        .collect();
+    Ok(ProbedCert { chain, host })
 }
 
 /// Validate IMAP credentials by actually logging in.
@@ -654,30 +667,6 @@ async fn office_close_attachment(
     .await
 }
 
-/// Percent-encode every byte that isn't safe in a URL query value
-/// per RFC 3986 §3.4. Avoids pulling in a whole `url` / `urlencoding`
-/// crate just for the Stirling fileUrl parameter — a few dozen
-/// bytes of code instead of a 50-KB dependency.
-fn percent_encode_query(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            // RFC 3986 unreserved set + a few extras that are safe
-            // inside a query (the spec actually allows more, but
-            // sticking to this set keeps round-tripping bullet-proof
-            // across whatever Stirling version the user has).
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char);
-            }
-            other => {
-                out.push('%');
-                out.push_str(&format!("{:02X}", other));
-            }
-        }
-    }
-    out
-}
-
 /// Result of `pdf_open_attachment`. Mirrors `OfficeOpenResult` so
 /// the frontend can treat both viewers identically — same webview-
 /// open + cleanup-on-close shape, the only difference is which URL
@@ -689,35 +678,25 @@ struct PdfOpenResult {
     temp_path: String,
 }
 
-/// Open a PDF attachment in either the user's configured Stirling-PDF
-/// instance (when `AppSettings.stirling_pdf_url` is set) or
-/// Nextcloud's built-in PDF viewer (when it's not). Same temp-upload
-/// + cleanup-on-close machinery as the Office flow:
+/// Open a PDF attachment in Nextcloud's built-in PDF viewer.
+/// Same temp-upload + cleanup-on-close machinery as the Office flow:
 ///
 ///   - Bytes go to `/Nimbus Mail/temp/<uuid>-<filename>` on the user's
 ///     Nextcloud.
-///   - For Nextcloud's viewer we use the same `index.php/f/<fileid>`
-///     deep link Office uses; Files routes the fileid to its
-///     registered handler (the PDF viewer for `.pdf`).
-///   - For Stirling-PDF we additionally mint an unprotected public
-///     share so Stirling's frontend can `fetch` the file
-///     server-side — same network-scope your Office viewer already
-///     trusts. The Stirling URL carries `?fileUrl=<encoded>` which
-///     Stirling-PDF accepts on its viewer entry; if a particular
-///     Stirling version doesn't auto-load, the user lands on the
-///     Stirling UI with the URL one paste away.
+///   - We use the same `index.php/f/<fileid>` deep link the Office
+///     viewer uses; Files routes the fileid to its registered
+///     handler, which for `.pdf` is Nextcloud's built-in PDF
+///     viewer.
 ///
 /// On `pdf_close_attachment` (or the startup sweep) the temp file
-/// is DAV-DELETED, which atomically invalidates the public-share
-/// token so the URL stops resolving the moment the viewer window
-/// closes — no manual share-revoke step needed.
+/// is DAV-DELETED so the viewer URL stops resolving once the
+/// viewer window closes.
 #[tauri::command]
 async fn pdf_open_attachment(
     nc_id: String,
     filename: String,
     data: Vec<u8>,
     content_type: Option<String>,
-    settings: State<'_, SharedSettings>,
 ) -> Result<PdfOpenResult, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
@@ -742,53 +721,15 @@ async fn pdf_open_attachment(
     )
     .await?;
 
-    // Stirling URL is read once up front so a settings edit
-    // mid-render still snaps to the value at click-time. Trim
-    // trailing slashes defensively — users routinely paste them
-    // from a browser address bar.
-    let stirling_url = {
-        let s = settings.read().await;
-        s.stirling_pdf_url
-            .as_ref()
-            .map(|u| u.trim().trim_end_matches('/').to_string())
-            .filter(|u| !u.is_empty())
-    };
-
-    let url = match stirling_url {
-        Some(stirling) => {
-            // Mint an anonymous share so Stirling's server can
-            // fetch the bytes without our app password. The share
-            // dies the moment we DELETE the temp file on close —
-            // same lifetime as the viewer window.
-            let share = nimbus_nextcloud::create_public_share(
-                &account.server_url,
-                &account.username,
-                &app_password,
-                &temp_path,
-                None,
-            )
-            .await?;
-            // Append `/download` so Stirling fetches the raw bytes
-            // rather than the share's HTML preview page.
-            let download_url = format!("{}/download", share.url.trim_end_matches('/'));
-            format!(
-                "{}/?fileUrl={}",
-                stirling,
-                percent_encode_query(&download_url)
-            )
-        }
-        None => {
-            let file_id = nimbus_nextcloud::propfind_fileid(
-                &account.server_url,
-                &account.username,
-                &app_password,
-                &temp_path,
-            )
-            .await?;
-            let server = account.server_url.trim_end_matches('/');
-            format!("{server}/index.php/f/{file_id}")
-        }
-    };
+    let file_id = nimbus_nextcloud::propfind_fileid(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &temp_path,
+    )
+    .await?;
+    let server = account.server_url.trim_end_matches('/');
+    let url = format!("{server}/index.php/f/{file_id}");
 
     Ok(PdfOpenResult { url, temp_path })
 }
@@ -866,6 +807,80 @@ async fn office_sweep_temp(nc_id: String) -> Result<u32, NimbusError> {
         tracing::info!("office_sweep_temp: cleaned {swept} stale file(s)");
     }
     Ok(swept)
+}
+
+/// Open an attachment in its OS-default app so the user can print
+/// it from there with the app's own print dialog. Used by the
+/// "🖨 Open to print…" entry in the attachment dropdown.
+///
+/// Why this shape: the *generic* OS print dialog (Windows'
+/// `PrintDialog`, the WinForms printer chooser) is just a printer
+/// picker — it doesn't show the file, and it relies on each
+/// file type's `PrintTo` verb being registered (Edge doesn't
+/// register PrintTo for PDFs, so calling it for `.pdf` from a
+/// fresh Windows install silently fails). The webview-rendered
+/// Chromium print preview is brittle inside Tauri's sandbox.
+///
+/// What works reliably: open the file in its default handler
+/// (Edge / Acrobat for PDF, Word for `.docx`, Photos for images,
+/// Notepad for text, etc.) and let the user press **Ctrl/Cmd-P**.
+/// Each app's own print dialog shows a real preview of the file
+/// alongside the printer chooser — strictly better UX than the
+/// generic OS dialog. The trade-off is one extra keystroke,
+/// which the menu label calls out so the user expects it.
+///
+/// The temp file is kept for 10 minutes so the user has time
+/// to actually print before we clean up.
+#[tauri::command]
+async fn print_attachment(file_name: String, bytes: Vec<u8>) -> Result<(), NimbusError> {
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("nimbus-print-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| NimbusError::Other(format!("create print temp dir: {e}")))?;
+
+    // Strip path separators / NUL from the filename so the spooler
+    // sees a flat name in our temp dir, not a path traversal.
+    let safe_name: String = file_name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | '\0' => '_',
+            _ => c,
+        })
+        .collect();
+    let safe_name = if safe_name.trim().is_empty() {
+        "attachment".to_string()
+    } else {
+        safe_name
+    };
+    let mut path = dir.clone();
+    path.push(&safe_name);
+    std::fs::write(&path, &bytes)
+        .map_err(|e| NimbusError::Other(format!("write print temp file: {e}")))?;
+
+    // `open::that_detached` is the cross-platform "default verb"
+    // launcher: ShellExecute open on Windows, `open` on macOS,
+    // `xdg-open` (and friends) on Linux. `_detached` so we don't
+    // hold a child handle the user could orphan by closing Nimbus.
+    if let Err(e) = open::that_detached(&path) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(NimbusError::Other(format!(
+            "failed to open '{}' for printing: {e}",
+            path.display()
+        )));
+    }
+
+    let cleanup_dir = dir;
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+        if let Err(e) = tokio::fs::remove_dir_all(&cleanup_dir).await {
+            tracing::debug!(
+                "print_attachment cleanup: failed to remove {}: {e}",
+                cleanup_dir.display()
+            );
+        }
+    });
+
+    Ok(())
 }
 
 // ── Nextcloud Talk ──────────────────────────────────────────────
@@ -4096,6 +4111,7 @@ fn main() {
             office_sweep_temp,
             pdf_open_attachment,
             pdf_close_attachment,
+            print_attachment,
             save_bytes_to_path,
             sync_nextcloud_contacts,
             get_contacts_sync_status,

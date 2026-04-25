@@ -331,8 +331,8 @@
    *  buttons keep their explicit Download / Save-to-NC handlers).
    *  Branches by content type:
    *    - Office docs → upload-to-NC + open in a Collabora window
-   *    - PDFs → upload-to-NC + Stirling-PDF if configured, else
-   *      Nextcloud's built-in PDF viewer
+   *    - PDFs → upload-to-NC + open in Nextcloud's built-in PDF
+   *      viewer
    *    - everything else → fall through to download */
   async function attachmentClicked(att: EmailAttachment) {
     if (isOfficeAttachment(att)) {
@@ -421,11 +421,12 @@
     }
   }
 
-  /** PDF mirror of `openInOfficeViewer`. The backend command
-   *  decides between Stirling-PDF (if a URL is configured in
-   *  Settings) and Nextcloud's built-in PDF viewer; the frontend
-   *  just opens whichever URL it returns and registers the same
-   *  close-cleanup hook. */
+  /** PDF mirror of `openInOfficeViewer`. The backend uploads the
+   *  bytes to a temp folder on the user's Nextcloud and returns a
+   *  deep link into Nextcloud's built-in PDF viewer; the frontend
+   *  opens that URL in a Tauri window and registers the same
+   *  close-cleanup hook (DAV-deletes the temp file when the
+   *  window is destroyed). */
   async function openInPdfViewer(att: EmailAttachment) {
     if (!email || uid == null) return
     setBusy(att.part_id, true)
@@ -580,6 +581,67 @@
    */
   function startSaveToNextcloud(att: EmailAttachment) {
     savingAttachment = att
+  }
+
+  /** Pull bytes for the attachment and hand them to the backend's
+   *  `print_attachment`, which writes the file to OS temp and
+   *  opens it with the user's default app for that file type
+   *  (Word for .docx, Edge / Acrobat for .pdf, Photos for images,
+   *  Notepad for text, etc.). The user then hits Ctrl/Cmd-P from
+   *  inside that app to get the system printer-chooser dialog. */
+  async function printAttachment(att: EmailAttachment) {
+    if (!email || uid == null) return
+    setBusy(att.part_id, true)
+    try {
+      const bytes = await invoke<number[]>('download_email_attachment', {
+        accountId: email.account_id,
+        folder: email.folder,
+        uid,
+        partId: att.part_id,
+      })
+      await invoke('print_attachment', {
+        fileName: att.filename,
+        bytes,
+      })
+    } catch (e) {
+      error = formatError(e) || 'Failed to print attachment'
+    } finally {
+      setBusy(att.part_id, false)
+    }
+  }
+
+  /** Copy the attachment filename to the clipboard. Useful when the
+   *  user wants to paste it into another app (e.g. as a reference
+   *  in a Talk message) without saving the file first. */
+  async function copyFilename(att: EmailAttachment) {
+    try {
+      await navigator.clipboard.writeText(att.filename)
+    } catch (e) {
+      console.warn('clipboard write failed', e)
+    }
+  }
+
+  // ── Per-attachment action menu (Outlook-style chevron dropdown) ──
+  // One menu open at a time, keyed by `part_id`. `null` = closed.
+  // Anchor + position are captured at click time so the popup floats
+  // next to the row that owns it without needing a portal.
+  let openMenuFor = $state<number | null>(null)
+
+  function toggleMenu(att: EmailAttachment) {
+    openMenuFor = openMenuFor === att.part_id ? null : att.part_id
+  }
+  function closeMenu() {
+    openMenuFor = null
+  }
+
+  /** Click handler that runs an action and closes the menu in one
+   *  go. `void`-wraps async handlers so the inline onclick stays
+   *  synchronous (Svelte warns otherwise). */
+  function runAndClose(fn: () => void | Promise<void>) {
+    return () => {
+      closeMenu()
+      void fn()
+    }
   }
 
   async function onSavePicked(ncId: string, folderPath: string) {
@@ -750,17 +812,23 @@
         <ul class="flex flex-wrap gap-2">
           {#each email.attachments as att (att.part_id)}
             {@const busy = busyParts.has(att.part_id)}
-            <li class="flex items-center gap-2 px-3 py-1.5 rounded-md bg-surface-100 dark:bg-surface-800 text-sm">
+            {@const isOffice = isOfficeAttachment(att)}
+            {@const isPdf = isPdfAttachment(att)}
+            {@const menuOpen = openMenuFor === att.part_id}
+            <li class="relative flex items-center gap-2 pl-3 pr-1 py-1.5 rounded-md bg-surface-100 dark:bg-surface-800 text-sm">
               <span class="text-base">{attachmentIcon(att)}</span>
               <span class="font-medium truncate max-w-60" title={att.filename}>{att.filename}</span>
               {#if att.size != null}
                 <span class="text-xs text-surface-500">{formatAttSize(att.size)}</span>
               {/if}
-              {#if isOfficeAttachment(att)}
-                <!-- Office-compatible attachment → click opens
-                     directly in an embedded Collabora window. The
-                     download / Save-to-NC paths are still one click
-                     away below. -->
+
+              <!-- Primary action — picks the most natural open
+                   verb for the attachment type. Same as a click on
+                   the chip itself; the dropdown to the right
+                   exposes everything else (Print, Download, Save
+                   to NC, Copy filename). Mirrors Outlook's
+                   "click = open, ▾ = more". -->
+              {#if isOffice}
                 <button
                   class="btn btn-sm preset-filled-primary-500 text-xs"
                   disabled={busy}
@@ -769,32 +837,90 @@
                 >
                   {busy ? '…' : '📝 Open in Office'}
                 </button>
-              {:else if isPdfAttachment(att)}
+              {:else if isPdf}
                 <button
                   class="btn btn-sm preset-filled-primary-500 text-xs"
                   disabled={busy}
                   onclick={() => openInPdfViewer(att)}
-                  title="Open in the embedded PDF viewer (Stirling-PDF if configured, otherwise Nextcloud's built-in)"
+                  title="Open in Nextcloud's built-in PDF viewer"
                 >
                   {busy ? '…' : '📄 Open PDF'}
                 </button>
+              {:else}
+                <button
+                  class="btn btn-sm preset-filled-primary-500 text-xs"
+                  disabled={busy}
+                  onclick={() => downloadAttachment(att)}
+                  title="Download to your computer"
+                >
+                  {busy ? '…' : '⬇ Download'}
+                </button>
               {/if}
+
+              <!-- Chevron toggle. Sits flush against the primary
+                   button so they read as one pill with a split
+                   click target. -->
               <button
-                class="btn btn-sm preset-outlined-surface-500 text-xs"
+                class="btn btn-sm preset-outlined-surface-500 text-xs px-2"
                 disabled={busy}
-                onclick={() => downloadAttachment(att)}
-                title="Download to your computer"
-              >
-                {busy ? '…' : '⬇ Download'}
-              </button>
-              <button
-                class="btn btn-sm preset-outlined-primary-500 text-xs"
-                disabled={busy}
-                onclick={() => startSaveToNextcloud(att)}
-                title="Save this attachment to a folder in your Nextcloud"
-              >
-                {busy ? '…' : '☁ Save to Nextcloud'}
-              </button>
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                aria-label="More attachment actions"
+                onclick={() => toggleMenu(att)}
+                title="More actions"
+              >▾</button>
+
+              {#if menuOpen}
+                <!-- Click-outside catcher. Sits behind the menu so
+                     anywhere outside dismisses, but the menu itself
+                     (z-50) stays above and receives clicks. -->
+                <button
+                  type="button"
+                  class="fixed inset-0 z-40 cursor-default"
+                  aria-label="Close menu"
+                  onclick={closeMenu}
+                ></button>
+                <div
+                  role="menu"
+                  class="absolute right-0 top-full mt-1 z-50 min-w-52 rounded-md shadow-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 py-1 text-sm"
+                >
+                  {#if isOffice}
+                    <button
+                      role="menuitem"
+                      class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+                      onclick={runAndClose(() => openInOfficeViewer(att))}
+                    >📝 Open in Office</button>
+                  {:else if isPdf}
+                    <button
+                      role="menuitem"
+                      class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+                      onclick={runAndClose(() => openInPdfViewer(att))}
+                    >📄 Open PDF</button>
+                  {/if}
+                  <button
+                    role="menuitem"
+                    class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+                    onclick={runAndClose(() => printAttachment(att))}
+                    title="Open this attachment in its default desktop app (Ctrl/Cmd-P there to print)"
+                  >🖥 Open in Desktop App</button>
+                  <button
+                    role="menuitem"
+                    class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+                    onclick={runAndClose(() => downloadAttachment(att))}
+                  >⬇ Save to disk…</button>
+                  <button
+                    role="menuitem"
+                    class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+                    onclick={runAndClose(() => startSaveToNextcloud(att))}
+                  >☁ Save to Nextcloud…</button>
+                  <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
+                  <button
+                    role="menuitem"
+                    class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+                    onclick={runAndClose(() => copyFilename(att))}
+                  >📋 Copy filename</button>
+                </div>
+              {/if}
             </li>
           {/each}
         </ul>
