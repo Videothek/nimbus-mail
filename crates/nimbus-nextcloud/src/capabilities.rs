@@ -62,6 +62,11 @@ struct Capabilities {
     files: Option<serde_json::Value>,
     /// DAV capabilities — presence implies CalDAV + CardDAV are reachable.
     dav: Option<serde_json::Value>,
+    /// Nextcloud Office / Collabora exposes its capability block
+    /// under the app id `richdocuments`. We don't read any of the
+    /// inner fields — presence alone is the signal that the editor
+    /// URL flow (`apps/richdocuments/index.json`) will work.
+    richdocuments: Option<serde_json::Value>,
 }
 
 /// Query `/ocs/v2.php/cloud/capabilities` and map it to our flat
@@ -111,13 +116,15 @@ pub async fn fetch_capabilities(
         files: env.ocs.data.capabilities.files.is_some(),
         caldav: dav_present,
         carddav: dav_present,
+        office: env.ocs.data.capabilities.richdocuments.is_some(),
     };
     tracing::info!(
-        "Nextcloud capabilities: version={:?} talk={} files={} dav={}",
+        "Nextcloud capabilities: version={:?} talk={} files={} dav={} office={}",
         caps.version,
         caps.talk,
         caps.files,
-        dav_present
+        dav_present,
+        caps.office,
     );
     Ok(caps)
 }
