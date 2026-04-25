@@ -321,15 +321,26 @@
     return OFFICE_EXTENSIONS.has(att.filename.slice(dot + 1).toLowerCase())
   }
 
+  function isPdfAttachment(att: EmailAttachment): boolean {
+    if (att.content_type === 'application/pdf') return true
+    return att.filename.toLowerCase().endsWith('.pdf')
+  }
+
   /** Single dispatch point for any user-driven attachment open
    *  request (currently: cid:-anchor clicks; the attachment-tray
    *  buttons keep their explicit Download / Save-to-NC handlers).
-   *  Branches by content type: Office docs → upload-to-NC + open
-   *  in a fresh webview window via Collabora; everything else
-   *  falls through to the same download flow the tray uses. */
+   *  Branches by content type:
+   *    - Office docs → upload-to-NC + open in a Collabora window
+   *    - PDFs → upload-to-NC + Stirling-PDF if configured, else
+   *      Nextcloud's built-in PDF viewer
+   *    - everything else → fall through to download */
   async function attachmentClicked(att: EmailAttachment) {
     if (isOfficeAttachment(att)) {
       await openInOfficeViewer(att)
+      return
+    }
+    if (isPdfAttachment(att)) {
+      await openInPdfViewer(att)
       return
     }
     await downloadAttachment(att)
@@ -405,6 +416,65 @@
       })
     } catch (e) {
       error = formatError(e) || 'Failed to open in Office'
+    } finally {
+      setBusy(att.part_id, false)
+    }
+  }
+
+  /** PDF mirror of `openInOfficeViewer`. The backend command
+   *  decides between Stirling-PDF (if a URL is configured in
+   *  Settings) and Nextcloud's built-in PDF viewer; the frontend
+   *  just opens whichever URL it returns and registers the same
+   *  close-cleanup hook. */
+  async function openInPdfViewer(att: EmailAttachment) {
+    if (!email || uid == null) return
+    setBusy(att.part_id, true)
+    try {
+      const ncAccounts = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      if (ncAccounts.length === 0) {
+        error =
+          'Connect a Nextcloud account in Settings to open PDFs in the embedded viewer.'
+        return
+      }
+      const ncId = ncAccounts[0].id
+
+      const bytes = await invoke<number[]>('download_email_attachment', {
+        accountId: email.account_id,
+        folder: email.folder,
+        uid,
+        partId: att.part_id,
+      })
+
+      const result = await invoke<{ url: string; tempPath: string }>(
+        'pdf_open_attachment',
+        {
+          ncId,
+          filename: att.filename,
+          data: bytes,
+          contentType: att.content_type || null,
+        },
+      )
+
+      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
+      const label = `pdf-${crypto.randomUUID().replaceAll('-', '')}`
+      const win = new WebviewWindow(label, {
+        url: result.url,
+        title: att.filename,
+        width: 1200,
+        height: 800,
+      })
+      void win.once('tauri://destroyed', async () => {
+        try {
+          await invoke('pdf_close_attachment', {
+            ncId,
+            tempPath: result.tempPath,
+          })
+        } catch (e) {
+          console.warn('pdf_close_attachment failed:', e)
+        }
+      })
+    } catch (e) {
+      error = formatError(e) || 'Failed to open PDF'
     } finally {
       setBusy(att.part_id, false)
     }
@@ -698,6 +768,15 @@
                   title="Open in Nextcloud Office (Collabora)"
                 >
                   {busy ? '…' : '📝 Open in Office'}
+                </button>
+              {:else if isPdfAttachment(att)}
+                <button
+                  class="btn btn-sm preset-filled-primary-500 text-xs"
+                  disabled={busy}
+                  onclick={() => openInPdfViewer(att)}
+                  title="Open in the embedded PDF viewer (Stirling-PDF if configured, otherwise Nextcloud's built-in)"
+                >
+                  {busy ? '…' : '📄 Open PDF'}
                 </button>
               {/if}
               <button

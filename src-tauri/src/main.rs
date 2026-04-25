@@ -654,6 +654,164 @@ async fn office_close_attachment(
     .await
 }
 
+/// Percent-encode every byte that isn't safe in a URL query value
+/// per RFC 3986 §3.4. Avoids pulling in a whole `url` / `urlencoding`
+/// crate just for the Stirling fileUrl parameter — a few dozen
+/// bytes of code instead of a 50-KB dependency.
+fn percent_encode_query(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            // RFC 3986 unreserved set + a few extras that are safe
+            // inside a query (the spec actually allows more, but
+            // sticking to this set keeps round-tripping bullet-proof
+            // across whatever Stirling version the user has).
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            other => {
+                out.push('%');
+                out.push_str(&format!("{:02X}", other));
+            }
+        }
+    }
+    out
+}
+
+/// Result of `pdf_open_attachment`. Mirrors `OfficeOpenResult` so
+/// the frontend can treat both viewers identically — same webview-
+/// open + cleanup-on-close shape, the only difference is which URL
+/// it points at.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PdfOpenResult {
+    url: String,
+    temp_path: String,
+}
+
+/// Open a PDF attachment in either the user's configured Stirling-PDF
+/// instance (when `AppSettings.stirling_pdf_url` is set) or
+/// Nextcloud's built-in PDF viewer (when it's not). Same temp-upload
+/// + cleanup-on-close machinery as the Office flow:
+///
+///   - Bytes go to `/Nimbus Mail/temp/<uuid>-<filename>` on the user's
+///     Nextcloud.
+///   - For Nextcloud's viewer we use the same `index.php/f/<fileid>`
+///     deep link Office uses; Files routes the fileid to its
+///     registered handler (the PDF viewer for `.pdf`).
+///   - For Stirling-PDF we additionally mint an unprotected public
+///     share so Stirling's frontend can `fetch` the file
+///     server-side — same network-scope your Office viewer already
+///     trusts. The Stirling URL carries `?fileUrl=<encoded>` which
+///     Stirling-PDF accepts on its viewer entry; if a particular
+///     Stirling version doesn't auto-load, the user lands on the
+///     Stirling UI with the URL one paste away.
+///
+/// On `pdf_close_attachment` (or the startup sweep) the temp file
+/// is DAV-DELETED, which atomically invalidates the public-share
+/// token so the URL stops resolving the moment the viewer window
+/// closes — no manual share-revoke step needed.
+#[tauri::command]
+async fn pdf_open_attachment(
+    nc_id: String,
+    filename: String,
+    data: Vec<u8>,
+    content_type: Option<String>,
+    settings: State<'_, SharedSettings>,
+) -> Result<PdfOpenResult, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    ensure_temp_dir(&account, &app_password).await?;
+
+    let safe_name = filename.replace('/', "_").replace('\\', "_");
+    let temp_path = format!(
+        "{}/{}-{}",
+        NIMBUS_TEMP_DIR,
+        uuid::Uuid::new_v4(),
+        safe_name
+    );
+
+    nimbus_nextcloud::upload_file(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &temp_path,
+        data,
+        content_type.as_deref(),
+    )
+    .await?;
+
+    // Stirling URL is read once up front so a settings edit
+    // mid-render still snaps to the value at click-time. Trim
+    // trailing slashes defensively — users routinely paste them
+    // from a browser address bar.
+    let stirling_url = {
+        let s = settings.read().await;
+        s.stirling_pdf_url
+            .as_ref()
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty())
+    };
+
+    let url = match stirling_url {
+        Some(stirling) => {
+            // Mint an anonymous share so Stirling's server can
+            // fetch the bytes without our app password. The share
+            // dies the moment we DELETE the temp file on close —
+            // same lifetime as the viewer window.
+            let share = nimbus_nextcloud::create_public_share(
+                &account.server_url,
+                &account.username,
+                &app_password,
+                &temp_path,
+                None,
+            )
+            .await?;
+            // Append `/download` so Stirling fetches the raw bytes
+            // rather than the share's HTML preview page.
+            let download_url = format!("{}/download", share.url.trim_end_matches('/'));
+            format!(
+                "{}/?fileUrl={}",
+                stirling,
+                percent_encode_query(&download_url)
+            )
+        }
+        None => {
+            let file_id = nimbus_nextcloud::propfind_fileid(
+                &account.server_url,
+                &account.username,
+                &app_password,
+                &temp_path,
+            )
+            .await?;
+            let server = account.server_url.trim_end_matches('/');
+            format!("{server}/index.php/f/{file_id}")
+        }
+    };
+
+    Ok(PdfOpenResult { url, temp_path })
+}
+
+/// DELETE the temp PDF the frontend opened. Same cleanup path as
+/// Office — kept as its own command so the frontend's per-viewer
+/// dispatch stays straightforward.
+#[tauri::command]
+async fn pdf_close_attachment(
+    nc_id: String,
+    temp_path: String,
+) -> Result<(), NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::delete_path(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &temp_path,
+    )
+    .await
+}
+
 /// Clean up anything stuck in `/Nimbus Mail/temp` from a previous
 /// session — say the user closed Nimbus mid-edit, or `office_close_
 /// attachment` errored on the way out. We list the directory and
@@ -3936,6 +4094,8 @@ fn main() {
             office_open_attachment,
             office_close_attachment,
             office_sweep_temp,
+            pdf_open_attachment,
+            pdf_close_attachment,
             save_bytes_to_path,
             sync_nextcloud_contacts,
             get_contacts_sync_status,
