@@ -310,6 +310,30 @@ fn get_nextcloud_accounts() -> Result<Vec<NextcloudAccount>, NimbusError> {
     nextcloud_store::load_accounts()
 }
 
+/// Re-probe `/ocs/v2.php/cloud/capabilities` for one account and
+/// persist the fresh snapshot. Called by Settings on mount so newly-
+/// installed Nextcloud apps (Office, Talk, …) light up their
+/// indicator chip without the user having to disconnect + reconnect.
+///
+/// Soft-fails: a flaky network or revoked password returns the
+/// account's previously-cached capabilities unchanged rather than
+/// erroring out the whole settings panel.
+#[tauri::command]
+async fn refresh_nextcloud_capabilities(nc_id: String) -> Result<NextcloudAccount, NimbusError> {
+    let mut account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    match fetch_capabilities(&account.server_url, &account.username, &app_password).await {
+        Ok(caps) => {
+            account.capabilities = Some(caps);
+            nextcloud_store::upsert_account(account.clone())?;
+        }
+        Err(e) => {
+            tracing::warn!("refresh_nextcloud_capabilities for {nc_id}: {e}");
+        }
+    }
+    Ok(account)
+}
+
 /// Remove a Nextcloud connection and its stored app password.
 ///
 /// Does **not** attempt to revoke the app password on the server —
@@ -3697,6 +3721,7 @@ fn main() {
             start_nextcloud_login,
             poll_nextcloud_login,
             get_nextcloud_accounts,
+            refresh_nextcloud_capabilities,
             remove_nextcloud_account,
             open_url,
             list_nextcloud_files,
