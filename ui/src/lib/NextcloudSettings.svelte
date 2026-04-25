@@ -24,6 +24,11 @@
     files: boolean
     caldav: boolean
     carddav: boolean
+    /** Nextcloud Office (Collabora, app id `richdocuments`).
+     *  When `true` the attachment-click flow can open `.docx` /
+     *  `.odt` / `.xlsx` etc. in an embedded editor; when `false`
+     *  the UI falls back to plain download. */
+    office?: boolean
   }
   interface NextcloudAccount {
     id: string
@@ -364,6 +369,9 @@
                     {/if}
                     {#if acct.capabilities.carddav}
                       <span class="text-xs px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-600 dark:text-orange-300">Contacts</span>
+                    {/if}
+                    {#if acct.capabilities.office}
+                      <span class="text-xs px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-600 dark:text-pink-300">Office</span>
                     {/if}
                   </div>
                 {/if}

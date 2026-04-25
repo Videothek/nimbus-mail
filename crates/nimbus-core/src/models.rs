@@ -372,6 +372,14 @@ pub struct NextcloudCapabilities {
     pub caldav: bool,
     /// CardDAV contact endpoint is available.
     pub carddav: bool,
+    /// Nextcloud Office / Collabora (the `richdocuments` app id) is
+    /// installed and enabled. When true, the attachment-click flow
+    /// can open `.docx` / `.odt` / `.xlsx` etc. in an embedded
+    /// editor; when false the UI falls back to plain download.
+    /// `#[serde(default)]` so capability snapshots cached before
+    /// this field existed deserialise as `false`.
+    #[serde(default)]
+    pub office: bool,
 }
 
 /// Represents a contact from CardDAV / Nextcloud.
