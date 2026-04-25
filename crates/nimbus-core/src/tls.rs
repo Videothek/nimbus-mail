@@ -30,6 +30,7 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use sha2::{Digest, Sha256};
+use tracing::{debug, warn};
 
 use crate::models::TrustedCert;
 
@@ -52,6 +53,7 @@ pub fn build_client_config(extra_roots: &[TrustedCert]) -> Arc<ClientConfig> {
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
     if extra_roots.is_empty() {
+        debug!("TLS client config: webpki-roots only (no per-account trusted certs)");
         return Arc::new(
             ClientConfig::builder()
                 .with_root_certificates(roots)
@@ -59,12 +61,27 @@ pub fn build_client_config(extra_roots: &[TrustedCert]) -> Arc<ClientConfig> {
         );
     }
 
+    let fingerprints: Vec<String> = extra_roots
+        .iter()
+        // Normalise stored fingerprints once at config-build time:
+        // lowercased, separator-stripped. The verifier compares
+        // against this canonical form so a fingerprint stored with
+        // colons / uppercase from a previous build still matches a
+        // freshly-computed one (or vice versa). Belt-and-braces
+        // against accidental format drift across versions.
+        .map(|c| canonicalize_fingerprint(&c.sha256))
+        .collect();
+    debug!(
+        "TLS client config: {} trusted fingerprint(s): {:?}",
+        fingerprints.len(),
+        fingerprints
+    );
     let inner = WebPkiServerVerifier::builder(Arc::new(roots))
         .build()
         .expect("webpki-roots verifier build");
     let verifier = Arc::new(FingerprintVerifier {
         inner,
-        trusted_fingerprints: extra_roots.iter().map(|c| c.sha256.clone()).collect(),
+        trusted_fingerprints: fingerprints,
     });
     Arc::new(
         ClientConfig::builder()
@@ -72,6 +89,17 @@ pub fn build_client_config(extra_roots: &[TrustedCert]) -> Arc<ClientConfig> {
             .with_custom_certificate_verifier(verifier)
             .with_no_client_auth(),
     )
+}
+
+/// Strip the `:` separators and lowercase a SHA-256 fingerprint
+/// string so trust comparisons are insensitive to formatting drift
+/// between the prompt UI, the trust-list write path, and the
+/// verifier. `aa:bb:CC` and `AABBCC` both end up as `aabbcc`.
+fn canonicalize_fingerprint(fp: &str) -> String {
+    fp.chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 /// Custom rustls verifier that accepts a cert if **either**:
@@ -105,11 +133,33 @@ impl ServerCertVerifier for FingerprintVerifier {
             .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
         {
             Ok(v) => Ok(v),
-            Err(_) => {
-                let fp = fingerprint_sha256(end_entity.as_ref());
-                if self.trusted_fingerprints.iter().any(|t| t == &fp) {
+            Err(webpki_err) => {
+                // Walk the entire presented chain — leaf and every
+                // intermediate. Some servers send the chain in the
+                // order specified by RFC 5246 (leaf first); others
+                // reorder it; and the user's "trust this" prompt
+                // captures only one DER blob. Comparing every cert
+                // in the chain against the trusted fingerprints
+                // means a reorder doesn't cause a false rejection.
+                let leaf_fp = canonicalize_fingerprint(&fingerprint_sha256(end_entity.as_ref()));
+                let intermediate_fps: Vec<String> = intermediates
+                    .iter()
+                    .map(|c| canonicalize_fingerprint(&fingerprint_sha256(c.as_ref())))
+                    .collect();
+                let chain_fps: Vec<&String> =
+                    std::iter::once(&leaf_fp).chain(intermediate_fps.iter()).collect();
+
+                let matched = chain_fps
+                    .iter()
+                    .any(|fp| self.trusted_fingerprints.iter().any(|t| t == *fp));
+                if matched {
                     Ok(ServerCertVerified::assertion())
                 } else {
+                    warn!(
+                        "TLS verify rejected: webpki={webpki_err}, leaf={leaf_fp}, \
+                         intermediates={intermediate_fps:?}, trusted={:?}",
+                        self.trusted_fingerprints
+                    );
                     Err(rustls::Error::InvalidCertificate(
                         rustls::CertificateError::UnknownIssuer,
                     ))
