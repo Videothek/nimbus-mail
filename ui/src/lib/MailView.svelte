@@ -290,15 +290,124 @@
     void attachmentClicked(att)
   }
 
+  /** MIME types Nextcloud Office (Collabora) opens in-browser via
+   *  the `index.php/f/<id>` deep link. Plain `text/*` is NOT in
+   *  the list — those open more cheaply in our existing reading
+   *  pane and routing them through Office for view-only is overkill.
+   *  When the type is missing / generic (`application/octet-stream`,
+   *  common on incoming mail) we fall back to a filename-extension
+   *  check below. */
+  const OFFICE_MIME_TYPES = new Set([
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/vnd.oasis.opendocument.text',
+    'application/vnd.oasis.opendocument.spreadsheet',
+    'application/vnd.oasis.opendocument.presentation',
+    'application/msword',
+    'application/vnd.ms-excel',
+    'application/vnd.ms-powerpoint',
+    'text/csv',
+  ])
+  const OFFICE_EXTENSIONS = new Set([
+    'docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp',
+    'doc', 'xls', 'ppt', 'csv',
+  ])
+
+  function isOfficeAttachment(att: EmailAttachment): boolean {
+    if (OFFICE_MIME_TYPES.has(att.content_type)) return true
+    const dot = att.filename.lastIndexOf('.')
+    if (dot < 0) return false
+    return OFFICE_EXTENSIONS.has(att.filename.slice(dot + 1).toLowerCase())
+  }
+
   /** Single dispatch point for any user-driven attachment open
    *  request (currently: cid:-anchor clicks; the attachment-tray
    *  buttons keep their explicit Download / Save-to-NC handlers).
-   *  Upcoming commits in issue #65 branch on `att.content_type` to
-   *  open Office / PDF viewers; for now we fall back to the same
-   *  download flow the tray uses so a click on a cid: link does
-   *  something useful instead of silently failing. */
+   *  Branches by content type: Office docs → upload-to-NC + open
+   *  in a fresh webview window via Collabora; everything else
+   *  falls through to the same download flow the tray uses. */
   async function attachmentClicked(att: EmailAttachment) {
+    if (isOfficeAttachment(att)) {
+      await openInOfficeViewer(att)
+      return
+    }
     await downloadAttachment(att)
+  }
+
+  /** Upload `att` to the user's first connected Nextcloud, ask the
+   *  backend for the deep-link URL, and open it in a fresh webview
+   *  window. On window close we DELETE the temp file so the user's
+   *  Nextcloud doesn't accumulate every attachment they've ever
+   *  previewed.
+   *
+   *  Multi-Nextcloud support is intentionally simple here: pick the
+   *  first connected account. The Settings UI will let users choose
+   *  a default once we have more than one user with two NCs. */
+  async function openInOfficeViewer(att: EmailAttachment) {
+    if (!email || uid == null) return
+    setBusy(att.part_id, true)
+    try {
+      const ncAccounts = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      if (ncAccounts.length === 0) {
+        error =
+          'Connect a Nextcloud account in Settings to open Office files in the embedded viewer.'
+        return
+      }
+      const ncId = ncAccounts[0].id
+
+      // Pull the bytes — `download_email_attachment` re-fetches the
+      // raw MIME body and decodes the matching part. Fast on a
+      // cached message, a single IMAP round-trip otherwise.
+      const bytes = await invoke<number[]>('download_email_attachment', {
+        accountId: email.account_id,
+        folder: email.folder,
+        uid,
+        partId: att.part_id,
+      })
+
+      const result = await invoke<{ url: string; tempPath: string }>(
+        'office_open_attachment',
+        {
+          ncId,
+          filename: att.filename,
+          data: bytes,
+          contentType: att.content_type || null,
+        },
+      )
+
+      // Open in a top-level Tauri webview window. Each viewer gets
+      // a unique label so multiple attachments can be open at once
+      // without colliding. The `tauri://destroyed` listener fires
+      // exactly once per window — we use it to expunge the temp
+      // file from the user's Nextcloud.
+      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
+      const label = `office-${crypto.randomUUID().replaceAll('-', '')}`
+      const win = new WebviewWindow(label, {
+        url: result.url,
+        title: att.filename,
+        width: 1200,
+        height: 800,
+      })
+      // Attach the cleanup listener BEFORE awaiting create — the
+      // window emits `tauri://destroyed` once it's gone, and on a
+      // fast close we'd otherwise miss the event. Errors are
+      // swallowed; the startup sweeper picks up any orphans.
+      void win.once('tauri://destroyed', async () => {
+        try {
+          await invoke('office_close_attachment', {
+            ncId,
+            tempPath: result.tempPath,
+          })
+        } catch (e) {
+          console.warn('office_close_attachment failed:', e)
+        }
+      })
+    } catch (e) {
+      error = formatError(e) || 'Failed to open in Office'
+    } finally {
+      setBusy(att.part_id, false)
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -576,6 +685,20 @@
               <span class="font-medium truncate max-w-60" title={att.filename}>{att.filename}</span>
               {#if att.size != null}
                 <span class="text-xs text-surface-500">{formatAttSize(att.size)}</span>
+              {/if}
+              {#if isOfficeAttachment(att)}
+                <!-- Office-compatible attachment → click opens
+                     directly in an embedded Collabora window. The
+                     download / Save-to-NC paths are still one click
+                     away below. -->
+                <button
+                  class="btn btn-sm preset-filled-primary-500 text-xs"
+                  disabled={busy}
+                  onclick={() => openInOfficeViewer(att)}
+                  title="Open in Nextcloud Office (Collabora)"
+                >
+                  {busy ? '…' : '📝 Open in Office'}
+                </button>
               {/if}
               <button
                 class="btn btn-sm preset-outlined-surface-500 text-xs"

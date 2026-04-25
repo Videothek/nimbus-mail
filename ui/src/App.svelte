@@ -192,6 +192,29 @@
     }
   }
 
+  /** Best-effort startup cleanup for the Office viewer's temp area
+   *  on every connected Nextcloud. If Nimbus crashed mid-edit, or
+   *  `office_close_attachment` errored on the way out last session,
+   *  the user's `/Nimbus Mail/temp` folder accumulates orphan
+   *  uploads. The Rust sweeper scopes by mtime so a still-open
+   *  edit window in a parallel Nimbus instance doesn't get its
+   *  file pulled out from under it. Failures are logged and
+   *  swallowed — no toast, no UI block. */
+  async function sweepNextcloudTempFiles() {
+    try {
+      const accounts = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      for (const a of accounts) {
+        try {
+          await invoke('office_sweep_temp', { ncId: a.id })
+        } catch (e) {
+          console.warn('office_sweep_temp failed for', a.id, e)
+        }
+      }
+    } catch (e) {
+      console.warn('sweepNextcloudTempFiles: get_nextcloud_accounts failed', e)
+    }
+  }
+
   function shouldNotify(): boolean {
     return (
       notificationsGranted && (appPrefs?.notifications_enabled ?? true)
@@ -255,6 +278,7 @@
   $effect(() => {
     loadAppPrefs()
     bootstrapNotifications()
+    void sweepNextcloudTempFiles()
 
     let unlistenNewMail: UnlistenFn | null = null
     let unlistenCompose: UnlistenFn | null = null

@@ -514,6 +514,202 @@ async fn create_nextcloud_directory(
     .await
 }
 
+// ── Office viewer (issue #65) ────────────────────────────────
+//
+// Click an Office-compatible attachment in MailView → upload its
+// bytes to a per-user temp folder in the user's Nextcloud → return
+// the deep-link URL the frontend opens in a Tauri webview window.
+// On close, the frontend fires `office_close_attachment` which
+// expunges the temp file. A separate `office_sweep_temp` runs at
+// connect-time to clean up anything left behind by a crash mid-edit.
+//
+// Folder layout:
+//   /Nimbus Mail/temp/<uuid>-<filename>
+//
+// The UUID prefix lets concurrent edits coexist without filename
+// collisions and gives the sweeper an obvious "is-this-ours" gate
+// (only delete files inside the temp folder).
+
+/// Root path for Nimbus's per-user temp area on the user's
+/// Nextcloud. Files-app-visible (no leading dot) so the user can
+/// recover anything we somehow lose track of, but tucked under our
+/// app's branded folder so the home screen stays uncluttered.
+const NIMBUS_TEMP_ROOT: &str = "/Nimbus Mail";
+const NIMBUS_TEMP_DIR: &str = "/Nimbus Mail/temp";
+
+/// Result of `office_open_attachment` — the URL the frontend opens
+/// in a fresh webview window plus the temp path it should pass back
+/// to `office_close_attachment` on close.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OfficeOpenResult {
+    /// Absolute URL into Nextcloud's Files app, which routes the
+    /// file id to whichever app is registered as its handler —
+    /// Collabora for Office docs, the PDF viewer for `.pdf`. Pasted
+    /// directly into a `WebviewWindow` `url` arg.
+    url: String,
+    /// Path on the user's Nextcloud (relative to the user root).
+    /// Round-trips back to `office_close_attachment` so the cleanup
+    /// targets the file we just uploaded, not "all temp files".
+    temp_path: String,
+}
+
+/// Best-effort `MKCOL` of `/Nimbus Mail` and `/Nimbus Mail/temp`.
+/// Both are idempotent: `create_directory` returns "folder already
+/// exists" as `NimbusError::Nextcloud` which we swallow so a
+/// pre-existing folder doesn't fail the open. Anything else
+/// propagates so quota / 401 / network errors surface to the user.
+async fn ensure_temp_dir(account: &NextcloudAccount, app_password: &str) -> Result<(), NimbusError> {
+    for dir in [NIMBUS_TEMP_ROOT, NIMBUS_TEMP_DIR] {
+        match nimbus_nextcloud::create_directory(
+            &account.server_url,
+            &account.username,
+            app_password,
+            dir,
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(NimbusError::Nextcloud(msg)) if msg.contains("already exists") => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Upload an attachment to the user's Nextcloud temp folder and
+/// return the URL to open it in. Used by MailView when the user
+/// clicks a `cid:` link or a tray button on an Office-compatible
+/// attachment.
+#[tauri::command]
+async fn office_open_attachment(
+    nc_id: String,
+    filename: String,
+    data: Vec<u8>,
+    content_type: Option<String>,
+) -> Result<OfficeOpenResult, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    ensure_temp_dir(&account, &app_password).await?;
+
+    // UUID prefix dodges filename collisions between concurrent
+    // viewer windows, and gives the sweeper a way to recognise our
+    // own files without a metadata round-trip.
+    let safe_name = filename.replace('/', "_").replace('\\', "_");
+    let temp_path = format!(
+        "{}/{}-{}",
+        NIMBUS_TEMP_DIR,
+        uuid::Uuid::new_v4(),
+        safe_name
+    );
+
+    nimbus_nextcloud::upload_file(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &temp_path,
+        data,
+        content_type.as_deref(),
+    )
+    .await?;
+
+    // Resolve the freshly-uploaded file's `oc:fileid` so we can
+    // build the canonical `index.php/f/<id>` deep link. That URL
+    // routes through Nextcloud's "open with default app" — Files
+    // hands `.docx` etc. to Collabora, `.pdf` to the PDF viewer,
+    // so the same code path works for both document types without
+    // app-specific URL templating on our side.
+    let file_id = nimbus_nextcloud::propfind_fileid(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &temp_path,
+    )
+    .await?;
+
+    let server = account.server_url.trim_end_matches('/');
+    let url = format!("{server}/index.php/f/{file_id}");
+
+    Ok(OfficeOpenResult { url, temp_path })
+}
+
+/// Delete a temp file the frontend opened earlier. Best-effort:
+/// 404 is swallowed by `delete_path`, network blips bubble up but
+/// the frontend logs and moves on — leftover files get caught by
+/// `office_sweep_temp` at next connect.
+#[tauri::command]
+async fn office_close_attachment(
+    nc_id: String,
+    temp_path: String,
+) -> Result<(), NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::delete_path(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &temp_path,
+    )
+    .await
+}
+
+/// Clean up anything stuck in `/Nimbus Mail/temp` from a previous
+/// session — say the user closed Nimbus mid-edit, or `office_close_
+/// attachment` errored on the way out. We list the directory and
+/// DELETE every entry whose `last_modified` is older than the cutoff,
+/// so an in-flight viewer window in another Nimbus instance doesn't
+/// have its file pulled out from under it.
+#[tauri::command]
+async fn office_sweep_temp(nc_id: String) -> Result<u32, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    // If the temp dir doesn't exist yet (fresh install / first
+    // attachment click) treat that as "nothing to sweep". Anything
+    // else propagates.
+    let entries = match nimbus_nextcloud::list_directory(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        NIMBUS_TEMP_DIR,
+    )
+    .await
+    {
+        Ok(e) => e,
+        Err(NimbusError::Nextcloud(msg)) if msg.contains("not found") => return Ok(0),
+        Err(e) => return Err(e),
+    };
+
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(1);
+    let mut swept = 0u32;
+    for entry in entries {
+        let stale = entry
+            .modified
+            .map(|t| t < cutoff)
+            .unwrap_or(true);
+        if !stale {
+            continue;
+        }
+        let target = format!("{NIMBUS_TEMP_DIR}/{}", entry.name);
+        match nimbus_nextcloud::delete_path(
+            &account.server_url,
+            &account.username,
+            &app_password,
+            &target,
+        )
+        .await
+        {
+            Ok(()) => swept += 1,
+            Err(e) => tracing::warn!("office_sweep_temp: failed to delete {target}: {e}"),
+        }
+    }
+    if swept > 0 {
+        tracing::info!("office_sweep_temp: cleaned {swept} stale file(s)");
+    }
+    Ok(swept)
+}
+
 // ── Nextcloud Talk ──────────────────────────────────────────────
 //
 // Three commands, mirroring the file/share pattern: each call loads
@@ -3737,6 +3933,9 @@ fn main() {
             add_talk_participant,
             rename_talk_room,
             upload_to_nextcloud,
+            office_open_attachment,
+            office_close_attachment,
+            office_sweep_temp,
             save_bytes_to_path,
             sync_nextcloud_contacts,
             get_contacts_sync_status,
