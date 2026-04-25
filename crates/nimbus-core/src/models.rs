@@ -255,6 +255,16 @@ pub struct EmailAttachment {
     /// Zero-based index into the parsed message's attachment list.
     /// Used as a stable handle for re-fetching the bytes on demand.
     pub part_id: u32,
+    /// RFC 2392 Content-ID, when the MIME part carried one. Lifted
+    /// from the message's `Content-ID` header by `mail-parser` —
+    /// without the surrounding angle brackets — so a body anchor
+    /// `<a href="cid:abc-123">` can resolve to this attachment by
+    /// `cid_str.eq_ignore_ascii_case(att.content_id.as_deref()?)`.
+    /// `None` when the attachment isn't referenced inline.
+    /// `#[serde(default)]` keeps cached payloads from before this
+    /// field existed deserialising cleanly as `None`.
+    #[serde(default)]
+    pub content_id: Option<String>,
 }
 
 /// Represents an IMAP mailbox folder.

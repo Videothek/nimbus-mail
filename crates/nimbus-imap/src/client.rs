@@ -598,11 +598,18 @@ impl ImapClient {
                 // resolved base64/QP by the time we see `contents()`,
                 // so this matches what the user will actually download.
                 let size = Some(part.contents().len() as u64);
+                // RFC 2392 Content-ID, when the part carried one. The
+                // body's `<a href="cid:abc-123">` anchors resolve to
+                // this attachment via case-insensitive equality with
+                // the cid value (no angle brackets — mail-parser
+                // strips them already).
+                let content_id = part.content_id().map(|s| s.to_string());
                 EmailAttachment {
                     filename,
                     content_type,
                     size,
                     part_id,
+                    content_id,
                 }
             })
             .collect();
@@ -717,6 +724,7 @@ impl ImapClient {
 
         let data = part.contents().to_vec();
         let size = Some(data.len() as u64);
+        let content_id = part.content_id().map(|s| s.to_string());
 
         Ok((
             EmailAttachment {
@@ -724,6 +732,7 @@ impl ImapClient {
                 content_type,
                 size,
                 part_id,
+                content_id,
             },
             data,
         ))

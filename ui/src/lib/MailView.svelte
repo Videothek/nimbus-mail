@@ -24,6 +24,10 @@
      * without retransmitting the rest of the message.
      */
     part_id: number
+    /** RFC 2392 Content-ID — present on attachments referenced inline
+     *  via `<a href="cid:…">` in the body. Used to route those
+     *  anchor clicks to the right attachment in `attachmentClicked`. */
+    content_id?: string | null
   }
 
   interface Email {
@@ -206,6 +210,22 @@
         if (!href) return
         const existing = a.getAttribute('title')
         a.setAttribute('title', existing ? `${existing} — ${href}` : href)
+
+        // Mark `cid:` anchors so the click interceptor below can
+        // find them quickly (no need to re-parse hrefs every click).
+        // Stripping leading angle brackets just in case the sender
+        // pasted them; mail-parser already strips them on the
+        // attachment side, so casing-only mismatches are the only
+        // resolution failure mode left.
+        if (href.toLowerCase().startsWith('cid:')) {
+          const cid = href.slice(4).trim().replace(/^<|>$/g, '')
+          a.setAttribute('data-nimbus-cid', cid)
+          // Default browser behaviour on `cid:` is "navigate this
+          // frame to a non-existent URL". Pin the anchor to "do
+          // nothing on its own" so clicks fall through to our
+          // listener cleanly.
+          a.setAttribute('target', '_self')
+        }
       })
       // `documentElement.outerHTML` gives us a full `<html>…</html>`,
       // which is exactly what `srcdoc` wants. If parsing somehow gives
@@ -222,6 +242,64 @@
   let bodyHtmlWithTooltips = $derived(
     email?.body_html ? addLinkTooltips(email.body_html) : '',
   )
+
+  // ── cid: anchor click interception ──────────────────────────
+  //
+  // The body iframe runs with `sandbox="allow-same-origin"` so the
+  // parent can read its `contentDocument` (scripts inside the
+  // iframe still can't run — `allow-scripts` is NOT set). We
+  // delegate clicks at the document level: any anchor carrying a
+  // `data-nimbus-cid` attribute (added by `addLinkTooltips`) gets
+  // its default behaviour preventDefault'd, the cid is matched
+  // against the message's attachment list, and the result is
+  // dispatched through `attachmentClicked` — the same single
+  // entry point the Office / PDF viewers (issue #65 follow-up
+  // commits) will branch into.
+  let bodyIframe: HTMLIFrameElement | undefined = $state()
+
+  function onIframeLoad() {
+    const doc = bodyIframe?.contentDocument
+    if (!doc) return
+    // Re-attach on every load so iframe re-creation (new message)
+    // wires the listener fresh. The previous frame's document is
+    // garbage-collected with its window so there's nothing to
+    // detach.
+    doc.addEventListener('click', onBodyClick, true)
+  }
+
+  function onBodyClick(e: Event) {
+    const target = e.target as HTMLElement | null
+    if (!target) return
+    const anchor = target.closest('a[data-nimbus-cid]') as HTMLAnchorElement | null
+    if (!anchor) return
+    e.preventDefault()
+    e.stopPropagation()
+    const cid = anchor.getAttribute('data-nimbus-cid') ?? ''
+    if (!cid || !email) return
+    const att = email.attachments.find(
+      (a) =>
+        a.content_id != null &&
+        a.content_id.toLowerCase() === cid.toLowerCase(),
+    )
+    if (!att) {
+      console.warn(
+        `MailView: cid:${cid} clicked but no matching attachment in this message`,
+      )
+      return
+    }
+    void attachmentClicked(att)
+  }
+
+  /** Single dispatch point for any user-driven attachment open
+   *  request (currently: cid:-anchor clicks; the attachment-tray
+   *  buttons keep their explicit Download / Save-to-NC handlers).
+   *  Upcoming commits in issue #65 branch on `att.content_type` to
+   *  open Office / PDF viewers; for now we fall back to the same
+   *  download flow the tray uses so a click on a cid: link does
+   *  something useful instead of silently failing. */
+  async function attachmentClicked(att: EmailAttachment) {
+    await downloadAttachment(att)
+  }
 
   // ---------------------------------------------------------------------
   // Attachments — download to disk or save into a Nextcloud folder.
@@ -532,11 +610,17 @@
           allow-* tokens) disables scripts, form submission, same-origin,
           and top-navigation — so even malicious mail can't attack the app.
         -->
+        <!-- `allow-same-origin` (without `allow-scripts`!) lets the
+             parent read the iframe's `contentDocument` so we can
+             attach the cid:-click listener. Author scripts still
+             can't run because `allow-scripts` isn't on the list. -->
         <iframe
+          bind:this={bodyIframe}
           title="Message body"
           class="w-full h-full border-0 bg-white"
-          sandbox=""
+          sandbox="allow-same-origin"
           srcdoc={bodyHtmlWithTooltips}
+          onload={onIframeLoad}
         ></iframe>
       {:else}
         <p class="text-sm text-surface-500">(This message has no visible body.)</p>
