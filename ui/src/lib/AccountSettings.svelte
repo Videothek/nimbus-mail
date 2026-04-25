@@ -29,6 +29,24 @@
     jmap_url?: string | null
     signature?: string | null
     folder_icons?: FolderIconRule[]
+    /** Per-account TLS trust list. Each entry is a leaf cert the
+     *  user has explicitly trusted via the AccountSetup wizard or
+     *  the Re-trust button below. Round-tripped through
+     *  `update_account` whenever the trust list changes (e.g.
+     *  after a server cert renewal). */
+    trusted_certs?: TrustedCert[]
+    folder_icon_overrides?: Record<string, string>
+  }
+
+  interface TrustedCert {
+    /** DER bytes as a JSON byte-array — matches the Rust
+     *  `Vec<u8>` serialisation. */
+    der: number[]
+    /** SHA-256 fingerprint, lowercase hex with `:` separators. */
+    sha256: string
+    host: string
+    /** Unix epoch seconds when the cert was trusted. */
+    added_at: number
   }
 
   // ── Props ───────────────────────────────────────────────────
@@ -164,6 +182,92 @@
     } catch (e: any) {
       error = typeof e === 'string' ? e : e?.message ?? 'Failed to remove account'
     }
+  }
+
+  // ── TLS re-trust flow ───────────────────────────────────────
+  //
+  // The AccountSetup wizard already trusts a self-signed leaf at
+  // the moment the account is added, but the trust list is frozen
+  // after that. When the user's mail server rotates its cert
+  // (Let's-Encrypt-style renewals on a self-signed CA, manual
+  // re-issuance, etc.) every IMAP/SMTP connect bombs with
+  // "invalid peer certificate: UnknownIssuer" and there's no in-
+  // app way to recover — the user's stuck reading nothing.
+  //
+  // This pair of helpers re-runs the same probe-and-trust dance
+  // the wizard uses, against an account that already exists. The
+  // probe is unverified-TLS (matches `nimbus_imap::
+  // probe_server_certificate`), the user sees the leaf's SHA-256
+  // fingerprint before committing, and the new cert is appended to
+  // `account.trusted_certs` via `update_account`.
+
+  /** Probed cert awaiting confirmation. `null` = no flow open. */
+  let trustPrompt = $state<{
+    account: Account
+    sha256: string
+    der: number[]
+  } | null>(null)
+  let trustBusy = $state(false)
+  let trustError = $state('')
+
+  interface ProbedCert {
+    der: number[]
+    sha256: string
+  }
+
+  async function startRetrust(account: Account) {
+    trustError = ''
+    trustBusy = true
+    try {
+      const probed = await invoke<ProbedCert>('probe_server_certificate', {
+        host: account.imap_host,
+        port: account.imap_port,
+      })
+      trustPrompt = {
+        account,
+        sha256: probed.sha256,
+        der: probed.der,
+      }
+    } catch (e: any) {
+      trustError = typeof e === 'string' ? e : e?.message ?? 'Failed to probe server certificate'
+    } finally {
+      trustBusy = false
+    }
+  }
+
+  async function commitRetrust() {
+    if (!trustPrompt || trustBusy) return
+    trustBusy = true
+    trustError = ''
+    try {
+      // Append the new cert to the account's trust list. We don't
+      // dedupe — `nimbus_core::tls::build_client_config` happily
+      // accepts duplicates, and an exact-match dupe is harmless.
+      // Anything else (cert renewed under same CN, server moved
+      // hosts, …) is a *new* entry the user explicitly wants.
+      const next: TrustedCert = {
+        der: trustPrompt.der,
+        sha256: trustPrompt.sha256,
+        host: trustPrompt.account.imap_host,
+        added_at: Math.floor(Date.now() / 1000),
+      }
+      const updated: Account = {
+        ...trustPrompt.account,
+        trusted_certs: [...(trustPrompt.account.trusted_certs ?? []), next],
+      }
+      await invoke('update_account', { account: updated })
+      trustPrompt = null
+      await loadAccounts()
+    } catch (e: any) {
+      trustError = typeof e === 'string' ? e : e?.message ?? 'Failed to update account'
+    } finally {
+      trustBusy = false
+    }
+  }
+
+  function cancelRetrust() {
+    trustPrompt = null
+    trustError = ''
   }
 
   // ── Signature editing ───────────────────────────────────────
@@ -453,12 +557,22 @@
                   {/if}
                 </div>
               </div>
-              <button
-                class="btn btn-sm preset-outlined-error-500"
-                onclick={() => removeAccount(account.id, account.email)}
-              >
-                Remove
-              </button>
+              <div class="flex flex-col items-end gap-1">
+                <button
+                  class="btn btn-sm preset-outlined-surface-500 text-xs"
+                  disabled={trustBusy}
+                  title="Probe the IMAP server's current TLS certificate and add it to this account's trust list. Use after a server cert renewal if connections start failing with 'invalid peer certificate / UnknownIssuer'."
+                  onclick={() => void startRetrust(account)}
+                >
+                  {trustBusy ? '…' : '🔒 Trust server cert'}
+                </button>
+                <button
+                  class="btn btn-sm preset-outlined-error-500"
+                  onclick={() => removeAccount(account.id, account.email)}
+                >
+                  Remove
+                </button>
+              </div>
             </div>
 
             <div class="mt-4 pt-4 border-t border-surface-200 dark:border-surface-700">
@@ -565,3 +679,63 @@
     </div>
   </div>
 </div>
+
+<!-- TLS re-trust confirm. Shown after `startRetrust` probes the
+     IMAP host and captures a leaf cert. The user sees the SHA-256
+     so they can compare against what they expected (matches the
+     fingerprint Nextcloud / Let's Encrypt / their CA prints) before
+     trusting it. -->
+{#if trustPrompt}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onmousedown={(e) => { if (e.target === e.currentTarget && !trustBusy) cancelRetrust() }}
+  >
+    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-md max-w-full p-5">
+      <h3 class="text-base font-semibold mb-1">Trust this server certificate?</h3>
+      <p class="text-xs text-surface-500 mb-3">
+        For <span class="font-medium text-surface-700 dark:text-surface-300">{trustPrompt.account.email}</span>
+        on <span class="font-mono">{trustPrompt.account.imap_host}:{trustPrompt.account.imap_port}</span>.
+        Compare the SHA-256 against what your server admin (or Nextcloud's
+        <em>Personal → Security</em> page) shows before clicking Trust.
+      </p>
+
+      <div class="text-xs text-surface-500 mb-1">SHA-256 fingerprint</div>
+      <p class="font-mono text-xs wrap-break-word p-2 rounded bg-surface-100 dark:bg-surface-800 mb-3">
+        {trustPrompt.sha256}
+      </p>
+
+      {#if trustError}
+        <p class="text-xs text-red-500 mb-3 wrap-break-word">{trustError}</p>
+      {/if}
+
+      <div class="flex justify-end gap-2">
+        <button
+          class="btn preset-outlined-surface-500"
+          disabled={trustBusy}
+          onclick={cancelRetrust}
+        >Cancel</button>
+        <button
+          class="btn preset-filled-primary-500"
+          disabled={trustBusy}
+          onclick={() => void commitRetrust()}
+        >{trustBusy ? 'Trusting…' : 'Trust'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Standalone error surface for the probe path — fires when
+     `startRetrust` itself errored (no modal opens) so the user
+     still sees what went wrong. -->
+{#if trustError && !trustPrompt}
+  <div class="fixed bottom-4 right-4 z-50 max-w-sm bg-red-500/95 text-white text-sm rounded-md shadow-lg px-3 py-2">
+    {trustError}
+    <button
+      class="ml-2 underline"
+      onclick={() => (trustError = '')}
+    >Dismiss</button>
+  </div>
+{/if}
