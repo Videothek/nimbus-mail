@@ -60,6 +60,10 @@
     start_minimized: boolean
     theme_name: string
     theme_mode: ThemeMode
+    /** Optional Stirling-PDF base URL. When set, PDF attachments
+     *  open in this instance's embedded viewer; when empty, they
+     *  open in Nextcloud's built-in PDF viewer. */
+    stirling_pdf_url: string | null
   }
 
   let appSettings = $state<AppSettings>({
@@ -70,6 +74,7 @@
     start_minimized: false,
     theme_name: 'cerberus',
     theme_mode: 'system',
+    stirling_pdf_url: null,
   })
   let prefsSaveStatus = $state<'' | 'saving' | 'saved' | 'error'>('')
   let checkNowBusy = $state(false)
@@ -337,6 +342,30 @@
             onchange={scheduleSave}
           />
           <span>Start minimized to tray</span>
+        </label>
+
+        <!-- Stirling-PDF integration (Issue #65). Empty / blank
+             value falls back to Nextcloud's built-in PDF viewer
+             on PDF attachment clicks. Two-way bound through a
+             tiny `||`-coalesce so the JSON `null` from Rust
+             round-trips to an empty input cleanly. -->
+        <label class="flex flex-col gap-1">
+          <span>Stirling-PDF server URL (optional)</span>
+          <input
+            type="url"
+            placeholder="https://pdf.example.com"
+            class="input text-sm py-1 px-2"
+            value={appSettings.stirling_pdf_url ?? ''}
+            oninput={(e) => {
+              const v = (e.currentTarget as HTMLInputElement).value.trim()
+              appSettings.stirling_pdf_url = v ? v : null
+            }}
+            onchange={scheduleSave}
+          />
+          <span class="text-xs text-surface-500">
+            When set, PDF attachments open in this Stirling-PDF instance instead
+            of Nextcloud's built-in viewer.
+          </span>
         </label>
       </div>
     </div>
