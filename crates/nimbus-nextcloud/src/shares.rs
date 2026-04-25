@@ -181,18 +181,44 @@ pub async fn create_public_share(
             "Nextcloud rejected app password (revoked or expired)".into(),
         ));
     }
-    if !status.is_success() {
-        return Err(NimbusError::Nextcloud(format!(
-            "share returned HTTP {status}"
-        )));
-    }
 
+    // Read the body up front (success or failure) so a 4xx still
+    // surfaces Nextcloud's actual reason. Password-policy rejections
+    // come back as HTTP 400 with an OCS envelope whose `meta.message`
+    // says e.g. "Password is too short" — pulling that into the
+    // error makes the bad-password case actionable instead of "share
+    // returned HTTP 400".
     let body = resp
         .text()
         .await
         .map_err(|e| NimbusError::Network(format!("share body read failed: {e}")))?;
 
+    if !status.is_success() {
+        let detail = ocs_message(&body).unwrap_or_else(|| {
+            // Truncate so a verbose HTML error page doesn't blow up
+            // the toast — 240 chars is enough to expose the gist.
+            let trimmed = body.trim();
+            if trimmed.len() > 240 {
+                format!("{}…", &trimmed[..240])
+            } else {
+                trimmed.to_string()
+            }
+        });
+        return Err(NimbusError::Nextcloud(format!(
+            "share returned HTTP {status}: {detail}"
+        )));
+    }
+
     parse_share_response(&body)
+}
+
+/// Try to lift the human-readable `meta.message` out of an OCS
+/// response body. Returns `None` if the body isn't OCS-shaped JSON
+/// or doesn't carry a message — caller falls back to the raw body
+/// in that case.
+fn ocs_message(body: &str) -> Option<String> {
+    let raw: OcsRaw = serde_json::from_str(body).ok()?;
+    raw.ocs.meta.message.filter(|m| !m.is_empty())
 }
 
 /// Parse the OCS envelope and surface either the URL or a meaningful
