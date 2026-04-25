@@ -449,6 +449,125 @@ pub async fn create_directory(
     Ok(())
 }
 
+/// DAV DELETE the resource at `path` — works for both files and
+/// folders. Used by the Office viewer cleanup flow + the temp-dir
+/// sweeper. Treats 404 as success (already gone), same forgiving
+/// policy `nimbus-caldav::delete_calendar` uses.
+pub async fn delete_path(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    path: &str,
+) -> Result<(), NimbusError> {
+    let base = user_dav_base(server_url, username);
+    let inner = normalise_input_path(path);
+    if inner == "/" {
+        return Err(NimbusError::Nextcloud(
+            "refusing to DELETE the user root".into(),
+        ));
+    }
+    let url = format!("{base}{}", encode_path(&inner));
+    tracing::debug!("DELETE {url}");
+
+    let http = client::build()?;
+    let resp = http
+        .delete(&url)
+        .header("OCS-APIRequest", "true")
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("DELETE request failed: {e}")))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(NimbusError::Auth(
+            "Nextcloud rejected app password (revoked or expired)".into(),
+        ));
+    }
+    // 404 = already gone, 204/200 = success — all fine.
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+    if !status.is_success() {
+        return Err(NimbusError::Nextcloud(format!(
+            "DELETE returned HTTP {status}"
+        )));
+    }
+    Ok(())
+}
+
+/// Single-resource PROPFIND that returns the Nextcloud `oc:fileid` —
+/// the stable numeric handle every NC app keys on. Used by the
+/// Office viewer flow to build the `index.php/f/<fileid>` deep-link
+/// URL after a fresh upload (the new file's fileid isn't returned
+/// by PUT).
+pub async fn propfind_fileid(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    path: &str,
+) -> Result<String, NimbusError> {
+    let base = user_dav_base(server_url, username);
+    let inner = normalise_input_path(path);
+    let url = format!("{base}{}", encode_path(&inner));
+
+    // Depth 0 — we only care about the resource itself, not children.
+    // The `oc:` namespace is Nextcloud's own; `oc:fileid` is the
+    // numeric id Files / Office / Talk all share.
+    const BODY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:prop>
+    <oc:fileid/>
+  </d:prop>
+</d:propfind>"#;
+
+    let http = client::build()?;
+    let resp = http
+        .request(
+            reqwest::Method::from_bytes(b"PROPFIND").expect("PROPFIND is a valid HTTP method"),
+            &url,
+        )
+        .header("OCS-APIRequest", "true")
+        .header(CONTENT_TYPE, "application/xml; charset=utf-8")
+        .header("Depth", "0")
+        .basic_auth(username, Some(app_password))
+        .body(BODY)
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("PROPFIND fileid failed: {e}")))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(NimbusError::Auth(
+            "Nextcloud rejected app password (revoked or expired)".into(),
+        ));
+    }
+    if !status.is_success() {
+        return Err(NimbusError::Nextcloud(format!(
+            "PROPFIND fileid returned HTTP {status}"
+        )));
+    }
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| NimbusError::Network(format!("PROPFIND body read failed: {e}")))?;
+
+    // Cheap text scan rather than a full quick-xml read — the
+    // response is ~600 bytes and we only want one element.
+    let open = body.find("<oc:fileid>").or_else(|| body.find("<fileid>"));
+    let close = body.find("</oc:fileid>").or_else(|| body.find("</fileid>"));
+    match (open, close) {
+        (Some(o), Some(c)) if c > o => {
+            let start = o + body[o..].find('>').unwrap_or(0) + 1;
+            Ok(body[start..c].trim().to_string())
+        }
+        _ => Err(NimbusError::Protocol(
+            "PROPFIND response missing <oc:fileid>".into(),
+        )),
+    }
+}
+
 // ── Multistatus parser ─────────────────────────────────────────
 
 /// Parse a WebDAV multistatus response into `FileEntry`s.
