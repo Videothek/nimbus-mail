@@ -150,6 +150,29 @@
         await refreshCalendarsStatus(a.id)
         await loadCalendarsList(a.id)
       }
+      // Background-refresh the capability snapshot for every account
+      // so newly-installed Nextcloud apps (Office, Talk, …) light up
+      // their chip without needing a disconnect / reconnect. Done
+      // *after* the synchronous loads so the panel paints with the
+      // cached chip set immediately and updates in place once the
+      // server replies. Failures are swallowed in Rust — a flaky
+      // network just keeps the previous snapshot.
+      void Promise.all(
+        accounts.map(async (a) => {
+          try {
+            const fresh = await invoke<NextcloudAccount>(
+              'refresh_nextcloud_capabilities',
+              { ncId: a.id },
+            )
+            // Patch the local list in place — Svelte 5 picks up the
+            // new capabilities on the next render. Match by id in
+            // case the user removed an account mid-refresh.
+            accounts = accounts.map((x) => (x.id === fresh.id ? fresh : x))
+          } catch (e) {
+            console.warn('refresh_nextcloud_capabilities failed for', a.id, e)
+          }
+        }),
+      )
     } catch (e) {
       error = formatError(e) || 'Failed to load Nextcloud connections'
     } finally {
