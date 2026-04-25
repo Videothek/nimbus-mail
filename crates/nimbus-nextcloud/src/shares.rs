@@ -194,19 +194,20 @@ pub async fn create_public_share(
         .map_err(|e| NimbusError::Network(format!("share body read failed: {e}")))?;
 
     if !status.is_success() {
-        let detail = ocs_message(&body).unwrap_or_else(|| {
-            // Truncate so a verbose HTML error page doesn't blow up
-            // the toast — 240 chars is enough to expose the gist.
-            let trimmed = body.trim();
-            if trimmed.len() > 240 {
-                format!("{}…", &trimmed[..240])
-            } else {
-                trimmed.to_string()
-            }
-        });
-        return Err(NimbusError::Nextcloud(format!(
-            "share returned HTTP {status}: {detail}"
-        )));
+        let detail = ocs_message(&body)
+            .map(|m| friendly_share_error(&m))
+            .unwrap_or_else(|| {
+                // Truncate so a verbose HTML error page doesn't blow
+                // up the toast — 240 chars is enough to expose the
+                // gist.
+                let trimmed = body.trim();
+                if trimmed.len() > 240 {
+                    format!("{}…", &trimmed[..240])
+                } else {
+                    trimmed.to_string()
+                }
+            });
+        return Err(NimbusError::Nextcloud(detail));
     }
 
     parse_share_response(&body)
@@ -219,6 +220,81 @@ pub async fn create_public_share(
 fn ocs_message(body: &str) -> Option<String> {
     let raw: OcsRaw = serde_json::from_str(body).ok()?;
     raw.ocs.meta.message.filter(|m| !m.is_empty())
+}
+
+/// Map well-known Nextcloud password-policy / share-creation
+/// messages to phrasings the user actually understands. The OCS
+/// strings themselves are technically correct ("Password is among
+/// the 1,000,000 most common passwords", "Password needs to be at
+/// least 10 characters long.") but they read like server
+/// diagnostics — surface them as guidance instead. Anything we
+/// don't recognise falls through verbatim so we never hide the
+/// real reason.
+fn friendly_share_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+
+    // Length policy. NC's wording varies between minor versions
+    // ("Password needs to be at least N characters long.",
+    // "Password is too short", "The password is too short.") so we
+    // pull the digits when we can and fall back to a generic floor.
+    if lower.contains("password") && (lower.contains("short") || lower.contains("at least"))
+    {
+        if let Some(min_len) = first_number(raw) {
+            return format!(
+                "Password is too short. Choose at least {min_len} characters."
+            );
+        }
+        return "Password is too short. Try a longer one.".to_string();
+    }
+
+    // Common-password blocklist — the policy app rejects the top-N
+    // breach list.
+    if lower.contains("most common passwords") || lower.contains("commonly used password") {
+        return "That password is on a public list of common passwords. Pick something less guessable.".to_string();
+    }
+
+    // Numeric / character-class requirements.
+    if lower.contains("password") && lower.contains("numeric") {
+        return "Password needs at least one number.".to_string();
+    }
+    if lower.contains("password")
+        && (lower.contains("special character") || lower.contains("special-character"))
+    {
+        return "Password needs at least one special character.".to_string();
+    }
+    if lower.contains("password") && lower.contains("upper") {
+        return "Password needs at least one uppercase letter.".to_string();
+    }
+    if lower.contains("password") && lower.contains("lower") {
+        return "Password needs at least one lowercase letter.".to_string();
+    }
+
+    // Fallback — keep the server's text but capitalise + add a final
+    // period so it reads like a sentence rather than a log line.
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "The Nextcloud server rejected the share.".to_string();
+    }
+    let mut out = trimmed.to_string();
+    if !out.ends_with('.') && !out.ends_with('!') && !out.ends_with('?') {
+        out.push('.');
+    }
+    out
+}
+
+/// Pull the first run of ASCII digits out of a string and parse as
+/// `u32`. Used to recover the "at least N" minimum length from the
+/// password-policy app's message regardless of phrasing.
+fn first_number(s: &str) -> Option<u32> {
+    let mut digits = String::new();
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+        } else if !digits.is_empty() {
+            break;
+        }
+    }
+    digits.parse().ok()
 }
 
 /// Parse the OCS envelope and surface either the URL or a meaningful
