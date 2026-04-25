@@ -424,13 +424,16 @@ async fn download_nextcloud_file(
 /// into the email body — a lighter alternative to attaching the bytes
 /// for big files or files the recipient might want to re-download.
 ///
-/// The share is read-only with no password and no expiry; per-share
-/// options can be added as a separate command (`update_nextcloud_share`)
-/// once the UI grows controls for them.
+/// `password` is optional; when supplied the share is gated behind
+/// it on the recipient side. The OCS endpoint enforces the user's
+/// configured password policy (length, complexity), so a too-weak
+/// password surfaces as a `NimbusError::Nextcloud` from the server
+/// rather than a local validation rule we have to maintain.
 #[tauri::command]
 async fn create_nextcloud_share(
     nc_id: String,
     path: String,
+    password: Option<String>,
 ) -> Result<String, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
@@ -439,6 +442,7 @@ async fn create_nextcloud_share(
         &account.username,
         &app_password,
         &path,
+        password.as_deref(),
     )
     .await?;
     Ok(share.url)

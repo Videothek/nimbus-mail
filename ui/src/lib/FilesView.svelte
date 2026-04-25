@@ -57,6 +57,11 @@
   let attaching = $state(false)
   let sharing = $state(false)
 
+  // Same password-prompt shape as NextcloudFilePicker — see commit
+  // notes there. Snapshot the selection at click time so toggling
+  // the file tree behind the modal can't change what gets shared.
+  let sharePrompt = $state<{ paths: string[]; password: string } | null>(null)
+
   let selectedFileCount = $derived.by(() => {
     let n = 0
     for (const e of entries) if (!e.is_dir && selected.has(e.path)) n++
@@ -109,21 +114,34 @@
       open Compose with them rendered into the body as a "Shared via
       Nextcloud" block — same shape Compose already produces when the
       share button inside the picker is used. */
-  async function sendAsLink() {
+  function sendAsLink() {
     if (selected.size === 0) return
+    sharePrompt = { paths: Array.from(selected), password: '' }
+    error = ''
+  }
+
+  /** Mint the share links with the password the user picked
+      (empty = unprotected, omitted from the OCS form on the Rust
+      side) and hand them off to Compose. Same error shape as the
+      previous one-click flow. */
+  async function commitShare() {
+    if (!sharePrompt) return
+    const { paths, password } = sharePrompt
     sharing = true
     error = ''
     try {
-      const paths = Array.from(selected)
+      const pw = password.trim() ? password : null
       const links = await Promise.all(
         paths.map(async (p) => {
           const url = await invoke<string>('create_nextcloud_share', {
             ncId: accountId,
             path: p,
+            password: pw,
           })
           return { filename: basename(p), url }
         }),
       )
+      sharePrompt = null
       oncompose({ nextcloudLinks: links })
     } catch (e) {
       error = formatError(e) || 'Failed to create share link(s)'
@@ -211,3 +229,65 @@
     {/if}
   </div>
 </div>
+
+<!-- Password prompt for the public share link. Same UX as the
+     equivalent modal inside NextcloudFilePicker — Enter / "Create
+     with password" gates the share, blank input + "Share without
+     password" preserves the previous one-click flow. -->
+{#if sharePrompt}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onmousedown={(e) => { if (e.target === e.currentTarget && !sharing) sharePrompt = null }}
+  >
+    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-96 max-w-full p-5">
+      <h3 class="text-base font-semibold mb-1">Password-protect link?</h3>
+      <p class="text-xs text-surface-500 mb-3">
+        {sharePrompt.paths.length === 1
+          ? 'Anyone with the link can open the file.'
+          : `Anyone with each link can open ${sharePrompt.paths.length} files.`}
+        Setting a password gates the recipient behind it; leave it empty
+        to share without one.
+      </p>
+
+      <label class="block text-xs text-surface-500 mb-1" for="files-share-pw">Password (optional)</label>
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        id="files-share-pw"
+        type="password"
+        class="input w-full text-sm px-2 py-1.5 rounded-md mb-3"
+        placeholder="Leave blank for no password"
+        bind:value={sharePrompt.password}
+        disabled={sharing}
+        autofocus
+        onkeydown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); void commitShare() }
+          else if (e.key === 'Escape' && !sharing) { e.preventDefault(); sharePrompt = null }
+        }}
+      />
+
+      {#if error}
+        <p class="text-xs text-red-500 mb-3 wrap-break-word">{error}</p>
+      {/if}
+
+      <div class="flex justify-end gap-2">
+        <button
+          class="btn preset-outlined-surface-500"
+          disabled={sharing}
+          onclick={() => (sharePrompt = null)}
+        >Cancel</button>
+        <button
+          class="btn preset-filled-primary-500"
+          disabled={sharing}
+          onclick={() => void commitShare()}
+        >
+          {#if sharing}Sharing…
+          {:else if sharePrompt.password.trim()}Create with password
+          {:else}Share without password{/if}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
