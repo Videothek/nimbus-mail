@@ -33,18 +33,6 @@ pub struct AppSettings {
     /// Whether the UI follows the OS light/dark preference, or
     /// is pinned to one. Applied via `<html data-mode="…">`.
     pub theme_mode: ThemeMode,
-    /// Optional base URL of a self-hosted Stirling-PDF instance
-    /// (e.g. `https://pdf.example.com`). When set, the
-    /// attachment-click flow opens `.pdf` files in Stirling-PDF's
-    /// embedded viewer; when empty / unset, PDFs go through the
-    /// same Nextcloud `index.php/f/<id>` deep link Office docs use,
-    /// which routes to Nextcloud's built-in PDF viewer. Single-
-    /// instance for now — easy to migrate to per-NC-account later
-    /// (the dispatch already loads the active NC account before
-    /// reaching this fallback). Stored without trailing slash;
-    /// runtime trims defensively if a user pastes one.
-    #[serde(default)]
-    pub stirling_pdf_url: Option<String>,
 }
 
 /// Light/dark mode selection. `System` follows the OS preference
@@ -80,7 +68,6 @@ impl Default for AppSettings {
             background_sync_interval_secs: 60,
             notifications_enabled: true,
             start_minimized: false,
-            stirling_pdf_url: None,
             theme_name: "cerberus".to_string(),
             theme_mode: ThemeMode::System,
         }

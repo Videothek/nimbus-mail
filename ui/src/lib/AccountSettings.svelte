@@ -78,10 +78,6 @@
     start_minimized: boolean
     theme_name: string
     theme_mode: ThemeMode
-    /** Optional Stirling-PDF base URL. When set, PDF attachments
-     *  open in this instance's embedded viewer; when empty, they
-     *  open in Nextcloud's built-in PDF viewer. */
-    stirling_pdf_url: string | null
   }
 
   let appSettings = $state<AppSettings>({
@@ -92,7 +88,6 @@
     start_minimized: false,
     theme_name: 'cerberus',
     theme_mode: 'system',
-    stirling_pdf_url: null,
   })
   let prefsSaveStatus = $state<'' | 'saving' | 'saved' | 'error'>('')
   let checkNowBusy = $state(false)
@@ -196,24 +191,31 @@
   //
   // This pair of helpers re-runs the same probe-and-trust dance
   // the wizard uses, against an account that already exists. The
-  // probe is unverified-TLS (matches `nimbus_imap::
-  // probe_server_certificate`), the user sees the leaf's SHA-256
-  // fingerprint before committing, and the new cert is appended to
-  // `account.trusted_certs` via `update_account`.
+  // probe captures the *full chain* (leaf + intermediates) the
+  // server is currently presenting, the user reviews each
+  // fingerprint, and on confirm every cert in the chain is
+  // appended to `account.trusted_certs`. Trusting the whole chain
+  // (not just the leaf) means a future leaf reissue under the
+  // same intermediate, or a server that reorders certs on the
+  // wire, still resolves through the verifier's chain-walk
+  // matcher without dropping the user back into this prompt.
 
-  /** Probed cert awaiting confirmation. `null` = no flow open. */
-  let trustPrompt = $state<{
-    account: Account
-    sha256: string
-    der: number[]
-  } | null>(null)
-  let trustBusy = $state(false)
-  let trustError = $state('')
-
-  interface ProbedCert {
+  interface ProbedCertEntry {
     der: number[]
     sha256: string
   }
+  interface ProbedCert {
+    chain: ProbedCertEntry[]
+    host: string
+  }
+
+  /** Probed chain awaiting confirmation. `null` = no flow open. */
+  let trustPrompt = $state<{
+    account: Account
+    chain: ProbedCertEntry[]
+  } | null>(null)
+  let trustBusy = $state(false)
+  let trustError = $state('')
 
   async function startRetrust(account: Account) {
     trustError = ''
@@ -225,8 +227,7 @@
       })
       trustPrompt = {
         account,
-        sha256: probed.sha256,
-        der: probed.der,
+        chain: probed.chain,
       }
     } catch (e: any) {
       trustError = typeof e === 'string' ? e : e?.message ?? 'Failed to probe server certificate'
@@ -240,20 +241,22 @@
     trustBusy = true
     trustError = ''
     try {
-      // Append the new cert to the account's trust list. We don't
-      // dedupe — `nimbus_core::tls::build_client_config` happily
-      // accepts duplicates, and an exact-match dupe is harmless.
-      // Anything else (cert renewed under same CN, server moved
-      // hosts, …) is a *new* entry the user explicitly wants.
-      const next: TrustedCert = {
-        der: trustPrompt.der,
-        sha256: trustPrompt.sha256,
-        host: trustPrompt.account.imap_host,
-        added_at: Math.floor(Date.now() / 1000),
-      }
+      // Append every cert in the probed chain to the account's
+      // trust list. We don't dedupe — `nimbus_core::tls::
+      // build_client_config` happily accepts duplicates, and an
+      // exact-match dupe is harmless. Anything else (cert renewed
+      // under same CN, server moved hosts, …) is a *new* entry
+      // the user explicitly wants.
+      const addedAt = Math.floor(Date.now() / 1000)
+      const additions: TrustedCert[] = trustPrompt.chain.map((entry) => ({
+        der: entry.der,
+        sha256: entry.sha256,
+        host: trustPrompt!.account.imap_host,
+        added_at: addedAt,
+      }))
       const updated: Account = {
         ...trustPrompt.account,
-        trusted_certs: [...(trustPrompt.account.trusted_certs ?? []), next],
+        trusted_certs: [...(trustPrompt.account.trusted_certs ?? []), ...additions],
       }
       await invoke('update_account', { account: updated })
       trustPrompt = null
@@ -446,30 +449,6 @@
             onchange={scheduleSave}
           />
           <span>Start minimized to tray</span>
-        </label>
-
-        <!-- Stirling-PDF integration (Issue #65). Empty / blank
-             value falls back to Nextcloud's built-in PDF viewer
-             on PDF attachment clicks. Two-way bound through a
-             tiny `||`-coalesce so the JSON `null` from Rust
-             round-trips to an empty input cleanly. -->
-        <label class="flex flex-col gap-1">
-          <span>Stirling-PDF server URL (optional)</span>
-          <input
-            type="url"
-            placeholder="https://pdf.example.com"
-            class="input text-sm py-1 px-2"
-            value={appSettings.stirling_pdf_url ?? ''}
-            oninput={(e) => {
-              const v = (e.currentTarget as HTMLInputElement).value.trim()
-              appSettings.stirling_pdf_url = v ? v : null
-            }}
-            onchange={scheduleSave}
-          />
-          <span class="text-xs text-surface-500">
-            When set, PDF attachments open in this Stirling-PDF instance instead
-            of Nextcloud's built-in viewer.
-          </span>
         </label>
       </div>
     </div>
@@ -702,10 +681,20 @@
         <em>Personal → Security</em> page) shows before clicking Trust.
       </p>
 
-      <div class="text-xs text-surface-500 mb-1">SHA-256 fingerprint</div>
-      <p class="font-mono text-xs wrap-break-word p-2 rounded bg-surface-100 dark:bg-surface-800 mb-3">
-        {trustPrompt.sha256}
-      </p>
+      <div class="text-xs text-surface-500 mb-1">
+        SHA-256 fingerprint{trustPrompt.chain.length === 1 ? '' : 's'}
+        ({trustPrompt.chain.length === 1
+          ? 'leaf'
+          : `leaf + ${trustPrompt.chain.length - 1} intermediate${trustPrompt.chain.length === 2 ? '' : 's'}`})
+      </div>
+      <ul class="font-mono text-xs wrap-break-word p-2 rounded bg-surface-100 dark:bg-surface-800 mb-3 space-y-1">
+        {#each trustPrompt.chain as entry, i (entry.sha256)}
+          <li>
+            <span class="text-surface-500">{i === 0 ? 'leaf:' : `int${i}:`}</span>
+            {entry.sha256}
+          </li>
+        {/each}
+      </ul>
 
       {#if trustError}
         <p class="text-xs text-red-500 mb-3 wrap-break-word">{trustError}</p>
