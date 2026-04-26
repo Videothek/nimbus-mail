@@ -31,3 +31,35 @@ body {
 #app {
   @apply h-full;
 }
+
+/* ── Email body renderer ─────────────────────────────────────────────── */
+/* Scoped resets for HTML email content injected via {@html}. We can't
+   scope <style> tags from the email (they're stripped by DOMPurify), but
+   inline styles from the email still apply. These rules establish a sane
+   baseline so email tables, images, and links look reasonable without
+   touching the rest of the app. */
+.email-html-body {
+  /* Prevent a single wide image or table from stretching the pane. */
+  max-width: 100%;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.email-html-body table {
+  border-collapse: collapse;
+  max-width: 100%;
+}
+
+.email-html-body img {
+  max-width: 100%;
+  height: auto;
+}
+
+.email-html-body a {
+  color: oklch(0.627 0.194 258.2); /* blue-500 equivalent */
+  text-decoration: underline;
+}
+
+.email-html-body a:hover {
+  opacity: 0.8;
+}
