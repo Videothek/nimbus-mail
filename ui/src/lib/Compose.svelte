@@ -289,11 +289,24 @@
       .replace(/\n/g, '<br>')
   }
 
-  /** Strip HTML tags to produce a plain-text fallback for `body_text`. */
+  /** Strip HTML tags to produce a plain-text fallback for `body_text`.
+   *
+   * `textContent` alone loses all line structure because it ignores
+   * block boundaries and void elements. We pre-process the HTML to
+   * insert `\n` at every meaningful break point before stripping, so
+   * paragraphs and line breaks survive as plain-text newlines.
+   */
   function htmlToText(html: string): string {
     const tmp = document.createElement('div')
     tmp.innerHTML = html
-    return tmp.textContent ?? tmp.innerText ?? ''
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<\/div>/gi, '\n')
+      .replace(/<\/li>/gi, '\n')
+      .replace(/<\/tr>/gi, '\n')
+    return (tmp.textContent ?? tmp.innerText ?? '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
   }
 
   /** Turn a Tauri-IPC byte array (`number[]`) into a `data:` URL
