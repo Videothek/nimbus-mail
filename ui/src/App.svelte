@@ -148,6 +148,12 @@
   // summary toast — avoids a rain of toasts after a long offline
   // period or on first JMAP sync.
   let notificationsGranted = $state(false)
+  // Absolute path to our app icon, fetched once at startup. Passed
+  // to `sendNotification` so libnotify (Linux) / NSUserNotification
+  // (macOS) / WinRT (Windows) show the Nimbus icon next to each
+  // toast instead of a generic placeholder. Empty until the
+  // backend `get_notification_icon_path` resolves.
+  let notificationIconPath = $state<string>('')
   let recentBurst: number[] = []
   let pendingSummaryTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -224,7 +230,16 @@
 
   function fireToast(title: string, body: string) {
     try {
-      sendNotification({ title, body })
+      sendNotification({
+        title,
+        body,
+        // libnotify / NSUserNotification / WinRT all accept this
+        // as either a theme-icon name OR an absolute file path.
+        // We pass the file path of our installed icon so dev
+        // builds (which have no .desktop file lending the OS a
+        // registered name) still show the Nimbus icon.
+        ...(notificationIconPath ? { icon: notificationIconPath } : {}),
+      })
     } catch (err) {
       console.warn('sendNotification failed', err)
     }
@@ -265,6 +280,14 @@
     }
   }
 
+  async function loadNotificationIconPath() {
+    try {
+      notificationIconPath = await invoke<string>('get_notification_icon_path')
+    } catch (err) {
+      console.warn('get_notification_icon_path failed', err)
+    }
+  }
+
   /** Re-apply the theme + (re)install the OS-mode listener whenever
       the user's theme preferences change. The effect's cleanup
       function tears down the previous listener before the next run
@@ -279,6 +302,7 @@
   $effect(() => {
     loadAppPrefs()
     bootstrapNotifications()
+    void loadNotificationIconPath()
     void sweepNextcloudTempFiles()
 
     let unlistenNewMail: UnlistenFn | null = null
