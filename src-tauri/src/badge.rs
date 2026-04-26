@@ -216,17 +216,20 @@ fn stamp_label(
     }
     let font = font();
     // The badge content area — what the label has to fit inside.
-    let max_w = (size as f32) * 0.72;
-    let max_h = (size as f32) * 0.72;
+    // 80% leaves a thin guard band so digits don't kiss the AA disc
+    // edge but still read at the size the user asked for.
+    let max_w = (size as f32) * 0.80;
+    let max_h = (size as f32) * 0.80;
 
-    // Find the largest pixel size at which the label still fits both
-    // dimensions. ab_glyph reports h_advance / ascent / descent in
-    // px-scale-relative units, so we just probe candidate scales.
-    // The cap (`size * 1.0`) is a sanity bound — at badge sizes 12-32
-    // px, the label never wants more than that.
+    // Find the largest pixel size at which the label's *rendered*
+    // bbox fits both dimensions. We measure via the per-glyph
+    // outline `px_bounds()` so the height we compare against is the
+    // visible ink — not `ascent - descent`, which over-reports by
+    // including the descender slot that digits don't use, and was
+    // why the previous pass picked a tiny size.
     let mut chosen_scale = 1.0_f32;
     let mut best_layout: Option<LabelLayout> = None;
-    let mut probe = (size as f32).clamp(8.0, 64.0);
+    let mut probe = (size as f32 * 1.5).clamp(8.0, 96.0);
     while probe >= 4.0 {
         let layout = layout_label(font, label, probe);
         if layout.width <= max_w && layout.height <= max_h {
@@ -243,16 +246,12 @@ fn stamp_label(
         None => layout_label(font, label, chosen_scale),
     };
 
-    // Centre the rendered label inside the badge box. `ascent` is the
-    // distance from the baseline to the top of the tallest glyph;
-    // `descent` is negative. Vertical centre = box centre - bbox/2 +
-    // ascent (so the baseline lands where it needs to).
+    // Centre the rendered label inside the badge box using the
+    // tight bbox we just computed. baseline_y is positioned so the
+    // visible ink sits in the geometric middle of the box.
     let scaled = font.as_scaled(PxScale::from(chosen_scale));
-    let ascent = scaled.ascent();
-    let descent = scaled.descent();
-    let bbox_h = ascent - descent;
     let start_x = bx as f32 + (size as f32 - layout.width) / 2.0;
-    let baseline_y = by as f32 + (size as f32 - bbox_h) / 2.0 + ascent;
+    let baseline_y = by as f32 + (size as f32 + layout.height) / 2.0 - layout.descent_below_baseline;
 
     let mut cursor_x = start_x;
     for c in label.chars() {
@@ -281,21 +280,60 @@ fn stamp_label(
     }
 }
 
-/// Result of measuring a label at a candidate pixel size — total
-/// advance width and the rendered bbox height (ascent + |descent|).
+/// Result of measuring a label at a candidate pixel size.
+///
+/// `width` is the total horizontal advance of the laid-out label
+/// (so glyphs kern naturally via the font's per-glyph advances).
+///
+/// `height` is the *visible* bbox height — the union of every
+/// glyph's `px_bounds()` rather than the font's ascent/descent
+/// slots. Using ascent-descent over-reports for digit-only labels
+/// because the descender slot is always empty, which used to make
+/// the layout pick a font size much smaller than the badge could
+/// fit.
+///
+/// `descent_below_baseline` is how far the bbox extends below the
+/// baseline (≥ 0). For digit labels it's typically 0 — kept as a
+/// field so the centring math works for any label, including
+/// future "+" or "·" markers that might dip below.
 struct LabelLayout {
     width: f32,
     height: f32,
+    descent_below_baseline: f32,
 }
 
 fn layout_label(font: &FontRef<'_>, label: &str, scale: f32) -> LabelLayout {
     let scaled = font.as_scaled(PxScale::from(scale));
-    let width: f32 = label
-        .chars()
-        .map(|c| scaled.h_advance(font.glyph_id(c)))
-        .sum();
-    let height = scaled.ascent() - scaled.descent();
-    LabelLayout { width, height }
+    let mut width = 0.0_f32;
+    // Track the union of per-glyph rendered bounds, in baseline-
+    // relative coordinates (ab_glyph's `px_bounds` is in pixel
+    // space relative to the glyph's baseline anchor).
+    let mut min_y = f32::INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for c in label.chars() {
+        let gid = font.glyph_id(c);
+        let positioned = gid.with_scale_and_position(
+            PxScale::from(scale),
+            ab_glyph::point(0.0, 0.0),
+        );
+        if let Some(outline) = font.outline_glyph(positioned) {
+            let bounds = outline.px_bounds();
+            min_y = min_y.min(bounds.min.y);
+            max_y = max_y.max(bounds.max.y);
+        }
+        width += scaled.h_advance(gid);
+    }
+    let (height, descent_below_baseline) = if min_y.is_finite() {
+        (max_y - min_y, max_y.max(0.0))
+    } else {
+        // Every glyph was a no-render (e.g. label is whitespace).
+        (0.0, 0.0)
+    };
+    LabelLayout {
+        width,
+        height,
+        descent_below_baseline,
+    }
 }
 
 #[cfg(test)]

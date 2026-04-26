@@ -3846,22 +3846,19 @@ fn refresh_unread_badge(app: &AppHandle) {
 
     // Windows-only: the taskbar overlay icon. macOS/Linux have no
     // direct equivalent — `set_overlay_icon` only exists behind
-    // `#[cfg(windows)]` — so on those platforms we composite the
-    // badge onto the *window icon* itself instead, which the WM /
-    // dock uses for the running-app icon.
+    // `#[cfg(windows)]`. We tried badging the window icon on those
+    // platforms via `WebviewWindow::set_icon`, but on Linux that
+    // sets the X11 `_NET_WM_ICON` atom — which most WMs (KDE,
+    // XFCE, Cinnamon) use for both the taskbar entry AND the
+    // title-bar icon. No way through Tauri to update one without
+    // the other, and a badged title-bar icon looks out of place
+    // sitting next to the window title. So on non-Windows we leave
+    // the badge to the system tray icon alone.
     #[cfg(windows)]
     if let Some(win) = app.get_webview_window("main") {
         let overlay = badge::render_taskbar_overlay(total);
         if let Err(e) = win.set_overlay_icon(overlay) {
             tracing::warn!("failed to set taskbar overlay icon: {e}");
-        }
-    }
-    #[cfg(not(windows))]
-    if let Some(win) = app.get_webview_window("main") {
-        let base = app.state::<TrayBaseIcon>();
-        let badged = badge::render_tray_icon(&base.rgba, base.width, base.height, total);
-        if let Err(e) = win.set_icon(badged) {
-            tracing::warn!("failed to update window icon badge: {e}");
         }
     }
 
