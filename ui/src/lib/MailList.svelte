@@ -240,11 +240,21 @@
       <div class="p-6 text-center text-sm text-surface-500">No messages in {folder}.</div>
     {:else}
       {#each envelopes as env (`${env.account_id}:${env.uid}`)}
+        {@const selected = selectedUid === env.uid && (!unified || selectedUid === env.uid)}
+        <!-- Unread visual treatment: a 3px themed accent strip on the
+             leading edge plus a subtle primary tint on the row.  The
+             border is always present (transparent when read) so rows
+             never reflow between states.  Selection wins over the
+             unread tint for the background colour, but both states
+             can co-exist on the accent strip. -->
         <button
-          class="w-full text-left px-4 py-3 border-b border-surface-100 dark:border-surface-800 transition-colors
-            {selectedUid === env.uid && (!unified || selectedUid === env.uid)
+          class="w-full text-left pl-3 pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors
+            {!env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
+            {selected
               ? 'bg-primary-500/10'
-              : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+              : !env.is_read
+                ? 'bg-primary-500/[0.04] dark:bg-primary-500/[0.07] hover:bg-primary-500/10'
+                : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
           onclick={() => onselect(env.uid, unified ? env.account_id : undefined)}
           oncontextmenu={(e) => openContextMenu(e, env)}
         >
@@ -252,7 +262,7 @@
             <span class="text-sm {!env.is_read ? 'font-semibold' : 'font-normal'} truncate pr-2">
               {env.from || '(unknown sender)'}
             </span>
-            <span class="text-xs text-surface-500 shrink-0">{formatDate(env.date)}</span>
+            <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'} shrink-0">{formatDate(env.date)}</span>
           </div>
           <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate">
             {env.subject || '(no subject)'}
