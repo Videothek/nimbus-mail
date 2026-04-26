@@ -54,13 +54,16 @@ pub struct CalendarRow {
     /// agents don't set it.
     pub color: Option<String>,
     pub ctag: Option<String>,
-    /// When `true`, the CalendarView sidebar filters this calendar
-    /// out of the per-account list and its events don't paint in the
-    /// agenda. Local-only state — never written back to the server,
-    /// so the same Nextcloud account can have different "hidden"
-    /// sets across devices without stepping on each other. Toggled
-    /// from NextcloudSettings' per-calendar visibility checkboxes.
+    /// Layer 1 visibility (Settings). When `true` the calendar is
+    /// removed from the CalendarView sidebar entirely. Local-only —
+    /// never synced to the server. Toggled from NextcloudSettings'
+    /// per-calendar checkboxes.
     pub hidden: bool,
+    /// Layer 2 visibility (sidebar swatch). When `true` the calendar
+    /// row still appears in the sidebar but its events are not painted
+    /// on the agenda grid. Local-only — never synced to the server.
+    /// Toggled via the coloured swatch button in the CalendarView sidebar.
+    pub muted: bool,
 }
 
 /// One VEVENT ready for upsert. Mirrors `nimbus_caldav::RawEvent`'s
@@ -116,11 +119,13 @@ pub struct CachedCalendar {
     /// the server on the next sync to get "what's changed since".
     pub sync_token: Option<String>,
     pub last_synced_at: Option<DateTime<Utc>>,
-    /// Local visibility toggle. When `true` the CalendarView sidebar
-    /// hides the row and the agenda skips its events. Mirrors the
-    /// `hidden` column on the cache and never round-trips to the
-    /// server, so per-device preferences stay local.
+    /// Layer 1 visibility (Settings). When `true` the sidebar hides
+    /// the row entirely. Never round-trips to the server.
     pub hidden: bool,
+    /// Layer 2 visibility (sidebar swatch). When `true` the row
+    /// appears in the sidebar but its events are skipped on the grid.
+    /// Never round-trips to the server.
+    pub muted: bool,
 }
 
 /// Sync bookmark for a single calendar. Separate from `CachedCalendar`
@@ -184,15 +189,15 @@ impl Cache {
         // here — those are only valid after a real sync, and a
         // discovery run shouldn't pretend otherwise.
         {
-            // `hidden` is deliberately NOT in the UPDATE set — it's a
-            // local-only toggle and the server doesn't know about it,
-            // so a post-sync upsert shouldn't overwrite what the user
-            // picked in Settings. On first insert we stamp whatever
-            // the row carries (defaults to `false` from discovery).
+            // `hidden` and `muted` are deliberately NOT in the UPDATE
+            // set — both are local-only toggles the server doesn't know
+            // about, so a post-sync upsert must not overwrite what the
+            // user picked. On first insert we stamp whatever the row
+            // carries (both default to `false` from discovery).
             let mut stmt = tx.prepare(
                 "INSERT INTO calendars
-                    (id, nextcloud_account_id, path, display_name, color, ctag, hidden)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                    (id, nextcloud_account_id, path, display_name, color, ctag, hidden, muted)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT (nextcloud_account_id, path) DO UPDATE SET
                     display_name = excluded.display_name,
                     color        = COALESCE(excluded.color, calendars.color),
@@ -208,6 +213,7 @@ impl Cache {
                     r.color,
                     r.ctag,
                     r.hidden as i64,
+                    r.muted as i64,
                 ])?;
             }
         }
@@ -255,8 +261,8 @@ impl Cache {
         let id = format!("{nc_account_id}::{}", row.path);
         conn.execute(
             "INSERT INTO calendars
-                (id, nextcloud_account_id, path, display_name, color, ctag, hidden)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                (id, nextcloud_account_id, path, display_name, color, ctag, hidden, muted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT (nextcloud_account_id, path) DO NOTHING",
             params![
                 id,
@@ -266,6 +272,7 @@ impl Cache {
                 row.color,
                 row.ctag,
                 row.hidden as i64,
+                row.muted as i64,
             ],
         )?;
         Ok(id)
@@ -297,9 +304,8 @@ impl Cache {
         Ok(())
     }
 
-    /// Toggle a calendar's local visibility. Purely client-side —
-    /// never touches the server. Drives the CalendarView sidebar
-    /// filter and the agenda's event query.
+    /// Layer 1 toggle — removes the calendar from the sidebar entirely.
+    /// Purely client-side; never touches the server.
     pub fn set_calendar_hidden(
         &self,
         calendar_id: &str,
@@ -309,6 +315,22 @@ impl Cache {
         conn.execute(
             "UPDATE calendars SET hidden = ?2 WHERE id = ?1",
             params![calendar_id, hidden as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Layer 2 toggle — keeps the calendar in the sidebar but hides its
+    /// events from the agenda grid. Purely client-side; never touches
+    /// the server.
+    pub fn set_calendar_muted(
+        &self,
+        calendar_id: &str,
+        muted: bool,
+    ) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "UPDATE calendars SET muted = ?2 WHERE id = ?1",
+            params![calendar_id, muted as i64],
         )?;
         Ok(())
     }
@@ -332,7 +354,7 @@ impl Cache {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
             "SELECT id, nextcloud_account_id, path, display_name, color,
-                    ctag, sync_token, last_synced_at, hidden
+                    ctag, sync_token, last_synced_at, hidden, muted
              FROM calendars
              WHERE nextcloud_account_id = ?1
              ORDER BY display_name COLLATE NOCASE",
@@ -340,6 +362,7 @@ impl Cache {
         let rows = stmt.query_map(params![nc_account_id], |r| {
             let ts: Option<i64> = r.get(7)?;
             let hidden: i64 = r.get(8)?;
+            let muted: i64 = r.get(9)?;
             Ok(CachedCalendar {
                 id: r.get(0)?,
                 nextcloud_account_id: r.get(1)?,
@@ -350,6 +373,7 @@ impl Cache {
                 sync_token: r.get(6)?,
                 last_synced_at: ts.and_then(|t| Utc.timestamp_opt(t, 0).single()),
                 hidden: hidden != 0,
+                muted: muted != 0,
             })
         })?;
         let mut out = Vec::new();
@@ -982,6 +1006,7 @@ mod tests {
             color: Some("#2bb0ed".into()),
             ctag: Some(format!("ctag-{path}")),
             hidden: false,
+            muted: false,
         }
     }
 

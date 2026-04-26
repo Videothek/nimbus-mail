@@ -1080,17 +1080,17 @@
           <div class="grid gap-0.5" style="grid-template-columns: repeat({TABLE_GRID}, 1fr)">
             {#each { length: TABLE_GRID } as _, r}
               {#each { length: TABLE_GRID } as _, c}
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div
+                <button
+                  type="button"
+                  aria-label="{r + 1} × {c + 1} table"
                   class="w-4 h-4 border rounded-sm cursor-pointer transition-colors
                     {r < tableHoverRows && c < tableHoverCols
                       ? 'bg-primary-500/40 border-primary-500'
                       : 'bg-surface-100 dark:bg-surface-700 border-surface-300 dark:border-surface-600'}"
                   onmouseenter={() => { tableHoverRows = r + 1; tableHoverCols = c + 1 }}
                   onclick={() => insertTable(r + 1, c + 1)}
-                  role="button"
                   tabindex="-1"
-                ></div>
+                ></button>
               {/each}
             {/each}
           </div>

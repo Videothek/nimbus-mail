@@ -52,10 +52,13 @@
     display_name: string
     color: string | null
     last_synced_at: string | null
-    /** Local visibility flag — `true` means the calendar is hidden
-     *  from the sidebar list and its events are skipped in the
-     *  agenda. Toggled per-calendar via NextcloudSettings. */
+    /** Layer 1 (Settings). `true` removes the calendar from the sidebar
+     *  entirely. Toggled from NextcloudSettings' per-calendar checkboxes. */
     hidden?: boolean
+    /** Layer 2 (sidebar swatch). `true` keeps the calendar in the sidebar
+     *  but stops its events from painting on the agenda grid. Toggled via
+     *  the coloured swatch button in the CalendarView sidebar. */
+    muted?: boolean
   }
   interface EventAttendee {
     email: string
@@ -131,18 +134,18 @@
   let loadedRangeStart = $state<Date>(new Date(0))
   let loadedRangeEnd = $state<Date>(new Date(0))
 
-  // Per-calendar visibility — a Set of calendar ids that are
-  // currently *hidden*. The toggle itself lives in NextcloudSettings
-  // (persisted to the cache's `hidden` column); here we just derive a
-  // Set from the `calendars` list so the agenda filter stays O(1) on
-  // every event lookup. A Set rather than a positive list so newly-
-  // discovered calendars default to visible automatically.
-  const hiddenCalendarIds = $derived(
-    new Set(calendars.filter((c) => c.hidden).map((c) => c.id)),
+  // Layer 2: muted calendars' events are hidden from the grid. Derived
+  // as a Set for O(1) per-event lookup. Newly-discovered calendars
+  // default to unmuted automatically (Set of exceptions, not inclusions).
+  const mutedCalendarIds = $derived(
+    new Set(calendars.filter((c) => c.muted).map((c) => c.id)),
   )
-  /** Calendars the sidebar list renders — everything except the
-   *  ones the user opted to hide from Settings. */
-  const visibleCalendars = $derived(calendars.filter((c) => !c.hidden))
+  /** Calendars shown in the sidebar: everything not hidden by Settings
+   *  (Layer 1). The muted flag (Layer 2) only affects event rendering. */
+  const sidebarCalendars = $derived(calendars.filter((c) => !c.hidden))
+  /** Calendars whose events paint on the grid: sidebar calendars that
+   *  are also not muted (Layer 2). */
+  const visibleCalendars = $derived(sidebarCalendars.filter((c) => !c.muted))
 
   // ── Calendar management (Issue #82) ─────────────────────────
   // Right-click a calendar row → Rename / Change color / Delete.
@@ -313,6 +316,21 @@
     }
   }
 
+  async function toggleCalendarMuted(c: CalendarSummary) {
+    const newMuted = !c.muted
+    // Optimistic update so the UI responds instantly.
+    const idx = calendars.findIndex((cal) => cal.id === c.id)
+    if (idx !== -1) calendars[idx] = { ...calendars[idx], muted: newMuted }
+    try {
+      await invoke('set_nextcloud_calendar_muted', { calendarId: c.id, muted: newMuted })
+    } catch (e) {
+      // Rollback on failure.
+      const i = calendars.findIndex((cal) => cal.id === c.id)
+      if (i !== -1) calendars[i] = { ...calendars[i], muted: !newMuted }
+      calendarOpError = formatError(e) || 'Failed to update calendar visibility'
+    }
+  }
+
   // ── Event editor state ──────────────────────────────────────
   // The editor is mounted lazily — only when one of these holds a
   // non-null value. Only one is ever set at a time (see openEditor /
@@ -392,7 +410,7 @@
       // Outlook-style "uncheck a calendar to hide its events" — drop
       // events from any calendar the user has toggled off before the
       // (more expensive) date math.
-      if (hiddenCalendarIds.has(eventCalendarId(ev))) continue
+      if (mutedCalendarIds.has(eventCalendarId(ev))) continue
       const start = new Date(ev.start)
       const end = new Date(ev.end)
       if (isAllDay(start, end)) {
@@ -768,13 +786,14 @@
   }
 
   // ── Editor open / close ─────────────────────────────────────
-  /** Pick a sensible default calendar for a fresh `+ New event` —
-      the first non-hidden one, falling back to the first overall. */
+  /** Pick a sensible default calendar for a fresh `+ New event`.
+      Prefers a calendar that is sidebar-visible and not muted, then
+      one that is at least sidebar-visible, then the first overall. */
   function defaultCalendarId(): string {
-    for (const c of calendars) {
-      if (!hiddenCalendarIds.has(c.id)) return c.id
+    for (const c of sidebarCalendars) {
+      if (!c.muted) return c.id
     }
-    return calendars[0]?.id ?? ''
+    return sidebarCalendars[0]?.id ?? calendars[0]?.id ?? ''
   }
 
   function openCreateBlank() {
@@ -961,9 +980,9 @@
       >
         <!-- Section header. The `+` mirrors the Mail sidebar's
              "new folder" affordance so the add-calendar UX lives
-             where the user already expects to look for it. Visibility
-             toggles live in NextcloudSettings — this list only shows
-             the calendars the user actually wants to see. -->
+             where the user already expects to look for it. Clicking
+             the coloured swatch toggles a calendar's visibility
+             inline — filled means visible, outlined means hidden. -->
         <div class="flex items-center justify-between mb-2 px-1">
           <span class="text-xs font-semibold uppercase tracking-wider text-surface-500">
             Calendars
@@ -986,7 +1005,7 @@
           >+</button>
         </div>
         <ul class="space-y-1">
-          {#each visibleCalendars as c (c.id)}
+          {#each sidebarCalendars as c (c.id)}
             <li>
               {#if renamingCalendarId === c.id}
                 <div class="flex items-center gap-2 px-2 py-1">
@@ -1014,20 +1033,34 @@
                   role="listitem"
                   oncontextmenu={(e) => openCalendarContextMenu(e, c)}
                 >
+                  <!-- Swatch doubles as a one-click event-visibility toggle
+                       (Layer 2). Filled = events visible, outlined = muted. -->
+                  <button
+                    class="w-3 h-3 rounded-sm shrink-0 border transition-colors cursor-pointer"
+                    style={c.muted
+                      ? `background-color: transparent; border-color: ${c.color ?? '#2bb0ed'};`
+                      : `background-color: ${c.color ?? '#2bb0ed'}; border-color: ${c.color ?? '#2bb0ed'};`}
+                    title={c.muted ? 'Show events' : 'Hide events'}
+                    aria-label={c.muted ? 'Show events' : 'Hide events'}
+                    onclick={(e) => { e.stopPropagation(); void toggleCalendarMuted(c) }}
+                  ></button>
                   <span
-                    class="w-3 h-3 rounded-sm shrink-0"
-                    style="background-color: {c.color ?? '#2bb0ed'};"
-                  ></span>
-                  <span class="flex-1 truncate" title={c.display_name}>
+                    class="flex-1 truncate {c.muted ? 'text-surface-400 dark:text-surface-500' : ''}"
+                    title={c.display_name}
+                  >
                     {c.display_name}
                   </span>
                 </div>
               {/if}
             </li>
           {/each}
-          {#if visibleCalendars.length === 0 && calendars.length > 0}
+          {#if sidebarCalendars.length === 0 && calendars.length > 0}
             <li class="px-2 py-1 text-xs text-surface-500">
               All calendars are hidden. Toggle visibility in Settings.
+            </li>
+          {:else if calendars.length === 0}
+            <li class="px-2 py-1 text-xs text-surface-500">
+              No calendars yet. Add one with the + button above.
             </li>
           {/if}
         </ul>

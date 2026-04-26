@@ -585,6 +585,19 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE calendars
         ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v12 → v13: per-calendar mute toggle (two-layer visibility).
+    //
+    // `hidden` (Layer 1, Settings) removes a calendar from the
+    // sidebar entirely. `muted` (Layer 2, sidebar swatch) keeps the
+    // calendar listed in the sidebar but stops its events from
+    // painting on the grid. Also local-only — never synced to the
+    // server. Default 0 so existing calendars are fully visible.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE calendars
+        ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

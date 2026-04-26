@@ -1480,12 +1480,15 @@ struct CalendarSummary {
     display_name: String,
     color: Option<String>,
     last_synced_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// Local visibility flag. `true` means the user asked for this
-    /// calendar to stay off the sidebar + agenda. Surfaced on every
-    /// summary so both the Settings checkboxes and the CalendarView
-    /// filter can read straight off a single fetch.
+    /// Layer 1 (Settings). `true` removes the calendar from the sidebar
+    /// entirely. Toggled from NextcloudSettings' per-calendar checkboxes.
     #[serde(default)]
     hidden: bool,
+    /// Layer 2 (sidebar swatch). `true` keeps the calendar in the sidebar
+    /// but stops its events from painting on the agenda grid. Toggled via
+    /// the coloured swatch in the CalendarView sidebar.
+    #[serde(default)]
+    muted: bool,
 }
 
 /// Summary returned to the UI after a calendar sync run.
@@ -1532,8 +1535,9 @@ async fn list_nextcloud_calendars(
             // Raw discovery can't know about local toggles — the
             // cache-backed `get_cached_calendars` path does. This
             // command is only used by the setup probe, so defaulting
-            // to visible is fine.
+            // to fully visible is fine.
             hidden: false,
+            muted: false,
         })
         .collect())
 }
@@ -1574,10 +1578,11 @@ async fn sync_nextcloud_calendars(
             display_name: c.display_name.clone().unwrap_or_else(|| c.name.clone()),
             color: c.color.clone(),
             ctag: c.ctag.clone(),
-            // Fresh inserts default to visible; the `upsert_calendars`
-            // ON CONFLICT clause leaves `hidden` untouched on updates
-            // so an existing local toggle survives re-sync.
+            // Fresh inserts default to fully visible; the `upsert_calendars`
+            // ON CONFLICT clause leaves `hidden` and `muted` untouched on
+            // updates so existing local toggles survive re-sync.
             hidden: false,
+            muted: false,
         })
         .collect();
     cache.upsert_calendars(&nc_id, &rows)?;
@@ -1670,6 +1675,7 @@ fn get_cached_calendars(
             color: c.color,
             last_synced_at: c.last_synced_at,
             hidden: c.hidden,
+            muted: c.muted,
         })
         .collect())
 }
@@ -1723,6 +1729,7 @@ async fn create_nextcloud_calendar(
         color: color.clone(),
         ctag: None,
         hidden: false,
+        muted: false,
     };
     let id = cache.insert_calendar(&nc_id, &row)?;
 
@@ -1733,6 +1740,7 @@ async fn create_nextcloud_calendar(
         color,
         last_synced_at: None,
         hidden: false,
+        muted: false,
     })
 }
 
@@ -1785,10 +1793,9 @@ async fn delete_nextcloud_calendar(
     Ok(())
 }
 
-/// Flip a calendar's local visibility flag. Purely client-side — no
-/// CalDAV traffic — so the same server-side calendar can have
-/// different visibility on different devices without fighting over
-/// a single server setting.
+/// Layer 1: flip a calendar's sidebar visibility. Purely client-side —
+/// no CalDAV traffic. `hidden = true` removes the calendar from the
+/// sidebar entirely (controlled from NextcloudSettings).
 #[tauri::command]
 fn set_nextcloud_calendar_hidden(
     calendar_id: String,
@@ -1796,6 +1803,19 @@ fn set_nextcloud_calendar_hidden(
     cache: State<'_, Cache>,
 ) -> Result<(), NimbusError> {
     cache.set_calendar_hidden(&calendar_id, hidden)?;
+    Ok(())
+}
+
+/// Layer 2: flip a calendar's event-grid visibility. Purely client-side.
+/// `muted = true` keeps the calendar in the sidebar but stops its events
+/// from painting on the agenda grid (controlled via the sidebar swatch).
+#[tauri::command]
+fn set_nextcloud_calendar_muted(
+    calendar_id: String,
+    muted: bool,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    cache.set_calendar_muted(&calendar_id, muted)?;
     Ok(())
 }
 
@@ -4130,6 +4150,7 @@ fn main() {
             update_nextcloud_calendar,
             delete_nextcloud_calendar,
             set_nextcloud_calendar_hidden,
+            set_nextcloud_calendar_muted,
             get_cached_events,
             create_calendar_event,
             update_calendar_event,

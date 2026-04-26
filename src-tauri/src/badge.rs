@@ -143,6 +143,10 @@ pub fn render_tray_icon(
 /// Standalone badge sized for a Windows taskbar overlay (16x16). Returns
 /// `None` when there's nothing to show so the caller can clear the
 /// overlay with `set_overlay_icon(None)`.
+///
+/// Called from the `#[cfg(windows)]` branch in `main.rs`; on other
+/// platforms the call site is compiled away, hence the lint suppression.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn render_taskbar_overlay(unread: u32) -> Option<Image<'static>> {
     if unread == 0 {
         return None;
