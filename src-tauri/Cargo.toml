@@ -33,11 +33,6 @@ tauri-plugin-dialog = "2"
 # Opens a URL in the system default browser. Used by the Nextcloud
 # Login Flow v2 command to bounce the user out to their NC login page.
 open = { workspace = true }
-# Font rasterization for the unread-count badge. Pure Rust, no system
-# deps, vector glyphs with proper greyscale AA — replaces the 5×7
-# bitmap font that looked pixely on high-DPI taskbar / dock icons.
-# Embedded font is DejaVu Sans Bold; see `assets/badge_font_LICENSE.txt`.
-ab_glyph = "0.2"
 
 # Windows-only: needed to register an explicit AppUserModelID so toast
 # notifications attribute to "Nimbus Mail" instead of falling back to

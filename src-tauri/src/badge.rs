@@ -1,69 +1,38 @@
-//! Unread-count badge for the tray icon and the Windows taskbar overlay.
+//! Unread-mail attention dot for the tray icon and the Windows taskbar overlay.
 //!
-//! Renders a soft-red circle with white digits ("1"-"99", or "99+" when
-//! the count exceeds 99). Three visual tricks let us ship a "modern"
-//! looking badge:
+//! When there's any unread mail we paint a small soft-red disc in
+//! the bottom-right corner of the icon — no count, no digits.
+//! Same pattern Apple Mail uses on its dock icon: the user sees
+//! "you have something to read" at a glance, and reaches for the
+//! actual count from inside the app where typography is legible.
 //!
-//! 1. **Alpha-blended red.** The badge fill is Tailwind red-500 at ~90%
-//!    alpha (`230/255`) instead of opaque red-600, composited via
-//!    proper src-over-dst blending. The underlying tray icon shows
-//!    faintly through the badge — it reads as a translucent overlay
-//!    rather than a flat sticker.
+//! The disc has two visual tricks:
 //!
-//! 2. **2×2 supersampled circle edge.** For each pixel along the
-//!    badge's circumference we sample 4 sub-pixel positions; the
-//!    fraction inside the circle becomes the pixel's coverage. Smooth
-//!    edge with no FFT-grade AA stack.
+//! 1. **Alpha-blended red.** Tailwind red-500 at ~90% alpha
+//!    (`230/255`), composited via proper src-over-dst blending so
+//!    the underlying tray icon shows faintly through the disc.
+//!    Reads as a translucent overlay, not a flat sticker.
 //!
-//! 3. **Vector glyph rasterization via `ab_glyph`** with an embedded
-//!    DejaVu Sans Bold TTF. Replaces the previous 5×7 bitmap font
-//!    that looked stair-stepped on high-DPI taskbar / dock icons.
-//!    `ab_glyph` does proper greyscale coverage AA, so the digits
-//!    have soft anti-aliased edges at every badge size.
+//! 2. **2×2 supersampled circle edge.** Each pixel along the
+//!    circumference samples 4 sub-pixel positions; the fraction
+//!    inside the circle becomes the pixel's coverage. Smooth
+//!    boundary with no FFT-grade AA stack.
 //!
-//! The tray icon is composited from the base PNG plus the badge in the
-//! bottom-right corner. The Windows taskbar overlay is the badge alone
-//! at 16x16, sized for `WebviewWindow::set_overlay_icon`.
+//! The tray icon is the base PNG composited with the dot in the
+//! bottom-right corner. The Windows taskbar overlay is the dot
+//! alone at 16×16, sized for `WebviewWindow::set_overlay_icon`.
 
-use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
-use std::sync::OnceLock;
 use tauri::image::Image;
 
-/// Embedded font used to rasterize the badge digits. DejaVu Sans Bold
-/// is BSD-licensed and bundled in `src-tauri/assets/`; the license
-/// text rides alongside it (see `assets/badge_font_LICENSE.txt`) so
-/// the binary remains redistributable.
-const FONT_BYTES: &[u8] = include_bytes!("../assets/badge_font.ttf");
-
-/// Parsed font handle, computed once and cached. `FontRef` borrows
-/// from `FONT_BYTES`, which is `&'static`, so this can live in a
-/// `OnceLock` without lifetime gymnastics.
-fn font() -> &'static FontRef<'static> {
-    static FONT: OnceLock<FontRef<'static>> = OnceLock::new();
-    FONT.get_or_init(|| {
-        FontRef::try_from_slice(FONT_BYTES)
-            .expect("embedded badge font must parse — check assets/badge_font.ttf")
-    })
-}
-
-/// "1".."99" verbatim, anything > 99 collapses to "99+".
-fn format_label(unread: u32) -> String {
-    if unread > 99 {
-        "99+".to_string()
-    } else {
-        unread.to_string()
-    }
-}
-
-/// Tailwind red-500 with ~90% alpha. Softer than the previous opaque
-/// red-600 and lets the icon underneath read faintly through the
-/// badge — closer to the macOS / Windows 11 dock-badge feel.
+/// Tailwind red-500 with ~90% alpha. Soft enough that the icon
+/// underneath reads through, saturated enough to register as a
+/// "new" indicator at a glance.
 const BADGE_RGBA: [u8; 4] = [239, 68, 68, 230];
-const TEXT_RGBA: [u8; 4] = [255, 255, 255, 255];
 
-/// Composite a badge onto a copy of `base_pixels` and return it as an
-/// owned Tauri image. When `unread == 0` we return the base image
-/// unchanged so the tray relaxes to the plain icon.
+/// Composite the unread dot onto a copy of `base_pixels` and
+/// return it as an owned Tauri image. When `unread == 0` the
+/// base image is returned unchanged so the tray relaxes to the
+/// plain icon.
 pub fn render_tray_icon(
     base_pixels: &[u8],
     width: u32,
@@ -74,29 +43,25 @@ pub fn render_tray_icon(
         base_pixels.to_vec()
     } else {
         let mut p = base_pixels.to_vec();
-        let label = format_label(unread);
         let dim = width.min(height);
-        // 60% of the icon's short side, never below 12 px.  The wider
-        // the badge, the more readable the digit stays after the WM
-        // downscales the icon to its taskbar slot (KDE Plasma typically
-        // uses ~22-32 px for taskbar icons; if our icon is 256 px, even
-        // a 60% badge becomes only ~7-10 px after scaling).
-        let badge_size = ((dim * 6) / 10).max(12).min(dim);
+        // ~30% of the icon's short side, never below 8 px. Smaller
+        // than the previous "with digits" badge — without text to
+        // hold, the dot only has to be eye-catching, not legible.
+        let badge_size = ((dim * 3) / 10).max(8).min(dim);
         let bx = width - badge_size;
         let by = height - badge_size;
         draw_filled_circle(&mut p, width, height, bx, by, badge_size, BADGE_RGBA);
-        stamp_label(&mut p, width, height, bx, by, badge_size, &label);
         p
     };
     Image::new_owned(pixels, width, height)
 }
 
-/// Standalone badge sized for a Windows taskbar overlay (16x16). Returns
-/// `None` when there's nothing to show so the caller can clear the
-/// overlay with `set_overlay_icon(None)`.
+/// Standalone unread dot sized for a Windows taskbar overlay
+/// (16×16). Returns `None` when there's nothing to show so the
+/// caller can clear the overlay with `set_overlay_icon(None)`.
 ///
 /// Called from the `#[cfg(windows)]` branch in `main.rs`; on other
-/// platforms the call site is compiled away, hence the lint suppression.
+/// platforms the call site is compiled away.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn render_taskbar_overlay(unread: u32) -> Option<Image<'static>> {
     if unread == 0 {
@@ -104,19 +69,17 @@ pub fn render_taskbar_overlay(unread: u32) -> Option<Image<'static>> {
     }
     const W: u32 = 16;
     const H: u32 = 16;
-    let label = format_label(unread);
     let mut pixels = vec![0u8; (W * H * 4) as usize];
     draw_filled_circle(&mut pixels, W, H, 0, 0, W, BADGE_RGBA);
-    stamp_label(&mut pixels, W, H, 0, 0, W, &label);
     Some(Image::new_owned(pixels, W, H))
 }
 
 /// Standard "src over dst" alpha compositing for one RGBA pixel.
 ///
 /// `coverage` (0..=255) scales the source's alpha — used by the
-/// supersampled circle to express partial pixel coverage at the badge
-/// edge. coverage=255 means "full pixel inside the shape", coverage=0
-/// means "fully outside" (early-exit).
+/// supersampled circle to express partial pixel coverage at the
+/// boundary. coverage=255 means "full pixel inside the shape",
+/// coverage=0 means "fully outside" (early-exit).
 fn blend_pixel(dst: &mut [u8], src: [u8; 4], coverage: u32) {
     let src_a = src[3] as u32 * coverage / 255;
     if src_a == 0 {
@@ -130,13 +93,11 @@ fn blend_pixel(dst: &mut [u8], src: [u8; 4], coverage: u32) {
     dst[3] = (src_a + dst_a * inv / 255).min(255) as u8;
 }
 
-/// Filled circle with a 2×2 supersampled edge. For each output pixel
-/// we sample 4 sub-pixel positions on a half-pixel grid; the fraction
-/// of samples inside the circle becomes the pixel's coverage. This
-/// keeps the centre at full opacity and lets the boundary fade to 0
-/// over a one-pixel band — visibly smoother than the old binary
-/// "inside vs outside" test, with no perceivable softness at the
-/// badge sizes we render.
+/// Filled circle with a 2×2 supersampled edge. For each output
+/// pixel we sample 4 sub-pixel positions on a half-pixel grid;
+/// the fraction of samples inside the circle becomes the pixel's
+/// coverage. Centre pixels stay at full opacity, boundary pixels
+/// fade to 0 over a one-pixel band.
 fn draw_filled_circle(
     pixels: &mut [u8],
     img_w: u32,
@@ -146,16 +107,14 @@ fn draw_filled_circle(
     size: u32,
     color: [u8; 4],
 ) {
-    // Centre + squared radius in 4×-precision integer space so we never
-    // hit floats. Each unit step in absolute pixel coordinates is 4
-    // units in this space (one half-pixel sub-sample step is 2 units),
-    // so a radius of `size/2` becomes `size*2`.
+    // 4×-precision integer space so we never hit floats. Each
+    // unit step in absolute pixel coordinates is 4 units in this
+    // space; one sub-sample step is 2 units; a radius of `size/2`
+    // becomes `size*2`.
     let cx = x as i32 * 4 + size as i32 * 2;
     let cy = y as i32 * 4 + size as i32 * 2;
     let r = size as i32 * 2;
     let r2 = r * r;
-    // 4×-space offsets for the four sub-samples within one pixel —
-    // (1,1), (3,1), (1,3), (3,3). Centred on the pixel's quadrants.
     const SUBPIXELS: [(i32, i32); 4] = [(1, 1), (3, 1), (1, 3), (3, 3)];
 
     for py in 0..size {
@@ -188,185 +147,9 @@ fn draw_filled_circle(
     }
 }
 
-/// Rasterize the label as antialiased vector glyphs and centre it
-/// inside the badge box.
-///
-/// Pipeline:
-///   1. Pick a `PxScale` that makes the label fit inside ~70% of the
-///      badge's diameter (matches the old bitmap layout's breathing
-///      room). We binary-search rather than guess so the chosen size
-///      is the largest that still fits in both dimensions.
-///   2. Lay the glyphs out side-by-side using `ab_glyph`'s advance
-///      widths so digits with different widths (e.g. "1" vs "8")
-///      kern naturally instead of sitting on a fixed grid.
-///   3. For each glyph, draw its coverage bitmap via
-///      `outline.draw(|x, y, c|)`. `c` is the per-pixel coverage in
-///      [0.0, 1.0] — feed it straight into `blend_pixel` as a
-///      0..=255 alpha multiplier. White text composites cleanly on
-///      top of the soft-red disc, and partial-coverage pixels at
-///      glyph edges produce the AA the bitmap font couldn't.
-fn stamp_label(
-    pixels: &mut [u8],
-    img_w: u32,
-    img_h: u32,
-    bx: u32,
-    by: u32,
-    size: u32,
-    label: &str,
-) {
-    if label.is_empty() {
-        return;
-    }
-    let font = font();
-    // Content area: ~90% of the badge.  The previous 80% wasted ~20%
-    // of the badge's interior because we were measuring against the
-    // advance-width bbox (which counts the sidebearing whitespace
-    // around the visible ink).  We now measure the *ink* bbox and
-    // centre on that, so a tighter ratio renders at a substantially
-    // larger visible size without crowding the disc edge.
-    let max_w = (size as f32) * 0.95;
-    let max_h = (size as f32) * 0.95;
-
-    // Probe candidate font sizes in 0.5-px steps from large to
-    // small; pick the first that fits both ink dimensions inside
-    // the content area.  Starting at 1.5×size lets very large tray
-    // icons claim a proportionally larger glyph.
-    let mut chosen_scale = 1.0_f32;
-    let mut best_layout: Option<LabelLayout> = None;
-    let mut probe = (size as f32 * 1.5).clamp(8.0, 96.0);
-    while probe >= 4.0 {
-        let layout = layout_label(font, label, probe);
-        if layout.ink_width <= max_w && layout.ink_height <= max_h {
-            chosen_scale = probe;
-            best_layout = Some(layout);
-            break;
-        }
-        probe -= 0.5;
-    }
-    let layout = match best_layout {
-        Some(l) => l,
-        // If nothing fit (extremely tiny badge), fall back to the
-        // smallest we tried — better cramped digits than no digits.
-        None => layout_label(font, label, chosen_scale),
-    };
-
-    // Centre the *ink* — not the advance-width box — inside the
-    // badge.  The first glyph's cursor anchor sits at
-    // (target_ink_left - layout.ink_left), so the leftmost visible
-    // pixel lands exactly at target_ink_left.  Mirror logic for the
-    // vertical baseline using ink_top (negative = above baseline).
-    let scaled = font.as_scaled(PxScale::from(chosen_scale));
-    let ink_left_target = bx as f32 + (size as f32 - layout.ink_width) / 2.0;
-    let ink_top_target = by as f32 + (size as f32 - layout.ink_height) / 2.0;
-    let cursor_origin_x = ink_left_target - layout.ink_left;
-    let baseline_y = ink_top_target - layout.ink_top;
-
-    let mut cursor_x = cursor_origin_x;
-    for c in label.chars() {
-        let glyph_id = font.glyph_id(c);
-        let glyph = glyph_id.with_scale_and_position(
-            PxScale::from(chosen_scale),
-            ab_glyph::point(cursor_x, baseline_y),
-        );
-        if let Some(outline) = font.outline_glyph(glyph) {
-            let bounds = outline.px_bounds();
-            outline.draw(|gx, gy, coverage| {
-                let px = bounds.min.x as i32 + gx as i32;
-                let py = bounds.min.y as i32 + gy as i32;
-                if px < 0 || py < 0 || (px as u32) >= img_w || (py as u32) >= img_h {
-                    return;
-                }
-                let alpha = (coverage.clamp(0.0, 1.0) * 255.0) as u32;
-                if alpha == 0 {
-                    return;
-                }
-                let idx = ((py as u32 * img_w + px as u32) * 4) as usize;
-                blend_pixel(&mut pixels[idx..idx + 4], TEXT_RGBA, alpha);
-            });
-        }
-        cursor_x += scaled.h_advance(glyph_id);
-    }
-}
-
-/// Result of measuring a label at a candidate pixel size.
-///
-/// All four fields measure the *visible ink* — the union of every
-/// glyph's `outline.px_bounds()` — and not the advance-width bbox,
-/// because vector fonts pack sidebearing whitespace into their
-/// advance widths and that whitespace would otherwise eat into the
-/// content area we're trying to fill.
-///
-/// The layout assumes the first glyph anchors at cursor=(0, 0)
-/// (origin = baseline / leftmost-anchor):
-///
-/// * `ink_left` — leftmost ink x coordinate (typically positive,
-///   the leading sidebearing of the first glyph).
-/// * `ink_top`  — topmost ink y coordinate (typically negative
-///   because the ink sits *above* the baseline).
-/// * `ink_width` / `ink_height` — span of the visible ink.
-///
-/// Centring the ink in a target box B means: place the first
-/// glyph's cursor at `(B.left + (B.w - ink_width)/2 - ink_left,
-/// B.top + (B.h - ink_height)/2 - ink_top)`.
-struct LabelLayout {
-    ink_left: f32,
-    ink_top: f32,
-    ink_width: f32,
-    ink_height: f32,
-}
-
-fn layout_label(font: &FontRef<'_>, label: &str, scale: f32) -> LabelLayout {
-    let scaled = font.as_scaled(PxScale::from(scale));
-    let mut cursor = 0.0_f32;
-    let mut min_x = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut min_y = f32::INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
-    for c in label.chars() {
-        let gid = font.glyph_id(c);
-        let positioned = gid.with_scale_and_position(
-            PxScale::from(scale),
-            ab_glyph::point(cursor, 0.0),
-        );
-        if let Some(outline) = font.outline_glyph(positioned) {
-            let bounds = outline.px_bounds();
-            min_x = min_x.min(bounds.min.x);
-            max_x = max_x.max(bounds.max.x);
-            min_y = min_y.min(bounds.min.y);
-            max_y = max_y.max(bounds.max.y);
-        }
-        cursor += scaled.h_advance(gid);
-    }
-    if min_x.is_finite() {
-        LabelLayout {
-            ink_left: min_x,
-            ink_top: min_y,
-            ink_width: max_x - min_x,
-            ink_height: max_y - min_y,
-        }
-    } else {
-        // Every glyph rendered as a no-op (e.g. label is whitespace).
-        LabelLayout {
-            ink_left: 0.0,
-            ink_top: 0.0,
-            ink_width: 0.0,
-            ink_height: 0.0,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn label_formats() {
-        assert_eq!(format_label(0), "0");
-        assert_eq!(format_label(1), "1");
-        assert_eq!(format_label(99), "99");
-        assert_eq!(format_label(100), "99+");
-        assert_eq!(format_label(9999), "99+");
-    }
 
     #[test]
     fn zero_unread_returns_unchanged_pixels() {
@@ -379,10 +162,10 @@ mod tests {
     fn nonzero_unread_paints_reddish() {
         let base = vec![0u8; 32 * 32 * 4];
         let img = render_tray_icon(&base, 32, 32, 5);
-        // Alpha-blending red onto transparent black no longer produces
-        // exactly (239, 68, 68) — the source alpha (230) scales each
-        // channel down. We just want to see "this pixel is dominated
-        // by red" somewhere in the badge area.
+        // Alpha-blending red onto transparent black scales each
+        // channel down by the source alpha (230). We just want to
+        // see "this pixel is dominated by red" somewhere in the
+        // bottom-right quadrant where the dot lives.
         let pixels = img.rgba();
         let mut found_red = false;
         for y in 16..32 {
@@ -417,9 +200,9 @@ mod tests {
 
     #[test]
     fn circle_edge_is_antialiased() {
-        // Render a standalone badge onto a transparent canvas and look
-        // for at least one partially-covered (non-zero, non-fully-opaque)
-        // pixel — proof the supersampled edge is producing intermediate
+        // Render an overlay onto a transparent canvas and look for
+        // at least one partially-covered (non-zero, non-fully-opaque)
+        // pixel — proof the supersampled edge produces intermediate
         // alpha values, not a binary inside/outside mask.
         let img = render_taskbar_overlay(1).expect("expected overlay");
         let pixels = img.rgba();
