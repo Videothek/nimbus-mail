@@ -125,6 +125,12 @@
         uid: u,
       })
       if (id === accountId && f === folder && u === uid && cached) {
+        // Resolve trust state BEFORE assigning `email`, otherwise the
+        // first render of the message runs with trustedSender=false,
+        // briefly flashes the "Remote images blocked" banner, and only
+        // then settles into the trusted state — looks like a bug for
+        // senders the user has already approved.
+        trustedSender = isSenderTrusted(cached.from)
         email = cached
         loading = false
       }
@@ -142,6 +148,7 @@
         uid: u,
       })
       if (id === accountId && f === folder && u === uid) {
+        trustedSender = isSenderTrusted(fresh.from)
         email = fresh
       }
     } catch (e: any) {
@@ -154,9 +161,6 @@
       loading = false
       refreshing = false
     }
-
-    // Check if this sender is already trusted for image display.
-    if (email?.from) trustedSender = isSenderTrusted(email.from)
 
     // Mark as read — fire-and-forget. The MailList picked up an optimistic
     // cache update from the backend, and onread() lets the parent refresh
