@@ -76,9 +76,12 @@ pub fn render_tray_icon(
         let mut p = base_pixels.to_vec();
         let label = format_label(unread);
         let dim = width.min(height);
-        // Half the icon's short side, but never below 12 px — at smaller
-        // sizes the badge needs to dominate to remain legible.
-        let badge_size = (dim / 2).max(12).min(dim);
+        // 60% of the icon's short side, never below 12 px.  The wider
+        // the badge, the more readable the digit stays after the WM
+        // downscales the icon to its taskbar slot (KDE Plasma typically
+        // uses ~22-32 px for taskbar icons; if our icon is 256 px, even
+        // a 60% badge becomes only ~7-10 px after scaling).
+        let badge_size = ((dim * 6) / 10).max(12).min(dim);
         let bx = width - badge_size;
         let by = height - badge_size;
         draw_filled_circle(&mut p, width, height, bx, by, badge_size, BADGE_RGBA);
@@ -221,8 +224,8 @@ fn stamp_label(
     // around the visible ink).  We now measure the *ink* bbox and
     // centre on that, so a tighter ratio renders at a substantially
     // larger visible size without crowding the disc edge.
-    let max_w = (size as f32) * 0.90;
-    let max_h = (size as f32) * 0.90;
+    let max_w = (size as f32) * 0.95;
+    let max_h = (size as f32) * 0.95;
 
     // Probe candidate font sizes in 0.5-px steps from large to
     // small; pick the first that fits both ink dimensions inside
@@ -385,7 +388,12 @@ mod tests {
         for y in 16..32 {
             for x in 16..32 {
                 let idx = (y * 32 + x) * 4;
-                let (r, g, b, a) = (pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]);
+                let (r, g, b, a) = (
+                    pixels[idx] as u32,
+                    pixels[idx + 1] as u32,
+                    pixels[idx + 2] as u32,
+                    pixels[idx + 3] as u32,
+                );
                 if r > 150 && r > g + 50 && r > b + 50 && a > 0 {
                     found_red = true;
                     break;

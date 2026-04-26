@@ -63,6 +63,39 @@ struct TrayBaseIcon {
     height: u32,
 }
 
+/// Absolute filesystem path to a PNG of our app icon, written at
+/// startup. Returned to the frontend via `get_notification_icon_path`
+/// so `sendNotification` calls can pass it through to libnotify /
+/// the Windows toast / NSUserNotification on macOS, ensuring our
+/// own icon shows up in the toast instead of a generic placeholder
+/// (especially in dev builds where no .desktop / Start-Menu shortcut
+/// exists yet to lend the OS a registered icon).
+struct NotificationIconPath(std::path::PathBuf);
+
+/// Bytes of `icons/icon.png`, baked in at compile time so we can
+/// drop them onto disk on first launch without having to resolve a
+/// runtime resource path that differs between `cargo tauri dev` and
+/// bundled builds.
+const NOTIFICATION_ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
+
+/// Write the embedded icon to a stable temp-dir path and return it.
+/// Idempotent — overwriting on every launch is cheap (~10 KB) and
+/// keeps the file in sync with whatever's currently bundled.
+fn install_notification_icon() -> Result<std::path::PathBuf, NimbusError> {
+    let dir = std::env::temp_dir().join("nimbus-mail");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| NimbusError::Other(format!("notification icon mkdir failed: {e}")))?;
+    let path = dir.join("nimbus-mail-icon.png");
+    std::fs::write(&path, NOTIFICATION_ICON_PNG)
+        .map_err(|e| NimbusError::Other(format!("notification icon write failed: {e}")))?;
+    Ok(path)
+}
+
+#[tauri::command]
+fn get_notification_icon_path(state: State<'_, NotificationIconPath>) -> String {
+    state.0.to_string_lossy().into_owned()
+}
+
 /// Tells Windows that this process should attribute its toast
 /// notifications to a specific AUMID instead of inheriting the
 /// launching process's (which surfaces as "PowerShell" / "cmd" /
@@ -3991,6 +4024,18 @@ fn main() {
             #[cfg(windows)]
             set_app_user_model_id();
 
+            // Drop the app icon onto disk once and stash its path
+            // in managed state so the JS layer can pass it to
+            // `sendNotification`.  Without this, libnotify on Linux
+            // (and macOS' NSUserNotification) fall back to a
+            // generic icon next to the toast in dev builds.
+            match install_notification_icon() {
+                Ok(p) => {
+                    app.manage(NotificationIconPath(p));
+                }
+                Err(e) => tracing::warn!("install_notification_icon failed: {e}"),
+            }
+
             // ── Tray menu + icon ────────────────────────────────
             //
             // Built inside `setup` (not a command) so we have `&mut App`
@@ -4121,6 +4166,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_notification_icon_path,
             get_accounts,
             add_account,
             remove_account,
