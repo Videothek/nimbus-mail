@@ -1022,7 +1022,7 @@
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div
-          class="email-html-body p-6 text-sm leading-relaxed overflow-x-auto"
+          class="email-html-body text-sm leading-relaxed overflow-x-auto"
           role="region"
           aria-label="Email body"
           onclick={onBodyClick}
