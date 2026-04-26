@@ -609,7 +609,7 @@ async fn office_open_attachment(
     // UUID prefix dodges filename collisions between concurrent
     // viewer windows, and gives the sweeper a way to recognise our
     // own files without a metadata round-trip.
-    let safe_name = filename.replace('/', "_").replace('\\', "_");
+    let safe_name = filename.replace(['/', '\\'], "_");
     let temp_path = format!(
         "{}/{}-{}",
         NIMBUS_TEMP_DIR,
@@ -703,7 +703,7 @@ async fn pdf_open_attachment(
 
     ensure_temp_dir(&account, &app_password).await?;
 
-    let safe_name = filename.replace('/', "_").replace('\\', "_");
+    let safe_name = filename.replace(['/', '\\'], "_");
     let temp_path = format!(
         "{}/{}-{}",
         NIMBUS_TEMP_DIR,
@@ -2218,7 +2218,6 @@ fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
             })
             .unwrap_or_default(),
         urls: input.urls.clone().unwrap_or_default(),
-        ..Default::default()
     }
 }
 
@@ -2830,11 +2829,10 @@ async fn delete_message(
     // never re-examines existing UIDs), and in the failure case the
     // reason we hit that error *is* a stale cache row, so dropping it
     // unblocks the user's next refresh.
-    if should_clean_cache_for_delete(&result) {
-        if let Err(e) = cache.remove_envelope(&account_id, &folder, uid) {
+    if should_clean_cache_for_delete(&result)
+        && let Err(e) = cache.remove_envelope(&account_id, &folder, uid) {
             tracing::warn!("remove_envelope after delete_message failed: {e}");
         }
-    }
 
     result
 }
@@ -3155,11 +3153,10 @@ async fn save_draft(
     let result = if append_result.is_ok() {
         if let Some(src) = replace_source {
             let delete_result = client.delete_message(&src.folder, src.uid).await;
-            if should_clean_cache_for_delete(&delete_result) {
-                if let Err(e) = cache.remove_envelope(&account_id, &src.folder, src.uid) {
+            if should_clean_cache_for_delete(&delete_result)
+                && let Err(e) = cache.remove_envelope(&account_id, &src.folder, src.uid) {
                     tracing::warn!("remove_envelope after save_draft replace failed: {e}");
                 }
-            }
             match delete_result {
                 Ok(()) => Ok(()),
                 Err(e) => Err(NimbusError::Other(format!(
@@ -3335,11 +3332,10 @@ async fn delete_folder(
     let result = client.delete_folder(&name).await;
     let _ = client.logout().await;
 
-    if result.is_ok() {
-        if let Err(e) = cache.wipe_folder(&account_id, &name) {
+    if result.is_ok()
+        && let Err(e) = cache.wipe_folder(&account_id, &name) {
             tracing::warn!("wipe_folder after delete_folder failed: {e}");
         }
-    }
 
     result
 }
@@ -3364,11 +3360,10 @@ async fn rename_folder(
     let result = client.rename_folder(&old_name, &new_name).await;
     let _ = client.logout().await;
 
-    if result.is_ok() {
-        if let Err(e) = cache.rename_folder(&account_id, &old_name, &new_name) {
+    if result.is_ok()
+        && let Err(e) = cache.rename_folder(&account_id, &old_name, &new_name) {
             tracing::warn!("cache.rename_folder failed: {e}");
         }
-    }
 
     result
 }

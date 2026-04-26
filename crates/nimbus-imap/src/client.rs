@@ -1190,7 +1190,7 @@ impl ImapClient {
                 })
             })
             .collect();
-        envelopes.sort_unstable_by(|a, b| b.date.cmp(&a.date));
+        envelopes.sort_unstable_by_key(|e| std::cmp::Reverse(e.date));
 
         info!("SEARCH '{folder}' '{criterion}' → {} hits", envelopes.len());
         Ok(envelopes)

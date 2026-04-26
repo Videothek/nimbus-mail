@@ -86,7 +86,7 @@ mod tests {
         let s = AppSettings::default();
         let json = serde_json::to_string(&s).expect("serialize");
         let parsed: AppSettings = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(parsed.background_sync_interval_secs, 300);
+        assert_eq!(parsed.background_sync_interval_secs, 60);
         assert!(parsed.minimize_to_tray);
     }
 
@@ -99,6 +99,6 @@ mod tests {
         assert!(!parsed.minimize_to_tray);
         // The unspecified fields come from Default.
         assert!(parsed.background_sync_enabled);
-        assert_eq!(parsed.background_sync_interval_secs, 300);
+        assert_eq!(parsed.background_sync_interval_secs, 60);
     }
 }

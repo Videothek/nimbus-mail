@@ -69,11 +69,10 @@ pub fn skip_subtree(reader: &mut Reader<&[u8]>, start_local: &str) -> Result<(),
     let mut depth = 1;
     loop {
         match reader.read_event() {
-            Ok(Event::Start(s)) => {
-                if local_name(&s) == start_local {
+            Ok(Event::Start(s))
+                if local_name(&s) == start_local => {
                     depth += 1;
                 }
-            }
             Ok(Event::End(e)) => {
                 let bytes = e.name();
                 let name_bytes = bytes.as_ref();
