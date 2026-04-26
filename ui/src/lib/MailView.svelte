@@ -990,12 +990,14 @@
       </div>
     {/if}
 
-    <!-- Email body -->
+    <!-- Email body. Prefer HTML when present — multipart/alternative
+         senders (GitHub, newsletters, almost everything modern) include
+         a plain-text fallback for clients that can't render HTML, but
+         the HTML is what carries the real formatting (layout, links,
+         brand styles). DOMPurify + remote-image blocking make this
+         safe; we fall back to plain text only when no HTML part exists. -->
     <div class="flex-1 overflow-y-auto">
-      {#if email.body_text}
-        <!-- Prefer plain text: safe, simple, no remote content. -->
-        <pre class="whitespace-pre-wrap font-sans text-sm p-6">{email.body_text}</pre>
-      {:else if email.body_html}
+      {#if email.body_html}
         <!-- Image-blocking banner — only visible when at least one remote
              image was replaced with a placeholder and the user hasn't opted
              in for this message or trusted this sender. -->
@@ -1027,6 +1029,9 @@
         >
           {@html processedHtml.html}
         </div>
+      {:else if email.body_text}
+        <!-- Plain-text fallback for messages without an HTML part. -->
+        <pre class="whitespace-pre-wrap font-sans text-sm p-6">{email.body_text}</pre>
       {:else}
         <p class="text-sm text-surface-500 p-6">(This message has no visible body.)</p>
       {/if}
