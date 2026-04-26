@@ -44,15 +44,22 @@ pub fn render_tray_icon(
     } else {
         let mut p = base_pixels.to_vec();
         let dim = width.min(height);
-        // ~30% of the icon's short side, never below 8 px. Smaller
-        // than the previous "with digits" badge — without text to
-        // hold, the dot only has to be eye-catching, not legible.
-        let badge_size = ((dim * 3) / 10).max(8).min(dim);
-        // Top-right corner: matches the convention iOS / Android /
-        // most messaging apps use for an unread-attention dot, and
-        // sits in the part of the icon least likely to overlap with
-        // the base glyph (which usually centres lower-left).
-        let bx = width - badge_size;
+        // ~38% of the icon's short side, never below 8 px. The dot
+        // only has to be eye-catching, not legible — but a touch
+        // bigger here helps readability at the size the WM scales
+        // the icon down to in the taskbar slot.
+        let badge_size = ((dim * 38) / 100).max(8).min(dim);
+        // Anchor the dot ON the top-right corner rather than fully
+        // inside it: shift right by ~25% of the badge width so it
+        // extends past the canvas edge and reads as a corner
+        // indicator the way iOS / Android dock badges do.  The right
+        // sliver clips against the canvas; the visible portion is a
+        // ¾-circle hugging the corner.  `by = 0` keeps the top
+        // flush — we can't shift up past 0 with `u32` coordinates
+        // without restructuring `draw_filled_circle`, and clipping
+        // top + right would carve too much off the visible disc.
+        let shift = badge_size / 4;
+        let bx = (width + shift).saturating_sub(badge_size);
         let by = 0;
         draw_filled_circle(&mut p, width, height, bx, by, badge_size, BADGE_RGBA);
         p

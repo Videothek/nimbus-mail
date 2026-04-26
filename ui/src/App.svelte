@@ -228,16 +228,26 @@
     )
   }
 
-  function fireToast(title: string, body: string) {
+  async function fireToast(title: string, body: string) {
+    // On Linux the native command sends through `notify-rust` with
+    // the `DesktopEntry` hint set, so notifications land in the
+    // notification center / history (GNOME Shell, KDE Plasma).  The
+    // command returns `false` on non-Linux platforms so we fall
+    // through to the Tauri plugin, whose macOS / Windows backends
+    // already wire in the right OS hooks.
+    try {
+      const handled = await invoke<boolean>('send_native_notification', {
+        title,
+        body,
+      })
+      if (handled) return
+    } catch (err) {
+      console.warn('send_native_notification failed, falling back to plugin', err)
+    }
     try {
       sendNotification({
         title,
         body,
-        // libnotify / NSUserNotification / WinRT all accept this
-        // as either a theme-icon name OR an absolute file path.
-        // We pass the file path of our installed icon so dev
-        // builds (which have no .desktop file lending the OS a
-        // registered name) still show the Nimbus icon.
         ...(notificationIconPath ? { icon: notificationIconPath } : {}),
       })
     } catch (err) {
@@ -258,7 +268,7 @@
     recentBurst.push(now)
 
     if (recentBurst.length <= 3) {
-      fireToast(payload.from || 'New mail', payload.subject || '(no subject)')
+      void fireToast(payload.from || 'New mail', payload.subject || '(no subject)')
       return
     }
 
@@ -267,7 +277,7 @@
     if (pendingSummaryTimer) clearTimeout(pendingSummaryTimer)
     const count = recentBurst.length
     pendingSummaryTimer = setTimeout(() => {
-      fireToast('Nimbus Mail', `${count} new messages`)
+      void fireToast('Nimbus Mail', `${count} new messages`)
       pendingSummaryTimer = null
     }, 600)
   }
