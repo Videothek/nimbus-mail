@@ -63,6 +63,30 @@ struct TrayBaseIcon {
     height: u32,
 }
 
+/// Tells Windows that this process should attribute its toast
+/// notifications to a specific AUMID instead of inheriting the
+/// launching process's (which surfaces as "PowerShell" / "cmd" /
+/// "Git Bash" depending on how the dev binary was started).
+///
+/// The string MUST match the AUMID baked into the installer's
+/// Start-Menu shortcut for the toast's display name + icon to
+/// resolve correctly in installed builds; we use the same bundle
+/// identifier (`com.nimbus.mail`) the Tauri config sets so the two
+/// stay in lockstep.
+#[cfg(windows)]
+fn set_app_user_model_id() {
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    use windows::core::HSTRING;
+
+    let aumid = HSTRING::from("com.nimbus.mail");
+    // SAFETY: the function takes a PCWSTR derived from a live
+    // HSTRING; the call has no preconditions beyond a valid
+    // null-terminated wide string, which `HSTRING` guarantees.
+    if let Err(e) = unsafe { SetCurrentProcessExplicitAppUserModelID(&aumid) } {
+        tracing::warn!("SetCurrentProcessExplicitAppUserModelID failed: {e}");
+    }
+}
+
 // ── Tauri commands ──────────────────────────────────────────────
 //
 // Each `#[tauri::command]` function becomes callable from the
@@ -3821,13 +3845,23 @@ fn refresh_unread_badge(app: &AppHandle) {
     }
 
     // Windows-only: the taskbar overlay icon. macOS/Linux have no
-    // direct equivalent, and Tauri only exposes `set_overlay_icon`
-    // behind `#[cfg(windows)]`.
+    // direct equivalent — `set_overlay_icon` only exists behind
+    // `#[cfg(windows)]` — so on those platforms we composite the
+    // badge onto the *window icon* itself instead, which the WM /
+    // dock uses for the running-app icon.
     #[cfg(windows)]
     if let Some(win) = app.get_webview_window("main") {
         let overlay = badge::render_taskbar_overlay(total);
         if let Err(e) = win.set_overlay_icon(overlay) {
             tracing::warn!("failed to set taskbar overlay icon: {e}");
+        }
+    }
+    #[cfg(not(windows))]
+    if let Some(win) = app.get_webview_window("main") {
+        let base = app.state::<TrayBaseIcon>();
+        let badged = badge::render_tray_icon(&base.rgba, base.width, base.height, total);
+        if let Err(e) = win.set_icon(badged) {
+            tracing::warn!("failed to update window icon badge: {e}");
         }
     }
 
@@ -3946,6 +3980,20 @@ fn main() {
         .manage(shared_settings)
         .register_uri_scheme_protocol("contact-photo", contact_photo_protocol)
         .setup(|app| {
+            // Windows toast attribution.  Without an explicit
+            // AppUserModelID the OS falls back to the launching
+            // process's AUMID — for `cargo tauri dev` that's the
+            // shell (PowerShell, cmd, Git Bash), which is what
+            // appears as the toast's source.  Setting our own AUMID
+            // here makes notifications attribute to "Nimbus Mail"
+            // in both dev and bundled builds.  The display-name +
+            // icon come from a Start-Menu shortcut the installer
+            // registers with this same AUMID; in dev the toast
+            // shows the AUMID itself, which is still better than
+            // "PowerShell".
+            #[cfg(windows)]
+            set_app_user_model_id();
+
             // ── Tray menu + icon ────────────────────────────────
             //
             // Built inside `setup` (not a command) so we have `&mut App`
