@@ -98,6 +98,25 @@
   // Bumped to force child lists to re-fetch (manual refresh, mark-as-read).
   let refreshToken = $state(0)
 
+  // Bindable mirror of MailList's currently-rendered envelope rows.
+  // Used by the auto-advance-after-delete flow (#99) to pick the
+  // UID of the row directly below the one we just removed without
+  // having to re-implement the cache fetch up here.  Shape mirrors
+  // MailList's local `EmailEnvelope` interface — we only ever read
+  // `uid` / `account_id` here, but the bind requires the full
+  // shape to type-check both sides.
+  type MailListEnvelope = {
+    uid: number
+    folder: string
+    from: string
+    subject: string
+    date: string
+    is_read: boolean
+    is_starred: boolean
+    account_id: string
+  }
+  let mailListEnvelopes = $state<MailListEnvelope[]>([])
+
   // ── Search state ────────────────────────────────────────────
   // `searchQuery` drives the mail-list column: non-empty query OR
   // any active filter swaps MailList out for SearchResults.
@@ -174,6 +193,7 @@
     theme_name: string
     theme_mode: ThemeMode
     mail_html_white_background: boolean
+    auto_advance_after_remove: boolean
   }
 
   // Cached settings snapshot — refreshed when the settings command is
@@ -465,12 +485,36 @@
   }
 
   /** The currently shown message has been archived or deleted on the
-   *  server. Drop the selection so the reading pane returns to the
-   *  "pick a message" placeholder, and bump `refreshToken` so MailList
-   *  + Sidebar re-query the server and the row disappears. */
-  function onMessageRemoved() {
-    selectedUid = null
-    selectedMessageAccountId = null
+   *  server.  Auto-advances the reading pane to the row directly
+   *  below the removed one (or the row above when the removed row
+   *  was last) so triage flows don't bounce back to the empty
+   *  "pick a message" placeholder after every delete / archive
+   *  click.  Falls back to clearing the pane when the list is now
+   *  empty, when we can't find the removed UID in the current
+   *  rendered list, or when the user has explicitly opted out via
+   *  `appPrefs.auto_advance_after_remove`. */
+  function onMessageRemoved(removedUid: number) {
+    let nextUid: number | null = null
+    let nextAccountId: string | null = null
+
+    if (appPrefs?.auto_advance_after_remove ?? true) {
+      const idx = mailListEnvelopes.findIndex((e) => e.uid === removedUid)
+      if (idx >= 0) {
+        // Visually the list is sorted newest-first, so the row
+        // "below" the current one is `idx + 1` (older message).
+        // When the removed row was at the bottom, we step up to
+        // `idx - 1` instead, matching what every mainstream client
+        // does after deleting the oldest visible mail.
+        const next = mailListEnvelopes[idx + 1] ?? mailListEnvelopes[idx - 1]
+        if (next) {
+          nextUid = next.uid
+          nextAccountId = next.account_id || null
+        }
+      }
+    }
+
+    selectedUid = nextUid
+    selectedMessageAccountId = nextAccountId
     refreshToken++
   }
 
@@ -851,6 +895,7 @@
               selectedUid={selectedUid}
               refreshToken={refreshToken}
               onselect={selectMessage}
+              bind:envelopes={mailListEnvelopes}
             />
           {/if}
         </div>

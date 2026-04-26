@@ -79,6 +79,7 @@
     theme_name: string
     theme_mode: ThemeMode
     mail_html_white_background: boolean
+    auto_advance_after_remove: boolean
   }
 
   let appSettings = $state<AppSettings>({
@@ -90,6 +91,7 @@
     theme_name: 'cerberus',
     theme_mode: 'system',
     mail_html_white_background: true,
+    auto_advance_after_remove: true,
   })
   let prefsSaveStatus = $state<'' | 'saving' | 'saved' | 'error'>('')
   let checkNowBusy = $state(false)
@@ -451,6 +453,16 @@
             onchange={scheduleSave}
           />
           <span>Start minimized to tray</span>
+        </label>
+
+        <label class="flex items-center gap-2">
+          <input
+            type="checkbox"
+            class="checkbox"
+            bind:checked={appSettings.auto_advance_after_remove}
+            onchange={scheduleSave}
+          />
+          <span>After delete / archive, open the next message automatically</span>
         </label>
       </div>
     </div>

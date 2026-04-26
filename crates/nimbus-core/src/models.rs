@@ -44,6 +44,13 @@ pub struct AppSettings {
     /// dark-themed emails or when a sender provides a proper
     /// dark-mode design.
     pub mail_html_white_background: bool,
+    /// After delete / archive, automatically open the row directly
+    /// below the removed message (or above, if it was the last one).
+    /// Default `true` — matches Gmail / Outlook / Thunderbird /
+    /// Apple Mail's triage behaviour.  Turn off to fall back to the
+    /// previous behaviour where the reading pane goes blank after
+    /// every delete.
+    pub auto_advance_after_remove: bool,
 }
 
 /// Light/dark mode selection. `System` follows the OS preference
@@ -79,6 +86,7 @@ impl Default for AppSettings {
             theme_name: "cerberus".to_string(),
             theme_mode: ThemeMode::System,
             mail_html_white_background: true,
+            auto_advance_after_remove: true,
         }
     }
 }
