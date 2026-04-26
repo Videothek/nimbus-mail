@@ -72,6 +72,12 @@
         deleted on the server. The parent clears the selected UID and
         bumps the MailList refresh so the row disappears. */
     onmessageremoved?: () => void
+    /** App-wide default for "render HTML email on a white canvas".
+        When true the body wrapper gets a forced white background and
+        dark text so emails designed for a light page stay readable in
+        dark mode. The user can override per message via a toolbar
+        toggle. */
+    forceWhiteBackground?: boolean
   }
   let {
     accountId,
@@ -85,6 +91,7 @@
     isDraftsFolder = false,
     oneditdraft,
     onmessageremoved,
+    forceWhiteBackground = true,
   }: Props = $props()
 
   let email = $state<Email | null>(null)
@@ -107,6 +114,7 @@
     email = null
     showImagesForMessage = false
     trustedSender = false
+    whiteBackgroundOverride = null
 
     // Cache first — lets the reading pane paint instantly when the user
     // re-opens a previously read message (the common case).
@@ -229,6 +237,14 @@
   let showImagesForMessage = $state(false)
   // True when the sender is in the trusted list (set in load()).
   let trustedSender = $state(false)
+
+  // Per-message override for the white-canvas default. `null` means
+  // "use the app-wide preference"; `true` / `false` flip it just for
+  // the open message. Reset on every new message in load().
+  let whiteBackgroundOverride = $state<boolean | null>(null)
+  let effectiveWhiteBackground = $derived(
+    whiteBackgroundOverride ?? forceWhiteBackground,
+  )
 
   // ── HTML sanitization + image blocking ───────────────────────────────
   //
@@ -852,6 +868,18 @@
         >{email.is_read ? 'Mark unread' : 'Mark read'}</button>
       {/if}
       <div class="flex-1"></div>
+      {#if email.body_html}
+        <!-- Per-message background toggle — flips the white-canvas
+             default just for the open mail. The label always shows
+             where a click will take you, not the current state. -->
+        <button
+          class="btn btn-sm preset-outlined-surface-500"
+          onclick={() => (whiteBackgroundOverride = !effectiveWhiteBackground)}
+          title={effectiveWhiteBackground
+            ? "Switch this mail to the app's theme background"
+            : 'Switch this mail to a white background'}
+        >{effectiveWhiteBackground ? '🎨 Use mail theme' : '📄 White background'}</button>
+      {/if}
       <button
         class="btn btn-sm preset-outlined-surface-500"
         disabled={removing}
@@ -1022,7 +1050,9 @@
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div
-          class="email-html-body text-sm leading-relaxed overflow-x-auto"
+          class="email-html-body text-sm leading-relaxed overflow-x-auto {effectiveWhiteBackground
+            ? 'email-html-body--white'
+            : 'email-html-body--native p-6'}"
           role="region"
           aria-label="Email body"
           onclick={onBodyClick}
