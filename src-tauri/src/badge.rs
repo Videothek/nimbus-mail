@@ -215,29 +215,30 @@ fn stamp_label(
         return;
     }
     let font = font();
-    // The badge content area — what the label has to fit inside.
-    // 80% leaves a thin guard band so digits don't kiss the AA disc
-    // edge but still read at the size the user asked for.
-    let max_w = (size as f32) * 0.80;
-    let max_h = (size as f32) * 0.80;
+    // Content area: ~90% of the badge.  The previous 80% wasted ~20%
+    // of the badge's interior because we were measuring against the
+    // advance-width bbox (which counts the sidebearing whitespace
+    // around the visible ink).  We now measure the *ink* bbox and
+    // centre on that, so a tighter ratio renders at a substantially
+    // larger visible size without crowding the disc edge.
+    let max_w = (size as f32) * 0.90;
+    let max_h = (size as f32) * 0.90;
 
-    // Find the largest pixel size at which the label's *rendered*
-    // bbox fits both dimensions. We measure via the per-glyph
-    // outline `px_bounds()` so the height we compare against is the
-    // visible ink — not `ascent - descent`, which over-reports by
-    // including the descender slot that digits don't use, and was
-    // why the previous pass picked a tiny size.
+    // Probe candidate font sizes in 0.5-px steps from large to
+    // small; pick the first that fits both ink dimensions inside
+    // the content area.  Starting at 1.5×size lets very large tray
+    // icons claim a proportionally larger glyph.
     let mut chosen_scale = 1.0_f32;
     let mut best_layout: Option<LabelLayout> = None;
     let mut probe = (size as f32 * 1.5).clamp(8.0, 96.0);
     while probe >= 4.0 {
         let layout = layout_label(font, label, probe);
-        if layout.width <= max_w && layout.height <= max_h {
+        if layout.ink_width <= max_w && layout.ink_height <= max_h {
             chosen_scale = probe;
             best_layout = Some(layout);
             break;
         }
-        probe -= 1.0;
+        probe -= 0.5;
     }
     let layout = match best_layout {
         Some(l) => l,
@@ -246,14 +247,18 @@ fn stamp_label(
         None => layout_label(font, label, chosen_scale),
     };
 
-    // Centre the rendered label inside the badge box using the
-    // tight bbox we just computed. baseline_y is positioned so the
-    // visible ink sits in the geometric middle of the box.
+    // Centre the *ink* — not the advance-width box — inside the
+    // badge.  The first glyph's cursor anchor sits at
+    // (target_ink_left - layout.ink_left), so the leftmost visible
+    // pixel lands exactly at target_ink_left.  Mirror logic for the
+    // vertical baseline using ink_top (negative = above baseline).
     let scaled = font.as_scaled(PxScale::from(chosen_scale));
-    let start_x = bx as f32 + (size as f32 - layout.width) / 2.0;
-    let baseline_y = by as f32 + (size as f32 + layout.height) / 2.0 - layout.descent_below_baseline;
+    let ink_left_target = bx as f32 + (size as f32 - layout.ink_width) / 2.0;
+    let ink_top_target = by as f32 + (size as f32 - layout.ink_height) / 2.0;
+    let cursor_origin_x = ink_left_target - layout.ink_left;
+    let baseline_y = ink_top_target - layout.ink_top;
 
-    let mut cursor_x = start_x;
+    let mut cursor_x = cursor_origin_x;
     for c in label.chars() {
         let glyph_id = font.glyph_id(c);
         let glyph = glyph_id.with_scale_and_position(
@@ -282,57 +287,68 @@ fn stamp_label(
 
 /// Result of measuring a label at a candidate pixel size.
 ///
-/// `width` is the total horizontal advance of the laid-out label
-/// (so glyphs kern naturally via the font's per-glyph advances).
+/// All four fields measure the *visible ink* — the union of every
+/// glyph's `outline.px_bounds()` — and not the advance-width bbox,
+/// because vector fonts pack sidebearing whitespace into their
+/// advance widths and that whitespace would otherwise eat into the
+/// content area we're trying to fill.
 ///
-/// `height` is the *visible* bbox height — the union of every
-/// glyph's `px_bounds()` rather than the font's ascent/descent
-/// slots. Using ascent-descent over-reports for digit-only labels
-/// because the descender slot is always empty, which used to make
-/// the layout pick a font size much smaller than the badge could
-/// fit.
+/// The layout assumes the first glyph anchors at cursor=(0, 0)
+/// (origin = baseline / leftmost-anchor):
 ///
-/// `descent_below_baseline` is how far the bbox extends below the
-/// baseline (≥ 0). For digit labels it's typically 0 — kept as a
-/// field so the centring math works for any label, including
-/// future "+" or "·" markers that might dip below.
+/// * `ink_left` — leftmost ink x coordinate (typically positive,
+///   the leading sidebearing of the first glyph).
+/// * `ink_top`  — topmost ink y coordinate (typically negative
+///   because the ink sits *above* the baseline).
+/// * `ink_width` / `ink_height` — span of the visible ink.
+///
+/// Centring the ink in a target box B means: place the first
+/// glyph's cursor at `(B.left + (B.w - ink_width)/2 - ink_left,
+/// B.top + (B.h - ink_height)/2 - ink_top)`.
 struct LabelLayout {
-    width: f32,
-    height: f32,
-    descent_below_baseline: f32,
+    ink_left: f32,
+    ink_top: f32,
+    ink_width: f32,
+    ink_height: f32,
 }
 
 fn layout_label(font: &FontRef<'_>, label: &str, scale: f32) -> LabelLayout {
     let scaled = font.as_scaled(PxScale::from(scale));
-    let mut width = 0.0_f32;
-    // Track the union of per-glyph rendered bounds, in baseline-
-    // relative coordinates (ab_glyph's `px_bounds` is in pixel
-    // space relative to the glyph's baseline anchor).
+    let mut cursor = 0.0_f32;
+    let mut min_x = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
     let mut min_y = f32::INFINITY;
     let mut max_y = f32::NEG_INFINITY;
     for c in label.chars() {
         let gid = font.glyph_id(c);
         let positioned = gid.with_scale_and_position(
             PxScale::from(scale),
-            ab_glyph::point(0.0, 0.0),
+            ab_glyph::point(cursor, 0.0),
         );
         if let Some(outline) = font.outline_glyph(positioned) {
             let bounds = outline.px_bounds();
+            min_x = min_x.min(bounds.min.x);
+            max_x = max_x.max(bounds.max.x);
             min_y = min_y.min(bounds.min.y);
             max_y = max_y.max(bounds.max.y);
         }
-        width += scaled.h_advance(gid);
+        cursor += scaled.h_advance(gid);
     }
-    let (height, descent_below_baseline) = if min_y.is_finite() {
-        (max_y - min_y, max_y.max(0.0))
+    if min_x.is_finite() {
+        LabelLayout {
+            ink_left: min_x,
+            ink_top: min_y,
+            ink_width: max_x - min_x,
+            ink_height: max_y - min_y,
+        }
     } else {
-        // Every glyph was a no-render (e.g. label is whitespace).
-        (0.0, 0.0)
-    };
-    LabelLayout {
-        width,
-        height,
-        descent_below_baseline,
+        // Every glyph rendered as a no-op (e.g. label is whitespace).
+        LabelLayout {
+            ink_left: 0.0,
+            ink_top: 0.0,
+            ink_width: 0.0,
+            ink_height: 0.0,
+        }
     }
 }
 
