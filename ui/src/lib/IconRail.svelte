@@ -155,7 +155,7 @@
 
 <aside
   class="w-14 shrink-0 border-r border-surface-200 dark:border-surface-700
-         bg-surface-100 dark:bg-surface-800 flex flex-col items-center py-2 gap-1"
+         bg-surface-100 dark:bg-surface-800 flex flex-col items-center py-2 gap-3"
 >
   <!-- Account avatars. The "All" bubble only appears when the user
        has more than one account — for a single-account setup it's
@@ -174,11 +174,20 @@
       <!-- Inbox glyph matches the Mail rail icon + the "All
            Inboxes" folder entry, so the "this is the aggregate"
            meaning carries across every surface the user sees. The
-           `text-lg` override pushes the emoji up from the parent's
-           `text-xs` (sized for the other avatars' two-letter
-           initials) so it reads at the same visual weight as the
-           nav icons below the divider. -->
-      <span class="text-lg leading-none">&#x1F4E5;</span>
+           wrapper has a fixed 28×28 box so the composite (inbox +
+           🌐 corner badge) sits as one centered unit inside the
+           36×36 bubble — without the explicit size, the badge
+           protrudes outside the wrapper and pulls the visual
+           weight to the bottom-right. -->
+      <span class="relative block w-7 h-7">
+        <!-- The emoji's intrinsic font metrics put extra ascent above
+             the visible glyph, so a flex-centered emoji renders low.
+             A 2px upward translate lands the visible centre on the
+             box's geometric centre across Linux/macOS/Windows emoji
+             fonts. -->
+        <span class="absolute inset-0 flex items-center justify-center text-lg leading-none -translate-y-[6px]">&#x1F4E5;</span>
+        <span class="absolute bottom-0 right-0 text-[0.65rem] leading-none drop-shadow">&#x1F310;</span>
+      </span>
     </button>
   {/if}
   {#each accounts as a (a.id)}
