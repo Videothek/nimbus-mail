@@ -337,15 +337,37 @@
 
     let unlistenNewMail: UnlistenFn | null = null
     let unlistenCompose: UnlistenFn | null = null
+    let unlistenComposeFromMail: UnlistenFn | null = null
+    let unlistenEditDraftFromMail: UnlistenFn | null = null
     ;(async () => {
       unlistenNewMail = await listen<NewMail>('new-mail', (e) =>
         handleNewMail(e.payload),
       )
       unlistenCompose = await listen('open-compose', () => openCompose({}))
+      // Standalone-mail windows (#104) emit these when the user
+      // hits Reply / Reply All / Forward over there: we run the
+      // existing compose flow here in the main window so the user
+      // ends up with one Compose surface, with all autocomplete
+      // and signature state already wired up.
+      unlistenComposeFromMail = await listen<{
+        kind: 'reply' | 'reply-all' | 'forward'
+        mail: OpenMail
+      }>('compose-from-mail', (e) => {
+        const { kind, mail } = e.payload
+        if (kind === 'reply') onReply(mail)
+        else if (kind === 'reply-all') onReplyAll(mail)
+        else if (kind === 'forward') onForward(mail)
+      })
+      unlistenEditDraftFromMail = await listen<{ mail: DraftMail }>(
+        'edit-draft-from-mail',
+        (e) => onEditDraft(e.payload.mail),
+      )
     })()
     return () => {
       unlistenNewMail?.()
       unlistenCompose?.()
+      unlistenComposeFromMail?.()
+      unlistenEditDraftFromMail?.()
       if (pendingSummaryTimer) clearTimeout(pendingSummaryTimer)
     }
   })
