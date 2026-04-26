@@ -680,7 +680,20 @@
         class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm bg-primary-500/10 text-primary-500 font-medium"
         onclick={() => onselectfolder('INBOX')}
       >
-        <span>📥</span>
+        <!-- Fixed-size icon box so the emoji centers consistently
+             regardless of the system font's emoji metrics. The
+             absolute-positioned 🌐 corner badge signals "across all
+             accounts" at a glance — same visual idiom as a notification
+             dot on an app icon. -->
+        <span
+          class="relative inline-flex items-center justify-center w-5 h-5 leading-none shrink-0"
+          aria-hidden="true"
+        >
+          <span class="text-base leading-none">📥</span>
+          <span
+            class="absolute -bottom-1 -right-1 text-[0.65rem] leading-none drop-shadow"
+          >🌐</span>
+        </span>
         <span class="flex-1 text-left truncate">All Inboxes</span>
         {#if unifiedUnread > 0}
           <span class="badge preset-filled-primary-500 text-xs">{unifiedUnread}</span>
