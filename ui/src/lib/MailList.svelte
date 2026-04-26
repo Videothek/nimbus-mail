@@ -13,6 +13,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import { openMailInStandaloneWindow } from './standaloneMailWindow'
 
   // ── Props ───────────────────────────────────────────────────
   interface EmailEnvelope {
@@ -261,6 +262,12 @@
                 ? 'bg-primary-500/[0.04] dark:bg-primary-500/[0.07] hover:bg-primary-500/10'
                 : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
           onclick={() => onselect(env.uid, unified ? env.account_id : undefined)}
+          ondblclick={() =>
+            openMailInStandaloneWindow(
+              unified && env.account_id ? env.account_id : accountId,
+              folder,
+              env.uid,
+            )}
           oncontextmenu={(e) => openContextMenu(e, env)}
         >
           <div class="flex items-center justify-between mb-1">

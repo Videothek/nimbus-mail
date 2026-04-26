@@ -14,6 +14,7 @@
   import DOMPurify from 'dompurify'
   import { formatError } from './errors'
   import NextcloudFilePicker from './NextcloudFilePicker.svelte'
+  import { openMailInStandaloneWindow } from './standaloneMailWindow'
 
   interface EmailAttachment {
     filename: string
@@ -80,6 +81,11 @@
         dark mode. The user can override per message via a toolbar
         toggle. */
     forceWhiteBackground?: boolean
+    /** True when this `MailView` is the root of a popped-out
+        standalone window (#104).  Hides the "Open in window"
+        button (no point inside the window it would open) and
+        otherwise behaves identically. */
+    inStandaloneWindow?: boolean
   }
   let {
     accountId,
@@ -93,6 +99,7 @@
     isDraftsFolder = false,
     oneditdraft,
     onmessageremoved,
+    inStandaloneWindow = false,
     forceWhiteBackground = true,
   }: Props = $props()
 
@@ -874,6 +881,17 @@
         >{email.is_read ? 'Mark unread' : 'Mark read'}</button>
       {/if}
       <div class="flex-1"></div>
+      {#if !inStandaloneWindow && email && uid != null}
+        <!-- Pop the open mail into its own focused window (#104).
+             Hidden when we're already *in* the standalone window —
+             a click there would just spawn another identical
+             window, which is never what you want. -->
+        <button
+          class="btn btn-sm preset-outlined-surface-500"
+          onclick={() => email && uid != null && openMailInStandaloneWindow(email.account_id, email.folder, uid)}
+          title="Open this mail in a separate window"
+        >↗ Open in window</button>
+      {/if}
       {#if email.body_html}
         <!-- Per-message background toggle — flips the white-canvas
              default just for the open mail. The label always shows
