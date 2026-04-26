@@ -4,13 +4,14 @@
    *
    * Given an account + folder + UID, calls `fetch_message` to pull the
    * full message (headers + body) from the IMAP server. Renders plain
-   * text if we have it, otherwise falls back to the HTML body inside a
-   * sandboxed iframe (to keep any remote-content / scripts in the mail
-   * isolated from the app).
+   * text if we have it, otherwise falls back to inline-rendered HTML
+   * sanitized by DOMPurify (scripts and dangerous attributes stripped)
+   * with remote images blocked by default.
    */
 
   import { invoke } from '@tauri-apps/api/core'
   import { save } from '@tauri-apps/plugin-dialog'
+  import DOMPurify from 'dompurify'
   import { formatError } from './errors'
   import NextcloudFilePicker from './NextcloudFilePicker.svelte'
 
@@ -104,6 +105,8 @@
     refreshing = false
     error = ''
     email = null
+    showImagesForMessage = false
+    trustedSender = false
 
     // Cache first — lets the reading pane paint instantly when the user
     // re-opens a previously read message (the common case).
@@ -143,6 +146,9 @@
       loading = false
       refreshing = false
     }
+
+    // Check if this sender is already trusted for image display.
+    if (email?.from) trustedSender = isSenderTrusted(email.from)
 
     // Mark as read — fire-and-forget. The MailList picked up an optimistic
     // cache update from the backend, and onread() lets the parent refresh
@@ -184,110 +190,167 @@
     return new Date(iso).toLocaleString()
   }
 
-  /**
-   * Add a `title` attribute containing the href to every `<a>` in the
-   * message HTML, so hovering over a link reveals its URL as a native
-   * browser tooltip.
-   *
-   * Why we need this: the message body renders inside a `sandbox=""`
-   * iframe, which in most webviews hides the status bar that would
-   * normally show `<a href>` on hover. Without a `title`, users see a
-   * blue underlined phrase with no way to preview where it leads —
-   * which also happens to be an easy phishing surface. Surfacing the
-   * real URL on hover lets the user sanity-check before clicking.
-   *
-   * Implementation: parse the HTML with DOMParser (which treats scripts
-   * as inert text nodes, so it's safe to use on untrusted mail) and
-   * annotate each anchor. If the anchor already carries a `title`, keep
-   * it and append the URL so we don't clobber author-provided tooltips.
-   */
-  function addLinkTooltips(html: string): string {
-    if (!html) return html
+  // ── Per-sender image trust (persisted in localStorage) ──────────────
+  // senders the user has chosen "always show images from" live here.
+  // Key format: ["user@example.com", ...] — lower-cased bare addresses.
+
+  const TRUSTED_SENDERS_KEY = 'nimbus-trusted-senders'
+
+  function getSenderAddress(from: string): string {
+    const m = from.match(/<([^>]+)>/)
+    return (m ? m[1] : from).trim().toLowerCase()
+  }
+
+  function isSenderTrusted(from: string): boolean {
     try {
-      const doc = new DOMParser().parseFromString(html, 'text/html')
+      const raw = localStorage.getItem(TRUSTED_SENDERS_KEY)
+      const list: string[] = raw ? JSON.parse(raw) : []
+      return list.includes(getSenderAddress(from))
+    } catch {
+      return false
+    }
+  }
+
+  function addTrustedSender(from: string) {
+    try {
+      const raw = localStorage.getItem(TRUSTED_SENDERS_KEY)
+      const list: string[] = raw ? JSON.parse(raw) : []
+      const addr = getSenderAddress(from)
+      if (!list.includes(addr)) {
+        list.push(addr)
+        localStorage.setItem(TRUSTED_SENDERS_KEY, JSON.stringify(list))
+      }
+    } catch {
+      console.warn('Failed to persist trusted sender')
+    }
+  }
+
+  // Per-message "Show images" toggle; reset to false on every new message.
+  let showImagesForMessage = $state(false)
+  // True when the sender is in the trusted list (set in load()).
+  let trustedSender = $state(false)
+
+  // ── HTML sanitization + image blocking ───────────────────────────────
+  //
+  // DOMPurify strips scripts, event handlers, and any element that can
+  // execute code or load external resources (iframe, object, form…).
+  // We keep inline styles so newsletter formatting survives, but we
+  // forbid <style> blocks — they can't be easily scoped and could
+  // clobber the app's UI classes. Most real-world HTML email uses
+  // inline styles anyway (Gmail strips <style> too, so senders know).
+  //
+  // After DOMPurify, a second pass with DOMParser:
+  //   • annotates <a href> with a tooltip showing the raw URL (phishing
+  //     guard — the Tauri webview hides the URL bar)
+  //   • marks cid: anchors with data-nimbus-cid for the click handler
+  //   • unless showImages is true, replaces every remote <img src> with
+  //     a transparent 1×1 GIF and stashes the original in
+  //     data-nimbus-blocked-src
+
+  const BLOCKED_IMG_PLACEHOLDER =
+    'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+
+  function processEmailHtml(
+    html: string,
+    showImages: boolean,
+  ): { html: string; hadBlocked: boolean } {
+    if (!html) return { html: '', hadBlocked: false }
+    try {
+      const clean = DOMPurify.sanitize(html, {
+        FORBID_TAGS: [
+          'script', 'noscript', 'object', 'embed', 'applet',
+          'iframe', 'frame', 'frameset',
+          'form', 'input', 'textarea', 'select', 'button',
+          'base', 'meta', 'link', 'style',
+        ],
+        ADD_ATTR: ['target', 'data-nimbus-cid', 'data-nimbus-blocked-src', 'title'],
+        FORCE_BODY: true,
+      })
+
+      const doc = new DOMParser().parseFromString(clean, 'text/html')
+
+      // Annotate links with tooltip + handle cid: anchors
       doc.querySelectorAll('a[href]').forEach((a) => {
-        const href = a.getAttribute('href') || ''
+        const href = a.getAttribute('href') ?? ''
         if (!href) return
         const existing = a.getAttribute('title')
         a.setAttribute('title', existing ? `${existing} — ${href}` : href)
-
-        // Mark `cid:` anchors so the click interceptor below can
-        // find them quickly (no need to re-parse hrefs every click).
-        // Stripping leading angle brackets just in case the sender
-        // pasted them; mail-parser already strips them on the
-        // attachment side, so casing-only mismatches are the only
-        // resolution failure mode left.
         if (href.toLowerCase().startsWith('cid:')) {
           const cid = href.slice(4).trim().replace(/^<|>$/g, '')
           a.setAttribute('data-nimbus-cid', cid)
-          // Default browser behaviour on `cid:` is "navigate this
-          // frame to a non-existent URL". Pin the anchor to "do
-          // nothing on its own" so clicks fall through to our
-          // listener cleanly.
-          a.setAttribute('target', '_self')
+          // Neutralise default `cid:` navigation; our click handler takes over.
+          a.setAttribute('href', '#')
+        } else {
+          // External links open in the system browser via open_url command.
+          a.setAttribute('target', '_blank')
+          a.setAttribute('rel', 'noopener noreferrer')
         }
       })
-      // `documentElement.outerHTML` gives us a full `<html>…</html>`,
-      // which is exactly what `srcdoc` wants. If parsing somehow gives
-      // us nothing useful, fall back to the original string below.
-      const out = doc.documentElement?.outerHTML
-      return out || html
-    } catch {
-      return html
+
+      // Block remote images unless the user has opted in for this message/sender
+      let hadBlocked = false
+      if (!showImages) {
+        doc.querySelectorAll('img').forEach((img) => {
+          const src = img.getAttribute('src') ?? ''
+          if (src && !src.toLowerCase().startsWith('data:') && !src.toLowerCase().startsWith('cid:')) {
+            hadBlocked = true
+            img.setAttribute('data-nimbus-blocked-src', src)
+            img.setAttribute('src', BLOCKED_IMG_PLACEHOLDER)
+            img.removeAttribute('srcset')
+            const alt = img.getAttribute('alt') ?? ''
+            if (!alt) img.setAttribute('alt', '(blocked image)')
+            img.setAttribute('title', 'Remote image blocked — click "Show images" to load')
+          }
+        })
+      }
+
+      return { html: doc.body.innerHTML, hadBlocked }
+    } catch (e) {
+      console.warn('processEmailHtml failed:', e)
+      return { html: '', hadBlocked: false }
     }
   }
 
-  // Annotated copy of `email.body_html` with link tooltips. Derived so
-  // we recompute only when the message changes, not on every render.
-  let bodyHtmlWithTooltips = $derived(
-    email?.body_html ? addLinkTooltips(email.body_html) : '',
-  )
+  // Recompute whenever the email body, per-message toggle, or trust state changes.
+  let processedHtml = $derived.by(() => {
+    if (!email?.body_html) return { html: '', hadBlocked: false }
+    return processEmailHtml(email.body_html, showImagesForMessage || trustedSender)
+  })
 
-  // ── cid: anchor click interception ──────────────────────────
+  // ── Click handling for the inline HTML body div ───────────────────────
   //
-  // The body iframe runs with `sandbox="allow-same-origin"` so the
-  // parent can read its `contentDocument` (scripts inside the
-  // iframe still can't run — `allow-scripts` is NOT set). We
-  // delegate clicks at the document level: any anchor carrying a
-  // `data-nimbus-cid` attribute (added by `addLinkTooltips`) gets
-  // its default behaviour preventDefault'd, the cid is matched
-  // against the message's attachment list, and the result is
-  // dispatched through `attachmentClicked` — the same single
-  // entry point the Office / PDF viewers (issue #65 follow-up
-  // commits) will branch into.
-  let bodyIframe: HTMLIFrameElement | undefined = $state()
+  // cid: links open the matching attachment (same as before).
+  // External http/https links are routed through the `open_url` Tauri
+  // command so they open in the user's default system browser instead of
+  // navigating inside the app's webview.
 
-  function onIframeLoad() {
-    const doc = bodyIframe?.contentDocument
-    if (!doc) return
-    // Re-attach on every load so iframe re-creation (new message)
-    // wires the listener fresh. The previous frame's document is
-    // garbage-collected with its window so there's nothing to
-    // detach.
-    doc.addEventListener('click', onBodyClick, true)
-  }
-
-  function onBodyClick(e: Event) {
+  function onBodyClick(e: MouseEvent) {
     const target = e.target as HTMLElement | null
     if (!target) return
-    const anchor = target.closest('a[data-nimbus-cid]') as HTMLAnchorElement | null
+    const anchor = target.closest('a') as HTMLAnchorElement | null
     if (!anchor) return
-    e.preventDefault()
-    e.stopPropagation()
-    const cid = anchor.getAttribute('data-nimbus-cid') ?? ''
-    if (!cid || !email) return
-    const att = email.attachments.find(
-      (a) =>
-        a.content_id != null &&
-        a.content_id.toLowerCase() === cid.toLowerCase(),
-    )
-    if (!att) {
-      console.warn(
-        `MailView: cid:${cid} clicked but no matching attachment in this message`,
+
+    const cid = anchor.getAttribute('data-nimbus-cid')
+    if (cid) {
+      e.preventDefault()
+      e.stopPropagation()
+      if (!email) return
+      const att = email.attachments.find(
+        (a) => a.content_id != null && a.content_id.toLowerCase() === cid.toLowerCase(),
       )
+      if (!att) {
+        console.warn(`MailView: cid:${cid} clicked but no matching attachment`)
+        return
+      }
+      void attachmentClicked(att)
       return
     }
-    void attachmentClicked(att)
+
+    const href = anchor.getAttribute('href') ?? ''
+    if (href && href !== '#' && !href.startsWith('javascript:')) {
+      e.preventDefault()
+      void invoke('open_url', { url: href })
+    }
   }
 
   /** MIME types Nextcloud Office (Collabora) opens in-browser via
@@ -928,30 +991,44 @@
     {/if}
 
     <!-- Email body -->
-    <div class="flex-1 overflow-y-auto p-6">
+    <div class="flex-1 overflow-y-auto">
       {#if email.body_text}
         <!-- Prefer plain text: safe, simple, no remote content. -->
-        <pre class="whitespace-pre-wrap font-sans text-sm">{email.body_text}</pre>
+        <pre class="whitespace-pre-wrap font-sans text-sm p-6">{email.body_text}</pre>
       {:else if email.body_html}
-        <!--
-          HTML-only messages go in a sandboxed iframe. `sandbox=""` (no
-          allow-* tokens) disables scripts, form submission, same-origin,
-          and top-navigation — so even malicious mail can't attack the app.
-        -->
-        <!-- `allow-same-origin` (without `allow-scripts`!) lets the
-             parent read the iframe's `contentDocument` so we can
-             attach the cid:-click listener. Author scripts still
-             can't run because `allow-scripts` isn't on the list. -->
-        <iframe
-          bind:this={bodyIframe}
-          title="Message body"
-          class="w-full h-full border-0 bg-white"
-          sandbox="allow-same-origin"
-          srcdoc={bodyHtmlWithTooltips}
-          onload={onIframeLoad}
-        ></iframe>
+        <!-- Image-blocking banner — only visible when at least one remote
+             image was replaced with a placeholder and the user hasn't opted
+             in for this message or trusted this sender. -->
+        {#if processedHtml.hadBlocked && !showImagesForMessage && !trustedSender}
+          <div class="flex flex-wrap items-center gap-3 px-6 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-700 text-sm text-amber-800 dark:text-amber-300">
+            <span class="shrink-0">🛡️ Remote images are blocked.</span>
+            <button
+              class="btn btn-sm preset-outlined-surface-500"
+              onclick={() => (showImagesForMessage = true)}
+            >Show images</button>
+            {#if email.from}
+              <button
+                class="btn btn-sm preset-outlined-surface-500"
+                onclick={() => {
+                  addTrustedSender(email!.from)
+                  trustedSender = true
+                }}
+              >Always show from {getSenderAddress(email.from)}</button>
+            {/if}
+          </div>
+        {/if}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <div
+          class="email-html-body p-6 text-sm leading-relaxed overflow-x-auto"
+          role="region"
+          aria-label="Email body"
+          onclick={onBodyClick}
+        >
+          {@html processedHtml.html}
+        </div>
       {:else}
-        <p class="text-sm text-surface-500">(This message has no visible body.)</p>
+        <p class="text-sm text-surface-500 p-6">(This message has no visible body.)</p>
       {/if}
     </div>
   {/if}
