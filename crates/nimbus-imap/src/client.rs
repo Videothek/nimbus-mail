@@ -556,6 +556,12 @@ impl ImapClient {
 
         // body_text: concatenate all text/plain parts (usually just one).
         // body_html: same for text/html. Either may be absent.
+        //
+        // mail-parser returns text with CRLF (\r\n) line endings as required
+        // by the MIME RFC. We normalise to LF-only here so the frontend's
+        // `white-space: pre-wrap` renders line breaks correctly — some
+        // WebKit builds treat a bare \r as a carriage-return (cursor-to-BOL)
+        // rather than a newline, collapsing multi-line text onto one line.
         let body_text = (0..parsed.text_body_count())
             .filter_map(|i| parsed.body_text(i).map(|s| s.to_string()))
             .collect::<Vec<_>>()
@@ -563,7 +569,7 @@ impl ImapClient {
         let body_text = if body_text.is_empty() {
             None
         } else {
-            Some(body_text)
+            Some(body_text.replace("\r\n", "\n").replace('\r', "\n"))
         };
 
         let body_html = (0..parsed.html_body_count())
