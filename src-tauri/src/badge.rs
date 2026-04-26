@@ -48,8 +48,12 @@ pub fn render_tray_icon(
         // than the previous "with digits" badge — without text to
         // hold, the dot only has to be eye-catching, not legible.
         let badge_size = ((dim * 3) / 10).max(8).min(dim);
+        // Top-right corner: matches the convention iOS / Android /
+        // most messaging apps use for an unread-attention dot, and
+        // sits in the part of the icon least likely to overlap with
+        // the base glyph (which usually centres lower-left).
         let bx = width - badge_size;
-        let by = height - badge_size;
+        let by = 0;
         draw_filled_circle(&mut p, width, height, bx, by, badge_size, BADGE_RGBA);
         p
     };
@@ -165,10 +169,10 @@ mod tests {
         // Alpha-blending red onto transparent black scales each
         // channel down by the source alpha (230). We just want to
         // see "this pixel is dominated by red" somewhere in the
-        // bottom-right quadrant where the dot lives.
+        // top-right quadrant where the dot lives.
         let pixels = img.rgba();
         let mut found_red = false;
-        for y in 16..32 {
+        for y in 0..16 {
             for x in 16..32 {
                 let idx = (y * 32 + x) * 4;
                 let (r, g, b, a) = (
