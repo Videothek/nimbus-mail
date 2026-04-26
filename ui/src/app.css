@@ -43,18 +43,28 @@ body {
   max-width: 100%;
   word-break: break-word;
   overflow-wrap: anywhere;
-  /* HTML emails are designed against a white background — senders set
-     dark text colours via inline styles assuming a light page. Forcing
-     a white canvas here keeps GitHub pipeline status banners,
-     newsletter headlines, etc. legible in dark mode. Same approach
-     Gmail / Outlook / Thunderbird / Apple Mail take. */
+}
+
+/* "Always white" mode (default). HTML emails are designed against a white
+   background — senders set dark text colours via inline styles assuming a
+   light page. Forcing a white canvas here keeps GitHub pipeline status
+   banners, newsletter headlines, etc. legible in dark mode. Same approach
+   Gmail / Outlook / Thunderbird / Apple Mail take. The margin + radius
+   carve the white block into a card so it doesn't bleed edge-to-edge into
+   the dark app chrome. */
+.email-html-body--white {
   background: #ffffff;
   color: #1a1a1a;
-  /* Carve the email a visual frame so the white block doesn't bleed
-     into the dark app chrome. */
   border-radius: 6px;
   margin: 1rem;
   padding: 1.5rem;
+}
+
+/* "Use mail's theme" mode. No forced background — inline styles from the
+   email decide. Padding still applied so the body doesn't collide with
+   the surrounding chrome. */
+.email-html-body--native {
+  /* (padding handled via the Tailwind p-6 class on the element) */
 }
 
 .email-html-body table {

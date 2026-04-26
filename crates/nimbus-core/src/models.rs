@@ -33,6 +33,17 @@ pub struct AppSettings {
     /// Whether the UI follows the OS light/dark preference, or
     /// is pinned to one. Applied via `<html data-mode="…">`.
     pub theme_mode: ThemeMode,
+    /// Render HTML email bodies on a forced white canvas.
+    ///
+    /// HTML emails almost always set inline text colours assuming a
+    /// light page background — the dark text becomes unreadable in
+    /// dark mode if we let it render against the app's surface
+    /// colour. With this on (default), the email body wrapper is
+    /// painted white regardless of the app theme. Turn off to let
+    /// the email render against the app's background — useful for
+    /// dark-themed emails or when a sender provides a proper
+    /// dark-mode design.
+    pub mail_html_white_background: bool,
 }
 
 /// Light/dark mode selection. `System` follows the OS preference
@@ -70,6 +81,7 @@ impl Default for AppSettings {
             start_minimized: false,
             theme_name: "cerberus".to_string(),
             theme_mode: ThemeMode::System,
+            mail_html_white_background: true,
         }
     }
 }

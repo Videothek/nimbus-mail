@@ -167,6 +167,7 @@
     start_minimized: boolean
     theme_name: string
     theme_mode: ThemeMode
+    mail_html_white_background: boolean
   }
 
   // Cached settings snapshot — refreshed when the settings command is
@@ -824,6 +825,7 @@
         accountId={selectedMessageAccountId ?? activeAccountId}
         folder={selectedFolder}
         uid={selectedUid}
+        forceWhiteBackground={appPrefs?.mail_html_white_background ?? true}
         onread={onMessageRead}
         onreply={onReply}
         onreplyall={onReplyAll}

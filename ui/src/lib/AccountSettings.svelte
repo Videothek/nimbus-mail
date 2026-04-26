@@ -78,6 +78,7 @@
     start_minimized: boolean
     theme_name: string
     theme_mode: ThemeMode
+    mail_html_white_background: boolean
   }
 
   let appSettings = $state<AppSettings>({
@@ -88,6 +89,7 @@
     start_minimized: false,
     theme_name: 'cerberus',
     theme_mode: 'system',
+    mail_html_white_background: true,
   })
   let prefsSaveStatus = $state<'' | 'saving' | 'saved' | 'error'>('')
   let checkNowBusy = $state(false)
@@ -499,6 +501,39 @@
               </button>
             {/each}
           </div>
+        </div>
+
+        <div>
+          <p class="font-medium mb-2">HTML mail background</p>
+          <div class="flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="btn btn-sm {appSettings.mail_html_white_background
+                ? 'preset-filled-primary-500'
+                : 'preset-outlined-surface-500'}"
+              onclick={() => {
+                appSettings.mail_html_white_background = true
+                scheduleSave()
+              }}
+            >Always white</button>
+            <button
+              type="button"
+              class="btn btn-sm {!appSettings.mail_html_white_background
+                ? 'preset-filled-primary-500'
+                : 'preset-outlined-surface-500'}"
+              onclick={() => {
+                appSettings.mail_html_white_background = false
+                scheduleSave()
+              }}
+            >Use mail's theme</button>
+          </div>
+          <p class="text-xs text-surface-400 mt-1">
+            HTML emails usually assume a white background — "Always white" keeps
+            them readable in dark mode. "Use mail's theme" lets the email render
+            against the app's background, which respects dark-mode-aware emails
+            but can wash out the rest. Each open mail also has its own toggle
+            to override this default.
+          </p>
         </div>
       </div>
     </div>
