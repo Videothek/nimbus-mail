@@ -1,9 +1,24 @@
 //! Unread-count badge for the tray icon and the Windows taskbar overlay.
 //!
-//! Renders a red circle with white digits ("1"-"99", or "99+" when the
-//! count exceeds 99). Hand-rolled 3x5 bitmap font for the glyphs so we
-//! ship no font file and pull in no font crate — the digits are tiny
-//! and a vector font would alias badly at this scale anyway.
+//! Renders a soft-red circle with white digits ("1"-"99", or "99+" when
+//! the count exceeds 99). Two visual tricks let us ship a "modern"
+//! looking badge without pulling in a font crate:
+//!
+//! 1. **Alpha-blended red.** The badge fill is Tailwind red-500 at ~90%
+//!    alpha (`230/255`) instead of opaque red-600, composited via
+//!    proper src-over-dst blending. The underlying tray icon shows
+//!    faintly through the badge — it reads as a translucent overlay
+//!    rather than a flat sticker.
+//!
+//! 2. **2×2 supersampled circle edge.** For each pixel along the
+//!    badge's circumference we sample 4 sub-pixel positions; the
+//!    fraction inside the circle becomes the pixel's coverage. The
+//!    edge is smooth without an FFT-grade AA stack.
+//!
+//! Glyphs are a hand-rolled 5×7 bitmap (digits + "+"). 5×7 has enough
+//! shape vocabulary to give each digit proper proportions — a real
+//! waist on the 8, a hooked top on the 4 — instead of the blocky
+//! silhouettes the previous 3×5 grid produced.
 //!
 //! The tray icon is composited from the base PNG plus the badge in the
 //! bottom-right corner. The Windows taskbar overlay is the badge alone
@@ -11,89 +26,111 @@
 
 use tauri::image::Image;
 
-const GLYPH_W: usize = 3;
-const GLYPH_H: usize = 5;
+const GLYPH_W: usize = 5;
+const GLYPH_H: usize = 7;
 type Glyph = [u8; GLYPH_W * GLYPH_H];
 
-// Each glyph: 1 = ink, 0 = transparent, row-major 3x5.
+// Each glyph: 1 = ink, 0 = transparent, row-major 5×7.
 #[rustfmt::skip]
 const GLYPHS: &[(char, Glyph)] = &[
     ('0', [
-        1,1,1,
-        1,0,1,
-        1,0,1,
-        1,0,1,
-        1,1,1,
+        0,1,1,1,0,
+        1,0,0,0,1,
+        1,0,0,0,1,
+        1,0,0,0,1,
+        1,0,0,0,1,
+        1,0,0,0,1,
+        0,1,1,1,0,
     ]),
     ('1', [
-        0,1,0,
-        1,1,0,
-        0,1,0,
-        0,1,0,
-        1,1,1,
+        0,0,1,0,0,
+        0,1,1,0,0,
+        0,0,1,0,0,
+        0,0,1,0,0,
+        0,0,1,0,0,
+        0,0,1,0,0,
+        0,1,1,1,0,
     ]),
     ('2', [
-        1,1,1,
-        0,0,1,
-        1,1,1,
-        1,0,0,
-        1,1,1,
+        0,1,1,1,0,
+        1,0,0,0,1,
+        0,0,0,0,1,
+        0,0,0,1,0,
+        0,0,1,0,0,
+        0,1,0,0,0,
+        1,1,1,1,1,
     ]),
     ('3', [
-        1,1,1,
-        0,0,1,
-        0,1,1,
-        0,0,1,
-        1,1,1,
+        1,1,1,1,1,
+        0,0,0,0,1,
+        0,0,0,1,0,
+        0,0,1,1,0,
+        0,0,0,0,1,
+        1,0,0,0,1,
+        0,1,1,1,0,
     ]),
     ('4', [
-        1,0,1,
-        1,0,1,
-        1,1,1,
-        0,0,1,
-        0,0,1,
+        0,0,0,1,0,
+        0,0,1,1,0,
+        0,1,0,1,0,
+        1,0,0,1,0,
+        1,1,1,1,1,
+        0,0,0,1,0,
+        0,0,0,1,0,
     ]),
     ('5', [
-        1,1,1,
-        1,0,0,
-        1,1,1,
-        0,0,1,
-        1,1,1,
+        1,1,1,1,1,
+        1,0,0,0,0,
+        1,1,1,1,0,
+        0,0,0,0,1,
+        0,0,0,0,1,
+        1,0,0,0,1,
+        0,1,1,1,0,
     ]),
     ('6', [
-        1,1,1,
-        1,0,0,
-        1,1,1,
-        1,0,1,
-        1,1,1,
+        0,1,1,1,0,
+        1,0,0,0,0,
+        1,0,0,0,0,
+        1,1,1,1,0,
+        1,0,0,0,1,
+        1,0,0,0,1,
+        0,1,1,1,0,
     ]),
     ('7', [
-        1,1,1,
-        0,0,1,
-        0,0,1,
-        0,0,1,
-        0,0,1,
+        1,1,1,1,1,
+        0,0,0,0,1,
+        0,0,0,1,0,
+        0,0,1,0,0,
+        0,1,0,0,0,
+        0,1,0,0,0,
+        0,1,0,0,0,
     ]),
     ('8', [
-        1,1,1,
-        1,0,1,
-        1,1,1,
-        1,0,1,
-        1,1,1,
+        0,1,1,1,0,
+        1,0,0,0,1,
+        1,0,0,0,1,
+        0,1,1,1,0,
+        1,0,0,0,1,
+        1,0,0,0,1,
+        0,1,1,1,0,
     ]),
     ('9', [
-        1,1,1,
-        1,0,1,
-        1,1,1,
-        0,0,1,
-        1,1,1,
+        0,1,1,1,0,
+        1,0,0,0,1,
+        1,0,0,0,1,
+        0,1,1,1,1,
+        0,0,0,0,1,
+        0,0,0,0,1,
+        0,1,1,1,0,
     ]),
     ('+', [
-        0,0,0,
-        0,1,0,
-        1,1,1,
-        0,1,0,
-        0,0,0,
+        0,0,0,0,0,
+        0,0,1,0,0,
+        0,0,1,0,0,
+        1,1,1,1,1,
+        0,0,1,0,0,
+        0,0,1,0,0,
+        0,0,0,0,0,
     ]),
 ];
 
@@ -110,7 +147,10 @@ fn format_label(unread: u32) -> String {
     }
 }
 
-const BADGE_RGBA: [u8; 4] = [220, 38, 38, 255]; // tailwind red-600
+/// Tailwind red-500 with ~90% alpha. Softer than the previous opaque
+/// red-600 and lets the icon underneath read faintly through the
+/// badge — closer to the macOS / Windows 11 dock-badge feel.
+const BADGE_RGBA: [u8; 4] = [239, 68, 68, 230];
 const TEXT_RGBA: [u8; 4] = [255, 255, 255, 255];
 
 /// Composite a badge onto a copy of `base_pixels` and return it as an
@@ -160,9 +200,32 @@ pub fn render_taskbar_overlay(unread: u32) -> Option<Image<'static>> {
     Some(Image::new_owned(pixels, W, H))
 }
 
-/// Solid filled circle. Square box `size x size`, centered inside that
-/// box, no anti-aliasing — at tray-icon scale a hard edge reads better
-/// than a smudgy AA edge.
+/// Standard "src over dst" alpha compositing for one RGBA pixel.
+///
+/// `coverage` (0..=255) scales the source's alpha — used by the
+/// supersampled circle to express partial pixel coverage at the badge
+/// edge. coverage=255 means "full pixel inside the shape", coverage=0
+/// means "fully outside" (early-exit).
+fn blend_pixel(dst: &mut [u8], src: [u8; 4], coverage: u32) {
+    let src_a = src[3] as u32 * coverage / 255;
+    if src_a == 0 {
+        return;
+    }
+    let inv = 255 - src_a;
+    dst[0] = ((src[0] as u32 * src_a + dst[0] as u32 * inv) / 255) as u8;
+    dst[1] = ((src[1] as u32 * src_a + dst[1] as u32 * inv) / 255) as u8;
+    dst[2] = ((src[2] as u32 * src_a + dst[2] as u32 * inv) / 255) as u8;
+    let dst_a = dst[3] as u32;
+    dst[3] = (src_a + dst_a * inv / 255).min(255) as u8;
+}
+
+/// Filled circle with a 2×2 supersampled edge. For each output pixel
+/// we sample 4 sub-pixel positions on a half-pixel grid; the fraction
+/// of samples inside the circle becomes the pixel's coverage. This
+/// keeps the centre at full opacity and lets the boundary fade to 0
+/// over a one-pixel band — visibly smoother than the old binary
+/// "inside vs outside" test, with no perceivable softness at the
+/// badge sizes we render.
 fn draw_filled_circle(
     pixels: &mut [u8],
     img_w: u32,
@@ -172,9 +235,18 @@ fn draw_filled_circle(
     size: u32,
     color: [u8; 4],
 ) {
-    let cx = x as i32 * 2 + size as i32; // 2*center, keeps integer math
-    let cy = y as i32 * 2 + size as i32;
-    let r2_4 = (size as i32) * (size as i32); // (size/2)^2 * 4 == size^2
+    // Centre + squared radius in 4×-precision integer space so we never
+    // hit floats. Each unit step in absolute pixel coordinates is 4
+    // units in this space (one half-pixel sub-sample step is 2 units),
+    // so a radius of `size/2` becomes `size*2`.
+    let cx = x as i32 * 4 + size as i32 * 2;
+    let cy = y as i32 * 4 + size as i32 * 2;
+    let r = size as i32 * 2;
+    let r2 = r * r;
+    // 4×-space offsets for the four sub-samples within one pixel —
+    // (1,1), (3,1), (1,3), (3,3). Centred on the pixel's quadrants.
+    const SUBPIXELS: [(i32, i32); 4] = [(1, 1), (3, 1), (1, 3), (3, 3)];
+
     for py in 0..size {
         let abs_y = y + py;
         if abs_y >= img_h {
@@ -185,17 +257,32 @@ fn draw_filled_circle(
             if abs_x >= img_w {
                 break;
             }
-            let dx = (abs_x as i32) * 2 + 1 - cx;
-            let dy = (abs_y as i32) * 2 + 1 - cy;
-            if dx * dx + dy * dy <= r2_4 {
-                let idx = ((abs_y * img_w + abs_x) * 4) as usize;
-                pixels[idx..idx + 4].copy_from_slice(&color);
+            let base_x = abs_x as i32 * 4;
+            let base_y = abs_y as i32 * 4;
+            let mut hits = 0u32;
+            for (sx, sy) in SUBPIXELS {
+                let dx = base_x + sx - cx;
+                let dy = base_y + sy - cy;
+                if dx * dx + dy * dy <= r2 {
+                    hits += 1;
+                }
             }
+            if hits == 0 {
+                continue;
+            }
+            let coverage = hits * 255 / 4;
+            let idx = ((abs_y * img_w + abs_x) * 4) as usize;
+            blend_pixel(&mut pixels[idx..idx + 4], color, coverage);
         }
     }
 }
 
 /// Center the label horizontally and vertically inside the badge box.
+///
+/// Glyph pixels are stamped via `blend_pixel` (coverage=255) so the
+/// white digits composite cleanly on top of the soft-red disc instead
+/// of overwriting it, preserving any sub-pixel coverage from the
+/// circle's AA edge.
 fn stamp_label(
     pixels: &mut [u8],
     img_w: u32,
@@ -246,7 +333,7 @@ fn stamp_label(
                         let py = py0 + sy;
                         if px < img_w && py < img_h {
                             let idx = ((py * img_w + px) * 4) as usize;
-                            pixels[idx..idx + 4].copy_from_slice(&TEXT_RGBA);
+                            blend_pixel(&mut pixels[idx..idx + 4], TEXT_RGBA, 255);
                         }
                     }
                 }
@@ -276,16 +363,20 @@ mod tests {
     }
 
     #[test]
-    fn nonzero_unread_paints_red() {
+    fn nonzero_unread_paints_reddish() {
         let base = vec![0u8; 32 * 32 * 4];
         let img = render_tray_icon(&base, 32, 32, 5);
-        // At least one pixel in the bottom-right quadrant should now be red.
+        // Alpha-blending red onto transparent black no longer produces
+        // exactly (239, 68, 68) — the source alpha (230) scales each
+        // channel down. We just want to see "this pixel is dominated
+        // by red" somewhere in the badge area.
         let pixels = img.rgba();
         let mut found_red = false;
         for y in 16..32 {
             for x in 16..32 {
                 let idx = (y * 32 + x) * 4;
-                if pixels[idx] == 220 && pixels[idx + 1] == 38 && pixels[idx + 2] == 38 {
+                let (r, g, b, a) = (pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]);
+                if r > 150 && r > g + 50 && r > b + 50 && a > 0 {
                     found_red = true;
                     break;
                 }
@@ -304,5 +395,19 @@ mod tests {
         let img = render_taskbar_overlay(7).expect("expected overlay");
         assert_eq!(img.width(), 16);
         assert_eq!(img.height(), 16);
+    }
+
+    #[test]
+    fn circle_edge_is_antialiased() {
+        // Render a standalone badge onto a transparent canvas and look
+        // for at least one partially-covered (non-zero, non-fully-opaque)
+        // pixel — proof the supersampled edge is producing intermediate
+        // alpha values, not a binary inside/outside mask.
+        let img = render_taskbar_overlay(1).expect("expected overlay");
+        let pixels = img.rgba();
+        let has_partial = pixels
+            .chunks_exact(4)
+            .any(|p| (1..230).contains(&p[3]));
+        assert!(has_partial, "expected at least one partially-covered AA edge pixel");
     }
 }
