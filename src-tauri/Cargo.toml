@@ -33,6 +33,14 @@ tauri-plugin-dialog = "2"
 # Opens a URL in the system default browser. Used by the Nextcloud
 # Login Flow v2 command to bounce the user out to their NC login page.
 open = { workspace = true }
+# Direct libnotify access on Linux so we can pass the `DesktopEntry`
+# hint that makes notifications persist in the notification center.
+# `tauri-plugin-notification` uses this same crate internally but
+# doesn't expose its hint API, so we wrap it ourselves.  Linux-only:
+# on Windows/macOS we keep using the Tauri plugin (whose native
+# integrations are better than notify-rust's non-Linux backends).
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4"
 
 # Windows-only: needed to register an explicit AppUserModelID so toast
 # notifications attribute to "Nimbus Mail" instead of falling back to

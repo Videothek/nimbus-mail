@@ -96,6 +96,56 @@ fn get_notification_icon_path(state: State<'_, NotificationIconPath>) -> String 
     state.0.to_string_lossy().into_owned()
 }
 
+/// Linux-only: send a desktop notification through libnotify with
+/// the `DesktopEntry` + `Category` hints set, so the notification
+/// daemon (GNOME Shell / KDE Plasma / mako / dunst) tracks it under
+/// our app identity and keeps it in its notification center.
+///
+/// `tauri-plugin-notification` uses notify-rust under the hood but
+/// doesn't expose hint APIs in JS, which left dev-build toasts as
+/// "anonymous" — they showed up briefly but weren't kept in the
+/// notification history. Wrapping the builder ourselves with the
+/// hints set is enough to make them persist.
+///
+/// Returns `Ok(true)` when the call succeeded so the JS side can
+/// fall back to the regular plugin if anything goes wrong (e.g.
+/// no notification daemon running).
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn send_native_notification(
+    title: String,
+    body: String,
+    icon: State<'_, NotificationIconPath>,
+) -> Result<bool, NimbusError> {
+    use notify_rust::{Hint, Notification};
+    let mut n = Notification::new();
+    n.summary(&title)
+        .body(&body)
+        .appname("Nimbus Mail")
+        .hint(Hint::DesktopEntry("com.nimbus.mail".to_string()))
+        .hint(Hint::Category("email".to_string()));
+    let icon_path = icon.0.to_string_lossy();
+    if !icon_path.is_empty() {
+        n.icon(&icon_path);
+    }
+    n.show()
+        .map(|_| true)
+        .map_err(|e| NimbusError::Other(format!("notify-rust failed: {e}")))
+}
+
+/// Stub on non-Linux platforms — the JS side is expected to fall
+/// back to `sendNotification` from the Tauri plugin when this
+/// returns `Ok(false)`. Keeps the JS branch code platform-agnostic
+/// without needing to ask the OS layer about the platform.
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+fn send_native_notification(
+    _title: String,
+    _body: String,
+) -> Result<bool, NimbusError> {
+    Ok(false)
+}
+
 /// Tells Windows that this process should attribute its toast
 /// notifications to a specific AUMID instead of inheriting the
 /// launching process's (which surfaces as "PowerShell" / "cmd" /
@@ -4029,12 +4079,13 @@ fn main() {
             // `sendNotification`.  Without this, libnotify on Linux
             // (and macOS' NSUserNotification) fall back to a
             // generic icon next to the toast in dev builds.
-            match install_notification_icon() {
-                Ok(p) => {
-                    app.manage(NotificationIconPath(p));
-                }
-                Err(e) => tracing::warn!("install_notification_icon failed: {e}"),
-            }
+            // Always manage the state, even on failure, so commands
+            // taking `State<'_, NotificationIconPath>` always extract
+            // (an empty path signals "no icon known").
+            let icon_path = install_notification_icon()
+                .inspect_err(|e| tracing::warn!("install_notification_icon failed: {e}"))
+                .unwrap_or_default();
+            app.manage(NotificationIconPath(icon_path));
 
             // ── Tray menu + icon ────────────────────────────────
             //
@@ -4167,6 +4218,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_notification_icon_path,
+            send_native_notification,
             get_accounts,
             add_account,
             remove_account,
