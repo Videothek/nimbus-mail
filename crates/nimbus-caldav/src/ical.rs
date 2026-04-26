@@ -602,15 +602,14 @@ pub fn build_ics(
     if let Some(rid) = event.recurrence_id {
         lines.push(format!("RECURRENCE-ID:{}", format_utc_dt(&rid)));
     }
-    if !event.attendees.is_empty() {
-        if let Some(email) = organizer_email {
+    if !event.attendees.is_empty()
+        && let Some(email) = organizer_email {
             let mut params = String::new();
             if let Some(cn) = organizer_name {
                 params.push_str(&format!(";CN={cn}"));
             }
             lines.push(format!("ORGANIZER{params}:mailto:{email}"));
         }
-    }
     for att in &event.attendees {
         let mut params = String::new();
         if let Some(cn) = &att.common_name {

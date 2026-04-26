@@ -15,18 +15,27 @@
 //! table and skip the import. The whole dance is gated behind the
 //! emptiness check, so nothing happens on fresh installs.
 
-use std::path::PathBuf;
-
 use nimbus_core::NimbusError;
 use nimbus_core::models::Account;
 use rusqlite::params;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
+// `PathBuf` and `warn` are only touched by the legacy-JSON migration
+// path, which is gated to non-test builds; importing them
+// unconditionally would be `unused` under `--cfg test`.
+#[cfg(not(test))]
+use std::path::PathBuf;
+#[cfg(not(test))]
+use tracing::warn;
 
 use crate::Cache;
 
 /// Path of the legacy plaintext accounts file. Kept here (rather
 /// than deleted with the rest of the JSON code) so the import
-/// migration in [`load_accounts`] knows where to look.
+/// migration in [`load_accounts`] knows where to look. Gated to
+/// non-test builds because the call site in `load_accounts` is
+/// `#[cfg(not(test))]` (in-memory test caches must never touch
+/// the developer's real `accounts.json`).
+#[cfg(not(test))]
 fn legacy_json_path() -> Result<PathBuf, NimbusError> {
     let data_dir = dirs::config_dir()
         .ok_or_else(|| NimbusError::Storage("cannot determine config directory".into()))?;
@@ -44,11 +53,10 @@ fn legacy_json_path() -> Result<PathBuf, NimbusError> {
 pub fn load_accounts(cache: &Cache) -> Result<Vec<Account>, NimbusError> {
     let accounts = read_all(cache)?;
     #[cfg(not(test))]
-    if accounts.is_empty() {
-        if let Some(imported) = migrate_from_legacy_json(cache)? {
+    if accounts.is_empty()
+        && let Some(imported) = migrate_from_legacy_json(cache)? {
             return Ok(imported);
         }
-    }
     Ok(accounts)
 }
 
@@ -240,6 +248,7 @@ pub fn update_account(cache: &Cache, updated: Account) -> Result<(), NimbusError
 /// We rename rather than delete so the user can manually restore if
 /// anything goes wrong with the import (we already saw a CalDAV-403
 /// regression in #56 from a similar boundary).
+#[cfg(not(test))]
 fn migrate_from_legacy_json(cache: &Cache) -> Result<Option<Vec<Account>>, NimbusError> {
     let path = legacy_json_path()?;
     if !path.exists() {

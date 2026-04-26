@@ -146,11 +146,10 @@ fn parse_response(
                     // exits cleanly at </resourcetype>.
                     loop {
                         match reader.read_event()? {
-                            Event::Empty(e) | Event::Start(e) => {
-                                if local_name(&e) == "addressbook" {
+                            Event::Empty(e) | Event::Start(e)
+                                if local_name(&e) == "addressbook" => {
                                     is_addressbook = true;
                                 }
-                            }
                             Event::End(e) if local_name_end(&e) == "resourcetype" => break,
                             Event::Eof => break,
                             _ => {}

@@ -157,11 +157,10 @@ pub async fn create_public_share(
         ("shareType", &share_type),
         ("permissions", &permissions),
     ];
-    if let Some(pw) = password {
-        if !pw.is_empty() {
+    if let Some(pw) = password
+        && !pw.is_empty() {
             form.push(("password", pw));
         }
-    }
 
     let resp = http
         .post(&url)

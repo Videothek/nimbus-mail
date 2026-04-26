@@ -676,17 +676,16 @@ fn parse_multistatus(
                     _ => {}
                 }
             }
-            Event::Empty(e) => {
+            Event::Empty(e)
                 // Empty-tag form of the same elements. `<d:collection/>`
                 // only matters *inside* resourcetype, which we handle via
                 // the Start branch above.
-                if local_name(&e) == "resourcetype" {
+                if local_name(&e) == "resourcetype" => {
                     // Empty resourcetype = not a collection.
                     if let Some(entry) = current.as_mut() {
                         entry.is_dir = false;
                     }
                 }
-            }
             Event::End(e) => {
                 if local_name_end(&e) == "response"
                     && let Some(partial) = current.take()
@@ -764,16 +763,14 @@ fn resourcetype_is_collection(
     let mut is_collection = false;
     loop {
         match reader.read_event()? {
-            Event::Start(e) | Event::Empty(e) => {
-                if local_name(&e) == "collection" {
+            Event::Start(e) | Event::Empty(e)
+                if local_name(&e) == "collection" => {
                     is_collection = true;
                 }
-            }
-            Event::End(e) => {
-                if local_name_end(&e) == "resourcetype" {
+            Event::End(e)
+                if local_name_end(&e) == "resourcetype" => {
                     return Ok(is_collection);
                 }
-            }
             Event::Eof => return Ok(is_collection),
             _ => {}
         }
@@ -808,11 +805,10 @@ fn read_text_until(
         match reader.read_event()? {
             Event::Text(t) => buf.push_str(&t.unescape().unwrap_or_default()),
             Event::CData(c) => buf.push_str(&String::from_utf8_lossy(&c)),
-            Event::End(e) => {
-                if strip_prefix_lowercase(e.name().as_ref()) == start_local {
+            Event::End(e)
+                if strip_prefix_lowercase(e.name().as_ref()) == start_local => {
                     return Ok(buf);
                 }
-            }
             Event::Eof => return Ok(buf),
             _ => {}
         }

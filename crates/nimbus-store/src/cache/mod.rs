@@ -236,8 +236,8 @@ impl Cache {
 
     /// Carry every cached row for a folder over to a new folder name
     /// in lockstep with an IMAP `RENAME`. The server preserves UIDs
-    /// across a rename, so updating the `folder` column on `messages`
-    /// + `folder_sync_state` + `folders` is enough to keep every
+    /// across a rename, so updating the `folder` column on `messages`,
+    /// `folder_sync_state`, and `folders` is enough to keep every
     /// envelope / body / unread-count bookmark pointing at the right
     /// mailbox — without re-fetching a single byte.
     pub fn rename_folder(

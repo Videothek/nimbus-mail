@@ -51,17 +51,14 @@ pub struct AppSettings {
 /// their OS theme; `Light` / `Dark` pin the mode regardless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ThemeMode {
+    #[default]
     System,
     Light,
     Dark,
 }
 
-impl Default for ThemeMode {
-    fn default() -> Self {
-        Self::System
-    }
-}
 
 impl Default for AppSettings {
     fn default() -> Self {
