@@ -21,6 +21,7 @@
   import { emit } from '@tauri-apps/api/event'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import MailView from './MailView.svelte'
+  import { applyTheme, installSystemModeListener, type ThemeMode } from './theme'
 
   // We never inspect the email shape inside the standalone window —
   // it's just a payload we forward to the main window via Tauri
@@ -39,22 +40,34 @@
     uid: number
   } = $props()
 
-  // Mirror the white-canvas preference from the main app's settings
-  // so the standalone reader matches the user's choice instead of
-  // hard-coding a default.  Best-effort — falls back to `true` when
-  // the call fails (no accounts yet, race condition on launch).
+  // Mirror the main app's preferences so the standalone reader picks
+  // up the user's chosen Skeleton theme + light/dark mode + the
+  // white-canvas preference instead of falling back to defaults.
+  // Best-effort — if `get_app_settings` fails (race on first launch,
+  // backend hiccup) we keep the defaults already on `<html>`.
   let forceWhiteBackground = $state(true)
   $effect(() => {
+    let unlistenSystem: (() => void) | null = null
     void (async () => {
       try {
-        const prefs = await invoke<{ mail_html_white_background: boolean }>(
-          'get_app_settings',
-        )
+        const prefs = await invoke<{
+          theme_name: string
+          theme_mode: ThemeMode
+          mail_html_white_background: boolean
+        }>('get_app_settings')
         forceWhiteBackground = prefs.mail_html_white_background ?? true
+        applyTheme(prefs.theme_name, prefs.theme_mode)
+        unlistenSystem = installSystemModeListener(
+          prefs.theme_mode,
+          prefs.theme_name,
+        )
       } catch (e) {
         console.warn('get_app_settings failed in standalone window', e)
       }
     })()
+    return () => {
+      unlistenSystem?.()
+    }
   })
 
   // Compose actions: emit a Tauri event the main window listens for.
