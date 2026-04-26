@@ -41,8 +41,10 @@ body {
 .email-html-body {
   /* Prevent a single wide image or table from stretching the pane. */
   max-width: 100%;
-  word-break: break-word;
-  overflow-wrap: anywhere;
+  /* Only break at long-word boundaries (URLs, hashes) — `anywhere`
+     breaks between every character and stacks short headers like
+     "Status" vertically inside narrow table cells. */
+  overflow-wrap: break-word;
 }
 
 /* "Always white" mode (default). HTML emails are designed against a white
