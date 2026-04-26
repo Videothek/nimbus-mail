@@ -54,6 +54,11 @@
         can route the open-message action to the right account. In
         single-account mode it's omitted (the active account is implicit). */
     onselect: (uid: number, accountId?: string) => void
+    /** Bindable mirror of the rendered envelope list.  Lets the
+        parent peek at "what's currently shown" without re-fetching —
+        used by the auto-advance-after-delete logic to pick the next
+        UID below the removed row. */
+    envelopes?: EmailEnvelope[]
   }
   let {
     accounts = [],
@@ -63,6 +68,7 @@
     selectedUid,
     refreshToken = 0,
     onselect,
+    envelopes = $bindable([]),
   }: Props = $props()
 
   /** Short label for the per-row account chip in unified mode. We
@@ -83,7 +89,6 @@
   // `refreshing` stays true while the network call is still in flight
   // after the cache has rendered, so the UI can show a subtle hint
   // without blanking the list.
-  let envelopes = $state<EmailEnvelope[]>([])
   let loading = $state(true)
   let refreshing = $state(false)
   let error = $state('')

@@ -69,9 +69,11 @@
         from the "Edit" button inside the drafts toolbar. */
     oneditdraft?: (mail: Email) => void
     /** Fires after the message has been successfully archived or
-        deleted on the server. The parent clears the selected UID and
-        bumps the MailList refresh so the row disappears. */
-    onmessageremoved?: () => void
+        deleted on the server.  The removed UID is passed back so the
+        parent can compute the "next" message to open (auto-advance
+        behaviour) instead of forcing the user back to the empty
+        reading-pane state. */
+    onmessageremoved?: (removedUid: number) => void
     /** App-wide default for "render HTML email on a white canvas".
         When true the body wrapper gets a forced white background and
         dark text so emails designed for a light page stay readable in
@@ -778,7 +780,7 @@
         folder: email.folder,
         uid,
       })
-      onmessageremoved?.()
+      onmessageremoved?.(uid)
     } catch (e) {
       error = formatError(e) || 'Failed to archive'
     } finally {
@@ -798,7 +800,7 @@
         folder: email.folder,
         uid,
       })
-      onmessageremoved?.()
+      onmessageremoved?.(uid)
     } catch (e) {
       error = formatError(e) || 'Failed to delete'
     } finally {
