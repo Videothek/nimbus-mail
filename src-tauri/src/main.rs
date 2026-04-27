@@ -2612,6 +2612,9 @@ async fn send_event_rsvp(
             method: "REPLY".to_string(),
             ics: reply_ics,
         }),
+        // RSVPs are meeting machinery, not user-authored mail —
+        // every other mainstream client hides them from Sent too.
+        skip_sent_copy: true,
     };
 
     let client = nimbus_smtp::SmtpClient::connect(
@@ -3647,7 +3650,15 @@ async fn send_email(
     // couldn't update the local Sent view would be worse UX than a
     // missing copy. We log and move on; the next folder fetch will
     // catch up if the server still received the SMTP-side delivery.
-    if let Err(e) = append_to_sent(&account, &raw, &cache).await {
+    //
+    // Auto-generated calendar mails (the calendar-grid "send invite"
+    // flow + RSVP REPLY) opt out via `skip_sent_copy`: Outlook /
+    // Apple Mail / Google Calendar all hide that traffic from the
+    // sender's Sent view too — RSVP responses are conceptually
+    // meeting machinery, not user-authored mail.
+    if !email.skip_sent_copy
+        && let Err(e) = append_to_sent(&account, &raw, &cache).await
+    {
         tracing::warn!(
             "Sent OK but failed to append a copy to Sent for account '{}': {e}",
             account.id

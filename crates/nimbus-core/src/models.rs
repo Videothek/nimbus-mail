@@ -334,6 +334,15 @@ pub struct OutgoingEmail {
     /// import via the file.  `None` for ordinary mails.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_part: Option<CalendarPart>,
+    /// Skip the IMAP APPEND-to-Sent step that normally fires after
+    /// SMTP delivery (#58).  Set on auto-generated mails the user
+    /// didn't actively compose — calendar-grid invite mails and
+    /// RSVP REPLYs — so the Sent folder doesn't fill up with
+    /// machinery the user never wrote.  Compose-driven sends keep
+    /// the default `false` because the user expects to see the
+    /// mail they typed land in Sent.
+    #[serde(default)]
+    pub skip_sent_copy: bool,
 }
 
 /// Calendar payload emitted as the iMIP `text/calendar` body

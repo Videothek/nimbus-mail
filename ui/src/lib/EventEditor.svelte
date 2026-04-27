@@ -92,6 +92,11 @@
         uses this to merge any newly added addresses back into the
         email's To field so the invite and the mail stay in sync. */
     attendees: string[]
+    /** Mail-account id the user picked to send invites from (the
+     *  CalendarView surface; Compose has its own From-picker so it
+     *  ignores this field).  `null` when no mail accounts are
+     *  configured (caller falls back to skipping the invite mail). */
+    inviteFromAccountId: string | null
   }
 
   interface Props {
@@ -121,10 +126,24 @@
     } | null
     /** edit-mode subject: the existing event being edited. */
     event?: CalendarEvent | null
+    /** Mail accounts the user can pick to send invites from
+     *  (the calendar-grid creation flow).  Empty array → no
+     *  picker shown and `SavedEvent.inviteFromAccountId` lands
+     *  as `null`, which the calendar caller treats as "skip the
+     *  invite mail step entirely". */
+    mailAccounts?: { id: string; email: string; display_name: string }[]
     onclose: () => void
     onsaved: (saved?: SavedEvent) => void
   }
-  const { mode, calendars, draft, event, onclose, onsaved }: Props = $props()
+  const {
+    mode,
+    calendars,
+    draft,
+    event,
+    mailAccounts = [],
+    onclose,
+    onsaved,
+  }: Props = $props()
 
   // ── Form state ──────────────────────────────────────────────
   // Initial values are computed once at mount from `draft` (create) or
@@ -182,6 +201,15 @@
   // PARTSTAT data is held in `originalAttendees` and merged back by
   // email at save time.
   // svelte-ignore state_referenced_locally
+  // From-mail-account picker — only relevant in create mode + when
+  // the embedder actually passes a mailAccounts list.  Defaulting
+  // to the first account matches what every other "send invite"
+  // surface in the app does; the user can flip via the dropdown.
+  // svelte-ignore state_referenced_locally
+  let inviteFromAccountId = $state<string | null>(
+    mailAccounts.length > 0 ? mailAccounts[0].id : null,
+  )
+
   let attendeesText = $state(
     event
       ? (event.attendees ?? []).map(formatAddressForInput).join(', ')
@@ -396,6 +424,7 @@
           end: input.end,
           url: input.url,
           attendees: input.attendees.map((a) => a.email),
+          inviteFromAccountId,
         })
       } else if (event) {
         await invoke('update_calendar_event', { eventId: event.id, input })
@@ -577,6 +606,30 @@
           placeholder="alice@example.com, bob@example.com"
         />
       </div>
+
+      <!-- "Send invitations from" picker — only renders in
+           create-mode when the caller supplied at least one mail
+           account AND the user has typed at least one attendee
+           (an event with no attendees doesn't trigger an outbound
+           invite anyway, so no need to ask which account).  Edit
+           mode never re-sends invites — saving an existing event
+           just updates the local CalDAV copy. -->
+      {#if mode === 'create' && mailAccounts.length > 0 && attendeesText.trim().length > 0}
+        <div class="flex items-start gap-2">
+          <label class="text-xs w-20 text-surface-500 pt-2" for="event-invite-from">From</label>
+          <select
+            id="event-invite-from"
+            class="input flex-1 px-3 py-2 text-sm rounded-md"
+            bind:value={inviteFromAccountId}
+          >
+            {#each mailAccounts as a (a.id)}
+              <option value={a.id}>
+                {a.display_name ? `${a.display_name} <${a.email}>` : a.email}
+              </option>
+            {/each}
+          </select>
+        </div>
+      {/if}
 
       <div class="flex items-start gap-2">
         <label class="text-xs w-20 text-surface-500 pt-2" for="event-description">Notes</label>

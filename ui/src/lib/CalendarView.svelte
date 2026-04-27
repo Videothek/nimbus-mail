@@ -122,6 +122,18 @@
   let accounts = $state<NextcloudAccount[]>([])
   let calendars = $state<CalendarSummary[]>([])
   let events = $state<CalendarEvent[]>([])
+
+  /** Mail accounts the user can pick to send invites from when
+   *  they create an event with attendees (#58).  Loaded once on
+   *  mount alongside the calendars.  An empty list disables the
+   *  picker in `EventEditor` and naturally suppresses the invite
+   *  mail step (we have nothing to send From). */
+  interface MailAccountRow {
+    id: string
+    email: string
+    display_name: string
+  }
+  let mailAccounts = $state<MailAccountRow[]>([])
   let loading = $state(true)
   let syncing = $state(false)
   let error = $state('')
@@ -534,6 +546,16 @@
         loading = false
         return
       }
+      // Load mail accounts in parallel for the From picker on the
+      // event-creation modal.  Best-effort — failure leaves the
+      // picker hidden (event still saves to CalDAV, no invite
+      // mail goes out).
+      try {
+        mailAccounts = await invoke<MailAccountRow[]>('get_accounts')
+      } catch (e) {
+        console.warn('CalendarView: get_accounts failed', e)
+        mailAccounts = []
+      }
       const now = new Date()
       const start = addDays(now, -INITIAL_PAST_DAYS)
       const end = addDays(now, INITIAL_FUTURE_DAYS)
@@ -846,27 +868,19 @@
    *  so an SMTP failure here logs + shows a banner but doesn't
    *  unwind the calendar write.
    *
-   *  Picks the first configured mail account as the From: — a
-   *  multi-account user would presumably want their primary
-   *  identity sending these out, and a UI to choose can land in
-   *  a follow-up if it turns out anyone has more than one
-   *  outbound identity. */
+   *  The From account comes from the EventEditor's picker (cached
+   *  on `SavedEvent.inviteFromAccountId`); when no mail accounts
+   *  exist we silently skip — there's no From: to send from. */
   async function sendInviteForCalendarEvent(saved: SavedEvent) {
-    interface MailAccountRow {
-      id: string
-      display_name: string
-      email: string
-    }
-    let account: MailAccountRow | undefined
-    try {
-      const list = await invoke<MailAccountRow[]>('get_accounts')
-      account = list[0]
-    } catch (e) {
-      console.warn('get_accounts failed; skipping calendar-event invite mail', e)
+    if (!saved.inviteFromAccountId) {
+      console.info('No mail account selected; skipping calendar-event invite mail')
       return
     }
+    const account = mailAccounts.find((a) => a.id === saved.inviteFromAccountId)
     if (!account) {
-      console.warn('No mail account configured; skipping calendar-event invite mail')
+      console.warn(
+        'Selected mail account not found; skipping calendar-event invite mail',
+      )
       return
     }
 
@@ -901,6 +915,11 @@
           body_html: built.html,
           attachments: [],
           calendar_part: built.calendarPart,
+          // Auto-generated invite — keep it out of Sent.  The
+          // attendees still receive the mail; the organiser just
+          // doesn't see the machine-built copy clutter their
+          // own Sent folder.
+          skip_sent_copy: true,
         },
       })
     } catch (e) {
@@ -1360,6 +1379,7 @@
     mode="create"
     calendars={visibleCalendars}
     draft={creatingDraft}
+    {mailAccounts}
     onclose={closeEditor}
     onsaved={onEditorSaved}
   />
@@ -1368,6 +1388,7 @@
     mode="edit"
     calendars={visibleCalendars}
     event={editingEvent}
+    {mailAccounts}
     onclose={closeEditor}
     onsaved={onEditorSaved}
   />
