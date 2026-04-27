@@ -417,7 +417,28 @@
       Highlight.configure({ multicolor: true }),
       Table.configure({ resizable: true }),
       TableRow,
-      TableCell,
+      // Extend TableCell with a backgroundColor attribute so the
+      // toolbar's cell-colour picker has somewhere to write.  The
+      // attr round-trips via inline `style="background-color: …"`,
+      // which every mail client renders correctly without needing
+      // a class-based stylesheet on the recipient side.
+      TableCell.extend({
+        addAttributes() {
+          return {
+            ...this.parent?.(),
+            backgroundColor: {
+              default: null,
+              parseHTML: (el: HTMLElement) =>
+                el.style.backgroundColor || null,
+              renderHTML: (attrs: Record<string, unknown>) => {
+                const c = attrs.backgroundColor
+                if (!c) return {}
+                return { style: `background-color: ${c}` }
+              },
+            },
+          }
+        },
+      }),
       TableHeader,
       // ── `@` contact mention ────────────────────────────────
       // Renamed from the default `mention` so it can coexist with
@@ -813,9 +834,59 @@
   let tableHoverCols = $state(0)
   const TABLE_GRID = 8  // 8x8 picker like Outlook
 
+  /** Selection (cursor position) snapshotted when the user opens
+   *  the table picker.  We restore it before inserting so the
+   *  table lands where the user's cursor was, not wherever Tiptap
+   *  thinks the focus moved to during the dropdown interaction. */
+  let savedTableSelection: { from: number; to: number } | null = null
+
+  function openTablePicker() {
+    if ($editor) {
+      const sel = $editor.state.selection
+      savedTableSelection = { from: sel.from, to: sel.to }
+    }
+    showTablePicker = !showTablePicker
+  }
+
   function insertTable(rows: number, cols: number) {
-    cmd().insertTable({ rows, cols, withHeaderRow: true }).run()
+    if (savedTableSelection) {
+      cmd()
+        .setTextSelection(savedTableSelection)
+        .insertTable({ rows, cols, withHeaderRow: true })
+        .run()
+    } else {
+      cmd().insertTable({ rows, cols, withHeaderRow: true }).run()
+    }
+    savedTableSelection = null
     showTablePicker = false
+  }
+
+  // ── Table editing actions (#103 follow-up) ─────────────────────
+  // Thin wrappers around Tiptap's table commands.  The toolbar
+  // disables them when the cursor isn't inside a table, so calling
+  // them in that state would no-op anyway — but keeping the chain
+  // explicit means future "is the cursor in a header row?" checks
+  // can branch here without each call site reimplementing it.
+  function tblAddRowAbove() { cmd().addRowBefore().run() }
+  function tblAddRowBelow() { cmd().addRowAfter().run() }
+  function tblAddColLeft()  { cmd().addColumnBefore().run() }
+  function tblAddColRight() { cmd().addColumnAfter().run() }
+  function tblDeleteRow()   { cmd().deleteRow().run() }
+  function tblDeleteCol()   { cmd().deleteColumn().run() }
+  function tblDelete()      { cmd().deleteTable().run() }
+  function tblSetCellColor(e: Event) {
+    const color = (e.target as HTMLInputElement).value
+    cmd().setCellAttribute('backgroundColor', color).run()
+  }
+  function tblClearCellColor() {
+    cmd().setCellAttribute('backgroundColor', null).run()
+  }
+
+  /** Reactive: is the cursor currently inside a table?  Drives the
+   *  enabled/disabled state of the table-edit buttons in the
+   *  Insert tab. */
+  function tableActive(): boolean {
+    return !!$editor?.isActive('table')
   }
 
   // ── Ribbon tab + emoji-picker state (#103 follow-up) ──────────
@@ -851,6 +922,25 @@
     cmd().insertContent(e).run()
     showEmojiPicker = false
   }
+
+  // Click-outside dismissal for the emoji popup.  The popup itself
+  // stops propagation on its own click handler, so any click that
+  // reaches `document` originated outside it.  We delay the install
+  // by one tick (`setTimeout(0)`) so the click that *opened* the
+  // popup doesn't immediately close it.  Same idiom would work for
+  // the other popups (font / table) but the user only flagged the
+  // emoji picker — keeping scope tight.
+  $effect(() => {
+    if (!showEmojiPicker) return
+    const close = () => (showEmojiPicker = false)
+    const handle = setTimeout(() => {
+      window.addEventListener('click', close)
+    }, 0)
+    return () => {
+      clearTimeout(handle)
+      window.removeEventListener('click', close)
+    }
+  })
 
   /** Strip every mark + collapse the current block down to the
    *  default paragraph node.  Outlook's "Clear formatting" button. */
@@ -962,11 +1052,15 @@
     transition: background 0.1s, color 0.1s;
     position: relative;
   }
-  :global(.rt-btn:hover) {
+  :global(.rt-btn:hover:not(:disabled)) {
     background: var(--color-surface-200);
   }
-  :global([data-mode='dark'] .rt-btn:hover) {
+  :global([data-mode='dark'] .rt-btn:hover:not(:disabled)) {
     background: var(--color-surface-700);
+  }
+  :global(.rt-btn:disabled) {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
   :global(.rt-btn-icon) {
     font-size: 1.125rem;
@@ -1268,7 +1362,7 @@
 
         <!-- Table picker -->
         <div class="relative inline-block">
-          <button class="rt-btn" title="Insert table" onclick={() => (showTablePicker = !showTablePicker)}>
+          <button class="rt-btn" title="Insert table at cursor" onclick={openTablePicker}>
             <span class="rt-btn-icon">▦</span>
             <span class="rt-btn-label">Table</span>
           </button>
@@ -1337,6 +1431,56 @@
             </div>
           {/if}
         </div>
+
+        <span class="rt-divider"></span>
+
+        <!-- Table editing tools — visible always, but disabled when
+             the cursor isn't inside a table.  Sits in the Insert
+             tab next to the table-creation picker so the user
+             reaches for one ribbon section regardless of whether
+             they're creating or editing.  Background-colour input
+             writes to a custom `backgroundColor` attribute on the
+             cell (TableCell extension above) which renders as
+             inline `style="background-color: …"` for cross-client
+             email compatibility. -->
+        {@const tblOn = tableActive()}
+        <button class="rt-btn" title="Add row above" disabled={!tblOn} onclick={tblAddRowAbove}>
+          <span class="rt-btn-icon">⤴︎</span>
+          <span class="rt-btn-label">Row above</span>
+        </button>
+        <button class="rt-btn" title="Add row below" disabled={!tblOn} onclick={tblAddRowBelow}>
+          <span class="rt-btn-icon">⤵︎</span>
+          <span class="rt-btn-label">Row below</span>
+        </button>
+        <button class="rt-btn" title="Add column left" disabled={!tblOn} onclick={tblAddColLeft}>
+          <span class="rt-btn-icon">⇤</span>
+          <span class="rt-btn-label">Col left</span>
+        </button>
+        <button class="rt-btn" title="Add column right" disabled={!tblOn} onclick={tblAddColRight}>
+          <span class="rt-btn-icon">⇥</span>
+          <span class="rt-btn-label">Col right</span>
+        </button>
+        <button class="rt-btn" title="Delete current row" disabled={!tblOn} onclick={tblDeleteRow}>
+          <span class="rt-btn-icon">−↔</span>
+          <span class="rt-btn-label">Del row</span>
+        </button>
+        <button class="rt-btn" title="Delete current column" disabled={!tblOn} onclick={tblDeleteCol}>
+          <span class="rt-btn-icon">−↕</span>
+          <span class="rt-btn-label">Del col</span>
+        </button>
+        <label class="rt-btn cursor-pointer" title="Cell background colour" class:opacity-50={!tblOn}>
+          <span class="rt-btn-icon">🎨</span>
+          <span class="rt-btn-label">Cell colour</span>
+          <input type="color" class="w-0 h-0 opacity-0 absolute" disabled={!tblOn} onchange={tblSetCellColor} />
+        </label>
+        <button class="rt-btn" title="Clear cell background colour" disabled={!tblOn} onclick={tblClearCellColor}>
+          <span class="rt-btn-icon">⌫</span>
+          <span class="rt-btn-label">Clear fill</span>
+        </button>
+        <button class="rt-btn" title="Delete entire table" disabled={!tblOn} onclick={tblDelete}>
+          <span class="rt-btn-icon">🗑</span>
+          <span class="rt-btn-label">Del table</span>
+        </button>
       {:else if activeTab === 'layout'}
         <!-- Headings -->
         <button class="rt-btn {active('heading', { level: 1 })}" title="Heading 1" onclick={() => toggleHeading(1)}>
