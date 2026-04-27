@@ -1023,21 +1023,33 @@
         },
       })
       // Flush deferred Talk-room invites (#86).  The room was minted
-      // empty at compose-time so a discarded draft could be cleaned
-      // up without spamming recipients; now that the mail has gone
-      // out for real, post the invite list to Talk.  A failure here
-      // is non-fatal — the recipients have the link in the body and
-      // can still join the room as visitors — but we surface it so
-      // the user knows to add invites manually if needed.  Clear
-      // both the pending list and `talkRoomToken` so a follow-up
-      // discard doesn't try to delete a now-active room.
-      if (talkRoomToken && pendingTalkParticipants.length > 0) {
+      // empty at compose-time; here we invite everyone who's *currently*
+      // on To / Cc / Bcc — derived from the live recipient fields
+      // rather than a modal-time snapshot, because the user can
+      // (a) leave the modal's participant box blank and add
+      // recipients afterward, or (b) edit the recipient list between
+      // creating the room and clicking Send.  Either way the rule
+      // "Talk participants = mail recipients at send time" is what
+      // matches the user's mental model.
+      //
+      // Failures here are non-fatal — recipients have the link in the
+      // body and can still join — but we surface the error so the
+      // user knows to add invites manually.  Clear `talkRoomToken`
+      // unconditionally so a follow-up discard doesn't try to delete
+      // a now-active room.
+      if (talkRoomToken) {
         const ncId = ncAccountId
         const room = talkRoomToken
-        const participantsToAdd = pendingTalkParticipants
-          .map((p) => bareAddr(p))
-          .filter((p) => p && !talkRoomParticipants.has(p.toLowerCase()))
-          .map((value) => ({ kind: 'email' as const, value }))
+        const seen = new Set<string>()
+        const participantsToAdd: { kind: 'email'; value: string }[] = []
+        for (const raw of [...splitAddrs(to), ...splitAddrs(cc), ...splitAddrs(bcc)]) {
+          const addr = bareAddr(raw)
+          if (!addr) continue
+          const key = addr.toLowerCase()
+          if (seen.has(key) || talkRoomParticipants.has(key)) continue
+          seen.add(key)
+          participantsToAdd.push({ kind: 'email', value: addr })
+        }
         if (ncId && participantsToAdd.length > 0) {
           try {
             await invoke('add_talk_participants', {
