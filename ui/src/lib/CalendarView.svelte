@@ -32,7 +32,8 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
-  import EventEditor from './EventEditor.svelte'
+  import EventEditor, { type SavedEvent } from './EventEditor.svelte'
+  import { buildInviteEmail } from './inviteEmail'
 
   interface Props {
     onclose: () => void
@@ -822,10 +823,89 @@
     creatingDraft = null
   }
 
-  async function onEditorSaved() {
+  async function onEditorSaved(saved?: SavedEvent) {
     // Easiest correct refresh: re-query the same window. The cache
     // upsert/delete the backend already did is now visible.
     await reloadFromCache(loadedRangeStart, loadedRangeEnd)
+
+    // Fire the same outbound invite mail Compose's "Add Event"
+    // flow sends, so attendees added via the calendar grid
+    // (rather than via Compose) get the same nice HTML card +
+    // `text/calendar; method=REQUEST` attachment.  Edit-mode
+    // saves don't carry a `SavedEvent` — `onsaved()` is fired
+    // bare — so we naturally only auto-send on initial creation,
+    // which matches the user's mental model: "I just created a
+    // meeting, please tell the people I just invited".
+    if (saved && saved.attendees.length > 0) {
+      void sendInviteForCalendarEvent(saved)
+    }
+  }
+
+  /** Compose + ship the invite email for a freshly-created event.
+   *  Best-effort: the event itself is already saved server-side,
+   *  so an SMTP failure here logs + shows a banner but doesn't
+   *  unwind the calendar write.
+   *
+   *  Picks the first configured mail account as the From: — a
+   *  multi-account user would presumably want their primary
+   *  identity sending these out, and a UI to choose can land in
+   *  a follow-up if it turns out anyone has more than one
+   *  outbound identity. */
+  async function sendInviteForCalendarEvent(saved: SavedEvent) {
+    interface MailAccountRow {
+      id: string
+      display_name: string
+      email: string
+    }
+    let account: MailAccountRow | undefined
+    try {
+      const list = await invoke<MailAccountRow[]>('get_accounts')
+      account = list[0]
+    } catch (e) {
+      console.warn('get_accounts failed; skipping calendar-event invite mail', e)
+      return
+    }
+    if (!account) {
+      console.warn('No mail account configured; skipping calendar-event invite mail')
+      return
+    }
+
+    try {
+      const built = await buildInviteEmail({
+        uid: saved.uid,
+        summary: saved.summary,
+        start: saved.start,
+        end: saved.end,
+        url: saved.url,
+        attendees: saved.attendees,
+        fromAddress: account.email,
+        fromName: account.display_name || null,
+        // No Talk integration on the calendar-grid creation flow
+        // today — any URL the user typed is treated as a generic
+        // meeting link.  When CalendarView grows a "+ Talk room"
+        // shortcut, threading the flag through here keeps the
+        // CTA copy honest.
+        isTalkLink: false,
+      })
+
+      await invoke('send_email', {
+        accountId: account.id,
+        email: {
+          from: account.email,
+          to: saved.attendees,
+          cc: [],
+          bcc: [],
+          reply_to: null,
+          subject: built.subject,
+          body_text: built.text,
+          body_html: built.html,
+          attachments: [built.attachment],
+        },
+      })
+    } catch (e) {
+      console.warn('Failed to send calendar-event invite mail', e)
+      error = `Saved the event, but the invite mail to attendees failed: ${formatError(e) || e}`
+    }
   }
 
   // ── Click-and-drag in the time grid ─────────────────────────
