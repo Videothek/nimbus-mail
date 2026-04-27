@@ -29,5 +29,6 @@ pub use files::{
 };
 pub use shares::{PublicShare, create_public_share, update_share_label};
 pub use talk::{
-    ParticipantSource, RoomType, TalkRoom, add_participant, create_room, list_rooms, rename_room,
+    ParticipantSource, RoomType, TalkRoom, add_participant, create_room, delete_room, list_rooms,
+    rename_room,
 };

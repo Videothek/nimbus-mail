@@ -333,6 +333,39 @@ pub async fn rename_room(
     Ok(())
 }
 
+/// Delete a Talk room.  Used by Compose's "discard draft" flow
+/// (#86): rooms minted at compose-time get torn down when the user
+/// cancels the draft so the Nextcloud Talk list doesn't accumulate
+/// orphaned empty rooms.  The endpoint is the same `DELETE
+/// /room/{token}` the Talk web UI hits when the moderator clicks
+/// "Delete conversation".
+pub async fn delete_room(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    room_token: &str,
+) -> Result<(), NimbusError> {
+    let server = client::normalize_server_url(server_url);
+    let url = format!("{server}/ocs/v2.php/apps/spreed/api/v4/room/{room_token}?format=json");
+
+    tracing::debug!("DELETE {url}");
+    let http = client::build()?;
+    let resp = http
+        .delete(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("talk delete request failed: {e}")))?;
+
+    // Talk returns the (now-deleted) room shape on success and an
+    // OCS error envelope on failure; we just need the meta-level
+    // success check `ocs_text` provides.
+    let _ = ocs_text(resp, "talk delete room").await?;
+    Ok(())
+}
+
 // ── HTTP / parsing helpers ─────────────────────────────────────
 
 /// Centralise the auth-failure / non-2xx handling so the three call

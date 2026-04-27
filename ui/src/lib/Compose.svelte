@@ -411,9 +411,16 @@
       the room after the event is saved. */
   let talkRoomToken: string | null = null
   /** Lower-cased bare addresses we've already POSTed to Talk's
-      participant endpoint, so the post-save sync skips them. Includes
-      the participants we passed at room-creation time. */
+      participant endpoint, so the post-save sync skips them. */
   const talkRoomParticipants = new Set<string>()
+  /** Bare addresses the user wants invited to the Talk room but we
+      haven't POSTed yet (#86: defer until Send so a discarded draft
+      doesn't leak invites).  Compose accumulates these from the
+      modal / silent-create flows; `send()` calls
+      `add_talk_participants` for the lot once the mail actually
+      sends.  `cancel()` ignores them — the room itself gets
+      DELETEd so any pending invites are moot. */
+  let pendingTalkParticipants = $state<string[]>([])
   /** Whether the "Join the Talk room" body block has been appended
       yet. The Talk button injects immediately; the Add-Event auto-
       create defers injection until the event is saved. */
@@ -452,8 +459,13 @@
 
   /** Append the "Join the Talk room" body block once. Used by both
       the immediate-injection path (Talk button) and the deferred path
-      (Add-Event auto-create → injected on event save). The flag keeps
-      callers from accidentally duplicating the block. */
+      (Add-Event auto-create → injected on event save).  The flag
+      keeps callers from accidentally duplicating the block.
+
+      When the active account has a signature appended, the block goes
+      *above* the signature so the join URL reads as part of the
+      message rather than as a postscript after the "-- " delimiter
+      (which most clients render as quote-y / hide on reply). */
   function injectTalkBlock(link: { name: string; url: string }) {
     if (talkLinkInjected) return
     const esc = (s: string) =>
@@ -461,25 +473,49 @@
     const block =
       `<p><strong>Join the Talk room:</strong></p>` +
       `<p>💬 <a href="${link.url}">${esc(link.name)}</a></p>`
-    editorApi?.appendHtml(block)
+
+    // Splice above the signature when one's been auto-inserted and
+    // the user hasn't typed past it.  We re-set the editor HTML
+    // because the underlying editor doesn't expose an "insert
+    // before substring" primitive.
+    if (
+      insertedSignatureHtml
+      && bodyHtml.endsWith(insertedSignatureHtml)
+      && editorApi
+    ) {
+      const without = bodyHtml.slice(0, bodyHtml.length - insertedSignatureHtml.length)
+      const replaced = without + block + insertedSignatureHtml
+      editorApi.setHtml(replaced)
+      bodyHtml = replaced
+    } else {
+      editorApi?.appendHtml(block)
+    }
     talkLinkInjected = true
   }
 
   function onTalkRoomCreated(room: TalkRoom, participants: string[]) {
     createdTalkLink = { name: room.display_name, url: room.web_url }
     talkRoomToken = room.token
+    // The modal is mounted with `deferParticipants={true}`, so the
+    // Talk room itself was minted empty.  Stash the entered list
+    // here; `send()` POSTs them to Talk once the mail actually goes
+    // out.  Cancel-as-discard wipes the room (and these invites
+    // along with it), so `pendingTalkParticipants` is the audit
+    // trail for "what we said we'd invite".
     for (const p of participants) {
       const k = bareAddr(p).toLowerCase()
-      if (k) talkRoomParticipants.add(k)
+      if (k && !talkRoomParticipants.has(k)) {
+        pendingTalkParticipants = [...pendingTalkParticipants, p]
+      }
     }
     // Keep the mail recipients in sync with the Talk invite: any
     // address the user typed into the modal that wasn't already on
     // To/Cc/Bcc gets added to To.
     mergeIntoRecipients(participants)
-    // The Talk button is itself a "share this room now" gesture, so
-    // inject the body block immediately. The Add-Event auto-create
-    // path deliberately bypasses this callback (it uses
-    // `createTalkRoomSilently`) so its block can be deferred.
+    // Talk button is a "share this room now" gesture so the body
+    // block goes in immediately.  The Add-Event auto-create path
+    // bypasses this callback (uses `createTalkRoomSilently`) so its
+    // block can be deferred until the event is saved.
     injectTalkBlock(createdTalkLink)
   }
 
@@ -510,11 +546,20 @@
       // when the user hasn't set a subject yet — they can rename in
       // Nextcloud later.
       roomName: subject.trim() || '(meeting)',
-      participants: dedupd,
+      // #86: defer participant invites until Send.  The room is
+      // minted empty here; the recipient list rides along in
+      // `pendingTalkParticipants` so `send()` can flush the lot once
+      // the mail actually goes out.
+      participants: [],
     })
     createdTalkLink = { name: room.display_name, url: room.web_url }
     talkRoomToken = room.token
-    for (const p of dedupd) talkRoomParticipants.add(p.value.toLowerCase())
+    for (const p of dedupd) {
+      const k = p.value.toLowerCase()
+      if (!talkRoomParticipants.has(k) && !pendingTalkParticipants.some((x) => bareAddr(x).toLowerCase() === k)) {
+        pendingTalkParticipants = [...pendingTalkParticipants, p.value]
+      }
+    }
   }
 
   async function openEventEditor() {
@@ -977,6 +1022,44 @@
           attachments,
         },
       })
+      // Flush deferred Talk-room invites (#86).  The room was minted
+      // empty at compose-time so a discarded draft could be cleaned
+      // up without spamming recipients; now that the mail has gone
+      // out for real, post the invite list to Talk.  A failure here
+      // is non-fatal — the recipients have the link in the body and
+      // can still join the room as visitors — but we surface it so
+      // the user knows to add invites manually if needed.  Clear
+      // both the pending list and `talkRoomToken` so a follow-up
+      // discard doesn't try to delete a now-active room.
+      if (talkRoomToken && pendingTalkParticipants.length > 0) {
+        const ncId = ncAccountId
+        const room = talkRoomToken
+        const participantsToAdd = pendingTalkParticipants
+          .map((p) => bareAddr(p))
+          .filter((p) => p && !talkRoomParticipants.has(p.toLowerCase()))
+          .map((value) => ({ kind: 'email' as const, value }))
+        if (ncId && participantsToAdd.length > 0) {
+          try {
+            await invoke('add_talk_participants', {
+              ncId,
+              roomToken: room,
+              participants: participantsToAdd,
+            })
+            for (const p of participantsToAdd) {
+              talkRoomParticipants.add(p.value.toLowerCase())
+            }
+          } catch (e) {
+            console.warn('add_talk_participants after send failed', e)
+            error = `Sent, but Talk invites couldn't be delivered: ${formatError(e)}`
+          }
+        }
+      }
+      pendingTalkParticipants = []
+      // Mail sent successfully — the room is now "live" so cancel /
+      // close should NOT delete it.  Drop the token to disarm the
+      // delete-on-discard path.
+      talkRoomToken = null
+
       // Clean up the server-side draft we opened from (if any) so
       // the user doesn't end up with a "sent" copy in Sent AND the
       // unfinished draft still sitting in Drafts. A failure here is
@@ -1035,6 +1118,23 @@
   function cancel() {
     // No local persistence — if the user wants to resume later they
     // need to click "Save draft" first (which APPENDs to IMAP Drafts).
+    //
+    // Clean up any Talk room minted during this draft (#86).  The
+    // room was created empty (deferred invites), so a DELETE is
+    // safe — no recipients will see a "you've been removed" notice.
+    // If the user already pressed Send, `talkRoomToken` was nulled
+    // out in `send()`, so the room is left alone.
+    if (talkRoomToken && ncAccountId) {
+      const ncId = ncAccountId
+      const room = talkRoomToken
+      // Fire-and-forget: a failure here is annoying (orphan room in
+      // Nextcloud) but not worth blocking the close on.  The user
+      // can clean it up from Talk manually.
+      invoke('delete_talk_room', { ncId, roomToken: room }).catch((e) => {
+        console.warn('delete_talk_room on cancel failed', e)
+      })
+      talkRoomToken = null
+    }
     onclose()
   }
 
@@ -1301,6 +1401,7 @@
     ncId={ncAccountId}
     initialName={subject}
     initialParticipants={recipients()}
+    deferParticipants={true}
     onclose={() => (showTalkModal = false)}
     oncreated={onTalkRoomCreated}
   />
