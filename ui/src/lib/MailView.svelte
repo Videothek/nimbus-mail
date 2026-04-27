@@ -154,6 +154,18 @@
         if (email !== cur) return
         const summary = await invoke<InviteSummary>('parse_event_invite', { bytes })
         if (email !== cur) return
+        // Only show the RSVP card for organiser-sent invites
+        // (`METHOD:REQUEST`).  Attendee REPLY messages — which is
+        // what comes back when a recipient of OUR invite clicks
+        // Accept/Decline — also carry a `text/calendar` part, but
+        // they're not actionable for the organiser; the card
+        // would just be noise.  CANCEL / PUBLISH / etc. are
+        // similarly out of scope for the RSVP UX.
+        if (summary.method && summary.method !== 'REQUEST') {
+          invite = null
+          inviteLoadError = ''
+          return
+        }
         invite = summary
         inviteLoadError = ''
       } catch (e) {
