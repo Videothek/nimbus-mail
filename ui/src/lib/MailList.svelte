@@ -170,26 +170,39 @@
 
   async function moveGroupToFolder(group: EmailEnvelope[], dest: string) {
     movingGroup = null
-    // Run all moves first, then fire `onmessagemoved` for the
-    // successes.  Calling the callback mid-loop bumps the App's
-    // refreshToken and triggers a MailList re-fetch that races the
-    // next iteration's invoke — the race was previously eating the
-    // last move in a multi-select batch.
-    const succeeded: number[] = []
-    const failures: unknown[] = []
+    // Group by (accountId, sourceFolder) so each subgroup goes
+    // through a single batched IMAP MOVE on the backend
+    // (`move_messages`).  Looping per-UID with `move_message` opened
+    // a fresh IMAP connection every time and some servers were
+    // dropping the last move in the burst due to rapid connection
+    // recycling — the batched command does the whole subgroup in
+    // one COPY + STORE + EXPUNGE round-trip.
+    const groups = new Map<
+      string,
+      { accountId: string; folder: string; uids: number[] }
+    >()
     for (const env of group) {
       const { accountId: src, folder: srcFolder } = srcCoordinates(env)
       if (dest === srcFolder) continue
+      const key = `${src} ${srcFolder}`
+      const existing = groups.get(key)
+      if (existing) existing.uids.push(env.uid)
+      else groups.set(key, { accountId: src, folder: srcFolder, uids: [env.uid] })
+    }
+
+    const succeeded: number[] = []
+    const failures: unknown[] = []
+    for (const g of groups.values()) {
       try {
-        await invoke('move_message', {
-          accountId: src,
-          folder: srcFolder,
-          uid: env.uid,
+        const moved = await invoke<number[]>('move_messages', {
+          accountId: g.accountId,
+          folder: g.folder,
+          uids: g.uids,
           destFolder: dest,
         })
-        succeeded.push(env.uid)
+        succeeded.push(...moved)
       } catch (err) {
-        console.warn('move_message failed', err)
+        console.warn('move_messages failed', err)
         failures.push(err)
       }
     }
@@ -198,9 +211,9 @@
     }
     if (failures.length > 0) {
       error =
-        failures.length === group.length
+        succeeded.length === 0
           ? formatError(failures[0]) || 'Failed to move message'
-          : `Moved ${succeeded.length} of ${group.length} messages — ${failures.length} failed.`
+          : `Moved ${succeeded.length} of ${group.length} messages — ${failures.length} group(s) failed.`
     }
     multiSelectedUids = new Set()
   }

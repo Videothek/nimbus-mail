@@ -3105,6 +3105,72 @@ async fn move_message(
     result
 }
 
+/// Batch variant of `move_message` (#89): every message in `uids`
+/// moves from the same source folder to the same destination on a
+/// single IMAP session.  Issues the UID COPY + UID STORE with a
+/// comma-joined UID set so the server handles the lot in one
+/// round-trip, and EXPUNGEs once at the end.  Per-call
+/// connect/login/logout overhead drops from N to 1, and we no
+/// longer race per-message connections — the previous "loop in JS
+/// + invoke per UID" flow lost the last move on some servers due
+/// to rapid connection recycling.
+///
+/// Returns the list of UIDs the cache + server agree are gone, so
+/// the JS caller can fire its post-move callbacks against a
+/// definite success set.
+#[tauri::command]
+async fn move_messages(
+    account_id: String,
+    folder: String,
+    uids: Vec<u32>,
+    dest_folder: String,
+    cache: State<'_, Cache>,
+) -> Result<Vec<u32>, NimbusError> {
+    if uids.is_empty() {
+        return Ok(vec![]);
+    }
+    let account = load_account(&cache, &account_id)?;
+
+    if uses_jmap(&account) {
+        return Err(NimbusError::Other(
+            "Move via JMAP is not yet implemented — this account uses JMAP".into(),
+        ));
+    }
+
+    if dest_folder.eq_ignore_ascii_case(&folder) {
+        return Ok(vec![]); // move-to-self noop
+    }
+
+    let password = credentials::get_imap_password(&account.id)?;
+    let mut client = ImapClient::connect(
+        &account.imap_host,
+        account.imap_port,
+        &account.email,
+        &password,
+        &account.trusted_certs,
+    )
+    .await?;
+    let result = client
+        .move_messages_batch(&folder, &uids, &dest_folder)
+        .await;
+    let _ = client.logout().await;
+
+    result?;
+
+    // Drop the source-folder envelope rows for each successful UID so
+    // the next incremental `fetch_envelopes` doesn't have to.  The
+    // batch IMAP command is all-or-nothing — either every UID moved
+    // or the whole call returned an error — so once we get here the
+    // entire input set is on the destination side.
+    for uid in &uids {
+        if let Err(e) = cache.remove_envelope(&account_id, &folder, *uid) {
+            tracing::warn!("remove_envelope after move_messages failed: {e}");
+        }
+    }
+
+    Ok(uids)
+}
+
 /// Locate the account's Archive folder via the IMAP `\Archive`
 /// special-use attribute or a name-based fallback. Same strategy as
 /// `pick_sent_folder` / `pick_drafts_folder`.
@@ -4296,6 +4362,7 @@ fn main() {
             delete_message,
             archive_message,
             move_message,
+            move_messages,
             get_cached_envelopes,
             get_unified_cached_envelopes,
             get_cached_message,

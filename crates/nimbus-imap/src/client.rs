@@ -914,6 +914,78 @@ impl ImapClient {
         Ok(())
     }
 
+    /// Move a *batch* of messages between folders on the current
+    /// session.  Same COPY+STORE+EXPUNGE shape as `move_message`,
+    /// but does the UID COPY and UID STORE with a comma-joined UID
+    /// set so the server processes the lot in one round-trip, and
+    /// EXPUNGEs once at the end.  Single SELECT, single COPY,
+    /// single STORE, single EXPUNGE — N×3 round-trips collapse to
+    /// 4, and there's no chance of racing per-message connection
+    /// state across rapid sequential calls.
+    ///
+    /// Used by the multi-select drag-and-drop and right-click move
+    /// flows in MailList where N can easily be 5–50 messages and a
+    /// per-message connect/login/logout dance was both slow and,
+    /// on some servers, dropping the last move outright due to
+    /// rate-limiting / connection-recycling weirdness.
+    pub async fn move_messages_batch(
+        &mut self,
+        from_folder: &str,
+        uids: &[u32],
+        to_folder: &str,
+    ) -> Result<(), NimbusError> {
+        if uids.is_empty() {
+            return Ok(());
+        }
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        session.select(to_wire(from_folder)).await.map_err(|e| {
+            NimbusError::Protocol(format!("Failed to select folder '{from_folder}': {e}"))
+        })?;
+
+        // IMAP allows comma-separated UID sets in UID COPY / UID
+        // STORE — one round-trip moves the whole batch.
+        let uid_set: String = uids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+
+        session
+            .uid_copy(&uid_set, to_wire(to_folder))
+            .await
+            .map_err(|e| {
+                NimbusError::Protocol(format!(
+                    "UID COPY {uid_set} from '{from_folder}' to '{to_folder}' failed: {e}"
+                ))
+            })?;
+
+        let _updates: Vec<_> = session
+            .uid_store(&uid_set, "+FLAGS (\\Deleted)")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID STORE (\\Deleted) failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read UID STORE: {e}")))?;
+
+        let _expunged: Vec<_> = session
+            .expunge()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("EXPUNGE failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read EXPUNGE: {e}")))?;
+
+        info!(
+            "Moved {} UIDs from '{from_folder}' to '{to_folder}'",
+            uids.len()
+        );
+        Ok(())
+    }
+
     /// Permanently remove a message from a folder via the two-step IMAP
     /// dance: `UID STORE +FLAGS (\Deleted)` to mark it, then `EXPUNGE`
     /// to actually reclaim it from the mailbox. Without the EXPUNGE the
