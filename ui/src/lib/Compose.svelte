@@ -1298,7 +1298,12 @@
       </div>
 
       <!-- `flex-1 min-h-0` makes this the stretchy slot in the body
-           column; the editor inside uses `h-full` to fill it. -->
+           column; the editor inside uses `h-full` to fill it.
+
+           The trailing-actions snippet hands the editor toolbar
+           our Attach / Talk / Files / Send / Save Draft / Discard
+           buttons so they share one toolbar row with the rich-text
+           controls instead of living in a separate footer (#103). -->
       <div class="flex-1 min-h-0 flex flex-col">
         <RichTextEditor
           content={bodyHtml}
@@ -1310,6 +1315,7 @@
           attachmentsForRef={attachments
             .filter((a): a is Attachment & { content_id: string } => !!a.content_id)
             .map((a) => ({ content_id: a.content_id, filename: a.filename }))}
+          actionsTrailing={composeActions}
         />
       </div>
 
@@ -1329,46 +1335,94 @@
       {/if}
     </div>
 
-    <!-- Footer with wrap-on-narrow. Primary actions (Send + the
-         attach / NC / Talk / event buttons) stay left-aligned and
-         reflow onto a second row when the modal is narrow — the
-         `flex-wrap` is what keeps "Creating Talk room…" from
-         pushing Cancel off the edge on smaller widths. Cancel is
-         pinned to the trailing edge by the `ml-auto` spacer so the
-         user always has a consistent escape hatch. -->
-    <footer class="px-5 py-3 border-t border-surface-200 dark:border-surface-700 flex flex-wrap items-center gap-2">
-      <button class="btn preset-filled-primary-500" disabled={sending} onclick={send}>
-        {sending ? 'Sending…' : 'Send'}
-      </button>
-      <label class="btn preset-outlined-surface-500 cursor-pointer">
-        📎 Attach
-        <input type="file" multiple class="hidden" onchange={onPickFiles} />
-      </label>
-      <button
-        type="button"
-        class="btn preset-outlined-surface-500"
-        onclick={() => (showNcPicker = true)}
-      >☁️ From Nextcloud</button>
-      <button
-        type="button"
-        class="btn preset-outlined-surface-500"
-        title="Create a Nextcloud Talk room with the current recipients and add the join link to this email"
-        onclick={openTalkModal}
-      >💬 Talk room</button>
-      <button
-        type="button"
-        class="btn preset-outlined-surface-500"
-        disabled={openingEvent}
-        title={
-          createdTalkLink
-            ? 'Create a calendar event with the current recipients as attendees (existing Talk link prefilled)'
-            : 'Create a Talk room and a calendar event with the current recipients — the Talk link is added to the event URL and the email body'
-        }
-        onclick={openEventEditor}
-      >{openingEvent ? (createdTalkLink ? 'Loading…' : 'Creating Talk room…') : '📅 Add event'}</button>
-      <button class="btn preset-outlined-surface-500" disabled={sending} onclick={saveDraft}>Save draft</button>
-      <button class="btn preset-outlined-surface-500 ml-auto" onclick={cancel}>Cancel</button>
-    </footer>
+{/snippet}
+
+<!--
+  Compose's contribution to the unified toolbar (#103).  Lives at
+  the right edge of `RichTextEditor`'s toolbar row via the
+  `actionsTrailing` snippet prop.  Two visual groups:
+
+    - **Attach & share** — paperclip / Nextcloud / Talk / Event.
+    - **Send actions** — Save draft, Send (primary), Discard.
+
+  Buttons are icon + tiny stacked label so the row stays compact
+  while still being scannable.  Send is the primary-filled button
+  and lives last in the row so it has the same visual weight as
+  every other "primary action top-right" the rest of the app uses.
+-->
+{#snippet composeActions()}
+  <!-- Attach & share group -->
+  <label class="ctb" title="Attach a file from your computer">
+    <span class="ctb-icon">📎</span>
+    <span class="ctb-label">Attach</span>
+    <input type="file" multiple class="hidden" onchange={onPickFiles} />
+  </label>
+  <button
+    type="button"
+    class="ctb"
+    title="Attach a file or link from Nextcloud"
+    onclick={() => (showNcPicker = true)}
+  >
+    <span class="ctb-icon">☁️</span>
+    <span class="ctb-label">Files</span>
+  </button>
+  <button
+    type="button"
+    class="ctb"
+    title="Create a Nextcloud Talk room with the current recipients"
+    onclick={openTalkModal}
+  >
+    <span class="ctb-icon">💬</span>
+    <span class="ctb-label">Talk</span>
+  </button>
+  <button
+    type="button"
+    class="ctb"
+    disabled={openingEvent}
+    title={
+      createdTalkLink
+        ? 'Create a calendar event with the current recipients (existing Talk link prefilled)'
+        : 'Create a Talk room + calendar event with the current recipients'
+    }
+    onclick={openEventEditor}
+  >
+    <span class="ctb-icon">{openingEvent ? '⏳' : '📅'}</span>
+    <span class="ctb-label">{openingEvent ? 'Creating…' : 'Event'}</span>
+  </button>
+
+  <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
+
+  <!-- Send actions group -->
+  <button
+    type="button"
+    class="ctb"
+    disabled={sending}
+    title="Save the current draft to the Drafts folder"
+    onclick={saveDraft}
+  >
+    <span class="ctb-icon">💾</span>
+    <span class="ctb-label">Save draft</span>
+  </button>
+  <button
+    type="button"
+    class="ctb ctb-danger"
+    disabled={sending}
+    title="Discard this draft and close the window"
+    onclick={cancel}
+  >
+    <span class="ctb-icon">🗑</span>
+    <span class="ctb-label">Discard</span>
+  </button>
+  <button
+    type="button"
+    class="ctb ctb-primary"
+    disabled={sending}
+    title="Send the message"
+    onclick={send}
+  >
+    <span class="ctb-icon">📤</span>
+    <span class="ctb-label">{sending ? 'Sending…' : 'Send'}</span>
+  </button>
 {/snippet}
 
 {#if showNcPicker}
@@ -1445,3 +1499,55 @@
     onsaved={onEventSaved}
   />
 {/if}
+
+<style>
+  /* Compose-toolbar buttons (#103).  Stacked icon + tiny label so
+     each action stays compact in the unified toolbar row.  The
+     `:global` is needed because these buttons render inside the
+     RichTextEditor's `actionsTrailing` snippet — Svelte scopes
+     parent styles to the parent's DOM, but snippet contents land
+     in the child component's tree.  Variants:
+       - `.ctb-primary` — the Send button (filled primary).
+       - `.ctb-danger`  — the Discard button (red on hover). */
+  :global(.ctb) {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.05rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.375rem;
+    line-height: 1;
+    color: inherit;
+    cursor: pointer;
+    transition: background-color 100ms ease, color 100ms ease;
+  }
+  :global(.ctb:hover:not(:disabled)) {
+    background: rgb(0 0 0 / 0.06);
+  }
+  :global([data-mode='dark'] .ctb:hover:not(:disabled)) {
+    background: rgb(255 255 255 / 0.08);
+  }
+  :global(.ctb:disabled) {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  :global(.ctb-icon) {
+    font-size: 1rem;
+  }
+  :global(.ctb-label) {
+    font-size: 0.625rem;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  :global(.ctb-primary) {
+    color: white;
+    background: var(--color-primary-500, #3b82f6);
+  }
+  :global(.ctb-primary:hover:not(:disabled)) {
+    background: var(--color-primary-600, #2563eb);
+  }
+  :global(.ctb-danger:hover:not(:disabled)) {
+    color: rgb(239 68 68);
+    background: rgb(239 68 68 / 0.12);
+  }
+</style>
