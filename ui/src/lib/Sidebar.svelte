@@ -119,24 +119,34 @@
     e.preventDefault()
     const raw = e.dataTransfer?.getData('application/x-nimbus-mail')
     if (!raw) return
-    let payload: { accountId: string; folder: string; uid: number }
+    // Payload is always an array; multi-select drags carry several
+    // entries, single-row drags carry one.  Iterate sequentially —
+    // `move_message` opens a short-lived IMAP connection per call,
+    // and N is small in practice (the user just selected them by
+    // hand).  First failure halts the batch and surfaces in the
+    // sidebar's error banner.
+    let payload: { accountId: string; folder: string; uid: number }[]
     try {
-      payload = JSON.parse(raw)
+      const parsed = JSON.parse(raw)
+      payload = Array.isArray(parsed) ? parsed : [parsed]
     } catch {
       return
     }
-    if (target.name === payload.folder) return // move-to-self
-    try {
-      await invoke('move_message', {
-        accountId: payload.accountId,
-        folder: payload.folder,
-        uid: payload.uid,
-        destFolder: target.name,
-      })
-      onmessagemoved?.(payload.uid)
-    } catch (err) {
-      console.warn('move_message via drag-and-drop failed', err)
-      error = formatError(err) || 'Failed to move message'
+    for (const item of payload) {
+      if (target.name === item.folder) continue // move-to-self
+      try {
+        await invoke('move_message', {
+          accountId: item.accountId,
+          folder: item.folder,
+          uid: item.uid,
+          destFolder: target.name,
+        })
+        onmessagemoved?.(item.uid)
+      } catch (err) {
+        console.warn('move_message via drag-and-drop failed', err)
+        error = formatError(err) || 'Failed to move message'
+        return
+      }
     }
   }
 
