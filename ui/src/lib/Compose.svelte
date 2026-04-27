@@ -23,7 +23,7 @@
     type ContactSuggestion,
   } from './RichTextEditor.svelte'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
-  import NextcloudFilePicker from './NextcloudFilePicker.svelte'
+  import NextcloudFilePicker, { type ShareLink } from './NextcloudFilePicker.svelte'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
   import EventEditor, { type SavedEvent } from './EventEditor.svelte'
   import { openComposeInStandaloneWindow } from './standaloneComposeWindow'
@@ -184,6 +184,38 @@
     return recipients.length + prefix.length <= max
       ? `${prefix}${recipients}`
       : `${prefix}${recipients.slice(0, max - prefix.length - 1)}…`
+  })
+
+  /** Shares minted from this Compose during the current draft.
+   *  We hold onto each one's `id` + `ncId` so when the recipient
+   *  fields change *after* the share has been created, an effect
+   *  below can re-PUT the new label.  Otherwise the audit trail
+   *  in Nextcloud's "Shared with others" list freezes whatever
+   *  the recipients were when the user clicked Share. */
+  let createdShares = $state<ShareLink[]>([])
+
+  // Debounced label-update effect: when `shareLabel` changes AND we
+  // already have minted shares, push the new label.  Debounced so
+  // typing the recipient list doesn't hammer the OCS endpoint —
+  // 800ms is comfortable for "user has stopped typing" on a To line.
+  $effect(() => {
+    // Track the dependencies explicitly so Svelte re-runs the effect
+    // when either side changes.
+    const label = shareLabel
+    const shares = createdShares
+    if (shares.length === 0) return
+    const handle = setTimeout(() => {
+      for (const s of shares) {
+        invoke('update_nextcloud_share_label', {
+          ncId: s.ncId,
+          shareId: s.id,
+          label,
+        }).catch((e) => {
+          console.warn('update_nextcloud_share_label failed for share', s.id, e)
+        })
+      }
+    }, 800)
+    return () => clearTimeout(handle)
   })
 
   // Whether the Nextcloud file picker modal is mounted. Picker is lazy
@@ -1222,6 +1254,10 @@
       attachments = [...attachments, ...stamped]
     }}
     onlinks={(links) => {
+      // Track every share that's been minted from this Compose so a
+      // later edit of To / Cc / Bcc can re-PUT a fresh `For: …`
+      // label onto each one (#91 follow-up).  See `$effect` below.
+      createdShares = [...createdShares, ...links]
       // Drop a small "Shared via Nextcloud" block at the end of the
       // message body. Each link is its own paragraph so it survives
       // mail clients that strip styling. We escape the filename text

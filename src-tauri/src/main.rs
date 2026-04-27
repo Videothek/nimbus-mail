@@ -538,30 +538,40 @@ async fn download_nextcloud_file(
     .await
 }
 
-/// Create a public share link for a Nextcloud file and return the URL.
+/// Result of `create_nextcloud_share` — both the public URL (for
+/// pasting into the email body) and the share id (for later
+/// label updates via `update_nextcloud_share_label`).
+#[derive(serde::Serialize)]
+struct NextcloudShareResult {
+    id: String,
+    url: String,
+}
+
+/// Create a public share link for a Nextcloud file and return the
+/// id + URL.
 ///
 /// The compose UI uses this to insert a "click here to download" link
 /// into the email body — a lighter alternative to attaching the bytes
 /// for big files or files the recipient might want to re-download.
 ///
-/// `password` is optional; when supplied the share is gated behind
-/// it on the recipient side. The OCS endpoint enforces the user's
-/// configured password policy (length, complexity), so a too-weak
-/// password surfaces as a `NimbusError::Nextcloud` from the server
-/// rather than a local validation rule we have to maintain.
-///
-/// `label` is optional and surfaces in Nextcloud's "Shared with
-/// others" list (#91).  Compose passes the recipient string so each
-/// share gets an audit trail of "who got this link" instead of the
-/// default auto-generated name.  Passing `None` (or an empty string)
-/// leaves Nextcloud's auto-naming intact.
+/// - `password`: optional, share is gated behind it on the recipient
+///   side. The OCS endpoint enforces the user's configured password
+///   policy.
+/// - `label`: optional human-readable name for the share, visible
+///   in Nextcloud's "Shared with others" list (#91).  Compose passes
+///   the recipient string for an audit trail.  Empty / `None` leaves
+///   Nextcloud's auto-naming intact.
+/// - `permissions`: Nextcloud's permission bitmask
+///   (1=read, 2=update, 4=create, 8=delete, 16=share).  The Compose
+///   share modal exposes the common combinations as a dropdown.
 #[tauri::command]
 async fn create_nextcloud_share(
     nc_id: String,
     path: String,
     password: Option<String>,
     label: Option<String>,
-) -> Result<String, NimbusError> {
+    permissions: Option<u8>,
+) -> Result<NextcloudShareResult, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let share = nimbus_nextcloud::create_public_share(
@@ -571,9 +581,36 @@ async fn create_nextcloud_share(
         &path,
         password.as_deref(),
         label.as_deref(),
+        permissions.unwrap_or(nimbus_nextcloud::shares::PERM_READ_ONLY),
     )
     .await?;
-    Ok(share.url)
+    Ok(NextcloudShareResult {
+        id: share.id,
+        url: share.url,
+    })
+}
+
+/// Update the human-readable label of an existing Nextcloud share
+/// (#91 follow-up).  Compose calls this when the user edits the
+/// recipient list after a share link has already been minted —
+/// otherwise the audit trail in Nextcloud's "Shared with others"
+/// list freezes whatever the recipients were at click time.
+#[tauri::command]
+async fn update_nextcloud_share_label(
+    nc_id: String,
+    share_id: String,
+    label: String,
+) -> Result<(), NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::update_share_label(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &share_id,
+        &label,
+    )
+    .await
 }
 
 /// Write raw bytes to a local file.
@@ -4388,6 +4425,7 @@ fn main() {
             list_nextcloud_files,
             download_nextcloud_file,
             create_nextcloud_share,
+            update_nextcloud_share_label,
             create_nextcloud_directory,
             list_talk_rooms,
             create_talk_room,

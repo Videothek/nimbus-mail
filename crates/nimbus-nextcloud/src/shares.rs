@@ -61,18 +61,20 @@ use crate::client;
 /// and a different UI gesture.
 const SHARE_TYPE_PUBLIC_LINK: u8 = 3;
 
-/// Default read-only permission bitmask. Nextcloud's bitfield is:
-/// 1=read, 2=update, 4=create, 8=delete, 16=share. For email
-/// attachments "read" is what we want — recipients shouldn't be able
-/// to overwrite the file in your drive.
-const PERM_READ_ONLY: u8 = 1;
+/// Nextcloud's permission bitfield for shares:
+/// 1=read, 2=update, 4=create, 8=delete, 16=share.  The Tauri layer
+/// passes the chosen value straight through so the UI can mirror
+/// Nextcloud's own "View only / Allow editing / …" picker.
+pub const PERM_READ_ONLY: u8 = 1;
 
-/// What the caller gets back after creating a share. Just the URL for
-/// now — that's all the compose UI needs to drop into the body. If we
-/// later want to display the share in a "Manage shares" panel, we can
-/// surface the share id and token here without breaking callers.
+/// What the caller gets back after creating a share.  The `id` is
+/// stored so callers can later update / delete the share without
+/// re-fetching it from the server (e.g. patching the label as the
+/// user edits the recipient list mid-compose, #91 follow-up).
 #[derive(Debug, Clone)]
 pub struct PublicShare {
+    /// Stable Nextcloud share id (string-encoded integer).
+    pub id: String,
     /// Public URL the recipient opens, e.g. `https://cloud.example.com/s/abc123`.
     pub url: String,
 }
@@ -114,6 +116,10 @@ struct OcsMeta {
 
 #[derive(Debug, Deserialize)]
 struct ShareData {
+    /// Nextcloud serializes the id as a string ("42") in modern
+    /// versions and as a number in some older releases — accept both
+    /// via `serde_json::Value` and `to_string()` it.
+    id: serde_json::Value,
     url: String,
 }
 
@@ -136,14 +142,16 @@ pub async fn create_public_share(
     path: &str,
     password: Option<&str>,
     label: Option<&str>,
+    permissions: u8,
 ) -> Result<PublicShare, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let url = format!("{server}/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json");
 
     tracing::debug!(
-        "POST {url} for path {path} (password: {}, label: {})",
+        "POST {url} for path {path} (password: {}, label: {}, permissions: {})",
         if password.is_some() { "yes" } else { "no" },
-        if label.is_some() { "yes" } else { "no" }
+        if label.is_some() { "yes" } else { "no" },
+        permissions
     );
 
     let http = client::build()?;
@@ -154,11 +162,11 @@ pub async fn create_public_share(
     // overwrites Nextcloud's auto-derived name with an empty string.
     // Omitting either field entirely is safer than sending empty.
     let share_type = SHARE_TYPE_PUBLIC_LINK.to_string();
-    let permissions = PERM_READ_ONLY.to_string();
+    let permissions_s = permissions.to_string();
     let mut form: Vec<(&str, &str)> = vec![
         ("path", path),
         ("shareType", &share_type),
-        ("permissions", &permissions),
+        ("permissions", &permissions_s),
     ];
     if let Some(pw) = password
         && !pw.is_empty() {
@@ -327,7 +335,96 @@ fn parse_share_response(body: &str) -> Result<PublicShare, NimbusError> {
 
     let data: ShareData = serde_json::from_value(raw.ocs.data)
         .map_err(|e| NimbusError::Protocol(format!("share data bad shape: {e}")))?;
-    Ok(PublicShare { url: data.url })
+    let id = match data.id {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Number(n) => n.to_string(),
+        other => {
+            return Err(NimbusError::Protocol(format!(
+                "share id bad shape: {other}"
+            )));
+        }
+    };
+    Ok(PublicShare { id, url: data.url })
+}
+
+/// Update an existing public share's label (#91 follow-up).
+///
+/// Lets Compose track shares it minted earlier in a draft and
+/// re-PUT a fresh `For: <recipients>` label whenever the user
+/// edits the To / Cc / Bcc fields after the link was already
+/// dropped into the body.  Without this, the Nextcloud audit
+/// trail freezes whatever the recipient string was at click time.
+///
+/// Endpoint:
+/// ```text
+///   PUT  /ocs/v2.php/apps/files_sharing/api/v1/shares/{id}?format=json
+///   OCS-APIRequest: true
+///   label=<new label>
+/// ```
+///
+/// An empty `label` would clobber the existing one with the empty
+/// string on Nextcloud's side; callers should skip the call when
+/// they have nothing to write rather than relying on an empty-
+/// string short-circuit here.
+pub async fn update_share_label(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    share_id: &str,
+    label: &str,
+) -> Result<(), NimbusError> {
+    if share_id.is_empty() {
+        return Err(NimbusError::Other("share_id is empty".into()));
+    }
+    let server = client::normalize_server_url(server_url);
+    let url = format!(
+        "{server}/ocs/v2.php/apps/files_sharing/api/v1/shares/{share_id}?format=json"
+    );
+
+    tracing::debug!("PUT {url} for share {share_id} (label len {})", label.len());
+
+    let http = client::build()?;
+    let resp = http
+        .put(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(username, Some(app_password))
+        .form(&[("label", label)])
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("share label update failed: {e}")))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(NimbusError::Auth(
+            "Nextcloud rejected app password (revoked or expired)".into(),
+        ));
+    }
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| NimbusError::Network(format!("share label body read failed: {e}")))?;
+
+    if !status.is_success() {
+        return Err(NimbusError::Nextcloud(
+            ocs_message(&body)
+                .map(|m| friendly_share_error(&m))
+                .unwrap_or_else(|| body.trim().to_string()),
+        ));
+    }
+
+    // Same OCS-success-but-failure check as create_public_share.
+    if let Ok(raw) = serde_json::from_str::<OcsRaw>(&body)
+        && (raw.ocs.meta.status != "ok" || raw.ocs.meta.statuscode >= 400)
+    {
+        return Err(NimbusError::Nextcloud(format!(
+            "share label update failed (OCS {}): {}",
+            raw.ocs.meta.statuscode,
+            raw.ocs.meta.message.unwrap_or_default()
+        )));
+    }
+    Ok(())
 }
 
 // ── Tests ──────────────────────────────────────────────────────
@@ -359,6 +456,20 @@ mod tests {
     fn parses_successful_share() {
         let share = parse_share_response(OK_RESPONSE).unwrap();
         assert_eq!(share.url, "https://cloud.example.com/s/abc123");
+        assert_eq!(share.id, "42");
+    }
+
+    #[test]
+    fn parses_share_id_from_number() {
+        // Older Nextclouds returned the id as a JSON number.
+        let body = r#"{
+          "ocs": {
+            "meta": { "status": "ok", "statuscode": 200, "message": "OK" },
+            "data": { "id": 99, "url": "https://cloud.example.com/s/x" }
+          }
+        }"#;
+        let share = parse_share_response(body).unwrap();
+        assert_eq!(share.id, "99");
     }
 
     /// Sharing globally disabled — Nextcloud returns HTTP 200 but
