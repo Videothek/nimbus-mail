@@ -102,47 +102,120 @@
   let refreshing = $state(false)
   let error = $state('')
 
-  // ── Move-to-folder picker (#89) — opened via the right-click
-  // "Move to folder…" entry.  We hold the envelope being moved here
-  // (not just a UID) so the picker can target the right account
-  // even in unified mode, and so `move_message` gets the correct
-  // source `folder` field for that envelope.
-  let movingEnvelope = $state<EmailEnvelope | null>(null)
+  // ── Multi-select (#89, follow-up) ─────────────────────────────
+  // Ctrl/Cmd+clicking rows toggles them in this set; plain-clicking
+  // any row clears the set and falls through to the existing
+  // single-row select (`onselect`).  The set persists across the
+  // session as long as the folder + account stay the same — we
+  // clear it whenever the inputs change so a leftover selection
+  // never leaks across folders.
+  let multiSelectedUids = $state<Set<number>>(new Set())
 
-  async function moveEnvelopeToFolder(env: EmailEnvelope, dest: string) {
-    movingEnvelope = null
-    const srcAccountId = unified && env.account_id ? env.account_id : accountId
-    const srcFolder = env.folder || folder
-    if (dest === srcFolder) return // move-to-self noop
-    try {
-      await invoke('move_message', {
-        accountId: srcAccountId,
-        folder: srcFolder,
-        uid: env.uid,
-        destFolder: dest,
-      })
-      onmessagemoved?.(env.uid)
-    } catch (err) {
-      console.warn('move_message via right-click failed', err)
-      error = formatError(err) || 'Failed to move message'
+  $effect(() => {
+    // Tracked so the effect re-runs on context change.
+    void accountId
+    void folder
+    void unified
+    multiSelectedUids = new Set()
+  })
+
+  function isMulti(uid: number): boolean {
+    return multiSelectedUids.has(uid)
+  }
+
+  function onRowClick(e: MouseEvent, env: EmailEnvelope) {
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl/Cmd+click → toggle in multi-select; never opens the row.
+      const next = new Set(multiSelectedUids)
+      if (next.has(env.uid)) next.delete(env.uid)
+      else next.add(env.uid)
+      multiSelectedUids = next
+      return
+    }
+    // Plain click — clear multi-select and open as before.
+    if (multiSelectedUids.size > 0) multiSelectedUids = new Set()
+    onselect(env.uid, unified ? env.account_id : undefined)
+  }
+
+  /** Resolve the right (accountId, folder) tuple for a given
+   *  envelope.  In unified mode the row carries its owning account
+   *  on `env.account_id`; outside unified mode the active account +
+   *  folder props are the truth.  Used by drag, right-click move,
+   *  and the picker callback. */
+  function srcCoordinates(env: EmailEnvelope) {
+    return {
+      accountId: unified && env.account_id ? env.account_id : accountId,
+      folder: env.folder || folder,
     }
   }
 
-  // ── Drag source: serialize {accountId, folder, uid} into the
-  // dataTransfer payload so Sidebar's folder rows (#89) can call
-  // `move_message` with the right source coordinates on drop.  The
-  // custom `application/x-nimbus-mail` MIME type means the browser
-  // ignores the drag for any non-Sidebar drop target (system files,
-  // text fields, etc.) — no accidental no-op drops onto random UI.
+  /** Envelopes that should be acted on for an operation triggered
+   *  on `env`.  When `env` is part of a multi-select group with
+   *  more than one row, we operate on the whole group; otherwise
+   *  it's just `env` (this matches Outlook / Apple Mail's
+   *  right-click + drag behaviour). */
+  function affectedEnvelopes(env: EmailEnvelope): EmailEnvelope[] {
+    if (multiSelectedUids.size > 1 && multiSelectedUids.has(env.uid)) {
+      return envelopes.filter((e) => multiSelectedUids.has(e.uid))
+    }
+    return [env]
+  }
+
+  // ── Move-to-folder picker (#89) — opened via the right-click
+  // "Move to folder…" entry.  We hold the envelope group being
+  // moved here so the picker can target the right account even in
+  // unified mode, and so `move_message` gets the correct source
+  // `folder` field for each envelope.
+  let movingGroup = $state<EmailEnvelope[] | null>(null)
+
+  async function moveGroupToFolder(group: EmailEnvelope[], dest: string) {
+    movingGroup = null
+    // Sequential calls keep error reporting simple (first failure
+    // halts the batch).  N is small in practice and `move_message`
+    // already opens its own short-lived IMAP connection per call.
+    for (const env of group) {
+      const { accountId: src, folder: srcFolder } = srcCoordinates(env)
+      if (dest === srcFolder) continue
+      try {
+        await invoke('move_message', {
+          accountId: src,
+          folder: srcFolder,
+          uid: env.uid,
+          destFolder: dest,
+        })
+        onmessagemoved?.(env.uid)
+      } catch (err) {
+        console.warn('move_message failed', err)
+        error = formatError(err) || 'Failed to move message'
+        return
+      }
+    }
+    multiSelectedUids = new Set()
+  }
+
+  // ── Drag source: serialize a list of {accountId, folder, uid}
+  // into the dataTransfer payload so Sidebar's folder rows (#89)
+  // can iterate moves on drop.  The payload is always an array —
+  // single-row drags become a 1-element list.  When the dragged
+  // row is part of a multi-select group, the whole group rides
+  // along.  The custom `application/x-nimbus-mail` MIME type means
+  // the browser ignores the drag for non-Sidebar drop targets.
   function onMailDragStart(e: DragEvent, env: EmailEnvelope) {
     if (!e.dataTransfer) return
-    const srcAccountId = unified && env.account_id ? env.account_id : accountId
-    const payload = JSON.stringify({
-      accountId: srcAccountId,
-      folder,
-      uid: env.uid,
+    // Dragging a row that *isn't* part of an existing multi-select
+    // shouldn't drag the multi-select set — that would surprise the
+    // user.  The affectedEnvelopes() rule already does the right
+    // thing: it only expands to the group when the dragged row is
+    // a member.
+    const group = affectedEnvelopes(env)
+    const payload = group.map((g) => {
+      const { accountId: src, folder: srcFolder } = srcCoordinates(g)
+      return { accountId: src, folder: srcFolder, uid: g.uid }
     })
-    e.dataTransfer.setData('application/x-nimbus-mail', payload)
+    e.dataTransfer.setData(
+      'application/x-nimbus-mail',
+      JSON.stringify(payload),
+    )
     e.dataTransfer.effectAllowed = 'move'
   }
 
@@ -299,23 +372,26 @@
     {:else}
       {#each envelopes as env (`${env.account_id}:${env.uid}`)}
         {@const selected = selectedUid === env.uid && (!unified || selectedUid === env.uid)}
+        {@const multi = isMulti(env.uid)}
         <!-- Unread visual treatment: a 3px themed accent strip on the
              leading edge plus a subtle primary tint on the row.  The
              border is always present (transparent when read) so rows
-             never reflow between states.  Selection wins over the
-             unread tint for the background colour, but both states
-             can co-exist on the accent strip. -->
+             never reflow between states.  Selection > multi-select >
+             unread tint for the background colour; the accent strip
+             stays orthogonal so an unread+selected row keeps both. -->
         <button
           class="w-full text-left pl-3 pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors
             {!env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
             {selected
               ? 'bg-primary-500/10'
-              : !env.is_read
-                ? 'bg-primary-500/[0.04] dark:bg-primary-500/[0.07] hover:bg-primary-500/10'
-                : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+              : multi
+                ? 'bg-primary-500/15 hover:bg-primary-500/20'
+                : !env.is_read
+                  ? 'bg-primary-500/[0.04] dark:bg-primary-500/[0.07] hover:bg-primary-500/10'
+                  : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
           draggable="true"
           ondragstart={(e) => onMailDragStart(e, env)}
-          onclick={() => onselect(env.uid, unified ? env.account_id : undefined)}
+          onclick={(e) => onRowClick(e, env)}
           ondblclick={() =>
             openMailInStandaloneWindow(
               unified && env.account_id ? env.account_id : accountId,
@@ -345,6 +421,8 @@
 </div>
 
 {#if contextMenu}
+  {@const ctxGroup = affectedEnvelopes(contextMenu.env)}
+  {@const groupSize = ctxGroup.length}
   <!-- Right-click menu. Stop propagation so a click *inside* the menu
        doesn't reach the window-level dismiss listener and close it
        before the action handler runs. `role="menu"` keeps screen
@@ -361,33 +439,59 @@
     <button
       type="button"
       class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
-      onclick={() => contextMenu && toggleEnvelopeRead(contextMenu.env)}
+      onclick={() => {
+        if (!contextMenu) return
+        // For a single-row context menu just flip the row's read
+        // flag.  For a multi-row group flip every row to the
+        // *opposite* of the right-clicked row's current state, so
+        // a mixed group converges to one consistent state in one
+        // click (matches Outlook / Apple Mail).
+        if (groupSize > 1) {
+          const target = !contextMenu.env.is_read
+          for (const env of ctxGroup) {
+            if (env.is_read !== target) void toggleEnvelopeRead(env)
+          }
+          multiSelectedUids = new Set()
+          closeContextMenu()
+        } else {
+          void toggleEnvelopeRead(contextMenu.env)
+        }
+      }}
     >
-      {contextMenu.env.is_read ? 'Mark as unread' : 'Mark as read'}
+      {#if groupSize > 1}
+        Mark {groupSize} as {contextMenu.env.is_read ? 'unread' : 'read'}
+      {:else}
+        {contextMenu.env.is_read ? 'Mark as unread' : 'Mark as read'}
+      {/if}
     </button>
     <button
       type="button"
       class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
       onclick={() => {
         if (!contextMenu) return
-        movingEnvelope = contextMenu.env
+        movingGroup = ctxGroup
         closeContextMenu()
       }}
     >
-      Move to folder…
+      {#if groupSize > 1}
+        Move {groupSize} messages to folder…
+      {:else}
+        Move to folder…
+      {/if}
     </button>
   </div>
 {/if}
 
-{#if movingEnvelope}
+{#if movingGroup && movingGroup.length > 0}
+  {@const head = movingGroup[0]!}
   <MoveFolderPicker
-    accountId={unified && movingEnvelope.account_id ? movingEnvelope.account_id : accountId}
-    currentFolder={movingEnvelope.folder || folder}
+    accountId={unified && head.account_id ? head.account_id : accountId}
+    currentFolder={head.folder || folder}
     accounts={accounts}
     onpicked={(name) => {
-      const env = movingEnvelope
-      if (env) void moveEnvelopeToFolder(env, name)
+      const group = movingGroup
+      if (group) void moveGroupToFolder(group, name)
     }}
-    onclose={() => (movingEnvelope = null)}
+    onclose={() => (movingGroup = null)}
   />
 {/if}
