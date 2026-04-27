@@ -45,6 +45,17 @@
      * sees the bare address.
      */
     initialParticipants?: string[]
+    /**
+     * Compose's draft-lifecycle flow (#86) creates the room empty and
+     * defers the actual invite calls to `Send` — so a discarded
+     * draft can DELETE the room cleanly without ever having spammed
+     * recipients.  In that mode the Talk room is minted with zero
+     * participants here; the parsed address list still flows up via
+     * `oncreated` so the caller can hold onto it for later.  Defaults
+     * to `false` (immediate-add behaviour, matching the Talk-button
+     * use case in MailView).
+     */
+    deferParticipants?: boolean
     onclose: () => void
     /**
      * Fires once the room is created. Carries the freshly minted room
@@ -55,7 +66,14 @@
      */
     oncreated: (room: TalkRoom, participantEmails: string[]) => void
   }
-  const { ncId, initialName = '', initialParticipants = [], onclose, oncreated }: Props = $props()
+  const {
+    ncId,
+    initialName = '',
+    initialParticipants = [],
+    deferParticipants = false,
+    onclose,
+    oncreated,
+  }: Props = $props()
 
   // svelte-ignore state_referenced_locally
   let roomName = $state(initialName)
@@ -104,10 +122,14 @@
     creating = true
     try {
       const participants = buildParticipants()
+      // In deferred mode (Compose's flow), mint the room empty and
+      // hand the parsed list up to the caller — they'll add invites
+      // once the mail actually sends, so discarding the draft can
+      // tear the empty room down with no surprised recipients.
       const room = await invoke<TalkRoom>('create_talk_room', {
         ncId,
         roomName: name,
-        participants,
+        participants: deferParticipants ? [] : participants,
       })
       oncreated(room, participants.map((p) => p.value))
       onclose()

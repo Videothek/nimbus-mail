@@ -1101,6 +1101,54 @@ async fn add_talk_participant(
     .await
 }
 
+/// Batched add — invite a whole list of participants on a single
+/// auth handshake.  Used by Compose's deferred-invite flow (#86):
+/// we create the Talk room empty at compose-time and only invite
+/// the recipients once `Send` actually goes out, so a discarded
+/// draft doesn't leave a room full of strangers in the recipient's
+/// Talk list.  Sequential (not parallel) so the first failure halts
+/// the batch and surfaces as a single error.
+#[tauri::command]
+async fn add_talk_participants(
+    nc_id: String,
+    room_token: String,
+    participants: Vec<nimbus_nextcloud::ParticipantSource>,
+) -> Result<(), NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    for p in &participants {
+        nimbus_nextcloud::add_participant(
+            &account.server_url,
+            &account.username,
+            &app_password,
+            &room_token,
+            p,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Tear down a Talk room (#86).  Compose's `cancel` flow calls this
+/// whenever the user discards a draft that minted a room earlier
+/// in the session — without it, the room would dangle empty in the
+/// user's Talk list with no context.
+#[tauri::command]
+async fn delete_talk_room(
+    nc_id: String,
+    room_token: String,
+) -> Result<(), NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::delete_room(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &room_token,
+    )
+    .await
+}
+
 /// Rename an existing Talk room. Used by the Compose "Add Event"
 /// flow to keep the auto-created Talk room's name in sync with the
 /// final event title once the user saves the event.
@@ -4429,6 +4477,8 @@ fn main() {
             create_nextcloud_directory,
             list_talk_rooms,
             create_talk_room,
+            add_talk_participants,
+            delete_talk_room,
             add_talk_participant,
             rename_talk_room,
             upload_to_nextcloud,
