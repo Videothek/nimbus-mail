@@ -114,6 +114,37 @@ pub async fn delete_resource(
     app_password: &str,
     if_match: Option<&str>,
 ) -> Result<Response, NimbusError> {
+    delete_resource_inner(http, url, username, app_password, if_match, false).await
+}
+
+/// DELETE variant that suppresses Sabre/DAV's auto-iTIP
+/// dispatch via the `Schedule-Reply: F` header (RFC 6638 §8.1).
+/// Used by the "Remove from my calendar" flow on a cancelled
+/// meeting: the organiser already sent CANCEL, the user is
+/// just cleaning up their local copy, and Sabre's default
+/// attendee-side DELETE behaviour would emit a
+/// `METHOD:REPLY;PARTSTAT=DECLINED` to the organiser — noise
+/// (and confusing — the organiser cancelled, why is the
+/// attendee declining?).  Suppressing it keeps the operation
+/// silent.
+pub async fn delete_resource_no_itip(
+    http: &Client,
+    url: &str,
+    username: &str,
+    app_password: &str,
+    if_match: Option<&str>,
+) -> Result<Response, NimbusError> {
+    delete_resource_inner(http, url, username, app_password, if_match, true).await
+}
+
+async fn delete_resource_inner(
+    http: &Client,
+    url: &str,
+    username: &str,
+    app_password: &str,
+    if_match: Option<&str>,
+    suppress_itip: bool,
+) -> Result<Response, NimbusError> {
     let mut req = http.delete(url).basic_auth(username, Some(app_password));
     if let Some(etag) = if_match {
         let v = if etag.starts_with('"') {
@@ -122,6 +153,9 @@ pub async fn delete_resource(
             format!("\"{etag}\"")
         };
         req = req.header("If-Match", v);
+    }
+    if suppress_itip {
+        req = req.header("Schedule-Reply", "F");
     }
     req.send()
         .await

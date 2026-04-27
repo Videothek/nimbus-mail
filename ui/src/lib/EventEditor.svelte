@@ -32,15 +32,18 @@
    * round-trips through `CalendarEvent.attendees`.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
-  import AddressAutocomplete from './AddressAutocomplete.svelte'
 
   // ── Types (kept local; these mirror the Rust models) ──────────
   interface EventAttendee {
     email: string
     common_name?: string | null
     status?: string | null
+    /** RFC 5545 ROLE: REQ-PARTICIPANT (Required) /
+     *  OPT-PARTICIPANT (Optional) / CHAIR / NON-PARTICIPANT.
+     *  Missing => Required. */
+    role?: string | null
   }
   interface EventReminder {
     trigger_minutes_before: number
@@ -74,29 +77,18 @@
 
   /** Payload `onsaved` carries back after a successful create. Edit /
       delete still fire `onsaved()` with no argument — callers that
-      don't care about the payload (e.g. CalendarView) keep their
-      `() => void` handler unchanged. Compose uses this to append a
-      "📅 Meeting" block to the email body. */
+      don't care about the payload keep their `() => void` handler
+      unchanged. */
   export interface SavedEvent {
-    /** VEVENT UID assigned by the CalDAV PUT — Compose passes this
-     *  to `build_event_invite_ics` so the iMIP REQUEST attached to
-     *  the outgoing mail uses the same UID as the organiser's
-     *  CalDAV copy.  The eventual iMIP REPLY then pairs back to
-     *  the right event in the organiser's calendar. */
+    /** App-side composite event id returned by `create_calendar_event`. */
     uid: string
     summary: string
     start: string
     end: string
     url: string | null
-    /** Bare-address list of everyone invited to the event — Compose
-        uses this to merge any newly added addresses back into the
-        email's To field so the invite and the mail stay in sync. */
+    /** Bare-address list of everyone invited.  Kept on the payload
+        so callers can refresh related UI (badges, lists). */
     attendees: string[]
-    /** Mail-account id the user picked to send invites from (the
-     *  CalendarView surface; Compose has its own From-picker so it
-     *  ignores this field).  `null` when no mail accounts are
-     *  configured (caller falls back to skipping the invite mail). */
-    inviteFromAccountId: string | null
   }
 
   interface Props {
@@ -126,12 +118,6 @@
     } | null
     /** edit-mode subject: the existing event being edited. */
     event?: CalendarEvent | null
-    /** Mail accounts the user can pick to send invites from
-     *  (the calendar-grid creation flow).  Empty array → no
-     *  picker shown and `SavedEvent.inviteFromAccountId` lands
-     *  as `null`, which the calendar caller treats as "skip the
-     *  invite mail step entirely". */
-    mailAccounts?: { id: string; email: string; display_name: string }[]
     onclose: () => void
     onsaved: (saved?: SavedEvent) => void
   }
@@ -140,7 +126,6 @@
     calendars,
     draft,
     event,
-    mailAccounts = [],
     onclose,
     onsaved,
   }: Props = $props()
@@ -157,13 +142,13 @@
   // svelte-ignore state_referenced_locally
   let location = $state(event?.location ?? draft?.location ?? '')
   // svelte-ignore state_referenced_locally
-  let url = $state(event?.url ?? draft?.url ?? '')
-  // svelte-ignore state_referenced_locally
   let transparency = $state(event?.transparency ?? 'OPAQUE')
 
   // Determine the starting calendar id. In edit-mode we derive it from
   // the event id (`{nc_id}::{cal_path}::…`). In create-mode the parent
-  // hands us one explicitly.
+  // hands us one explicitly; we override that with the user's
+  // `default_calendar_id` setting if one is configured AND it points
+  // at a calendar the editor knows about.
   // svelte-ignore state_referenced_locally
   let calendarId = $state(deriveInitialCalendarId())
   function deriveInitialCalendarId(): string {
@@ -173,6 +158,23 @@
     }
     return draft?.calendarId ?? calendars[0]?.id ?? ''
   }
+
+  // Async-load the default-calendar setting and switch to it if the
+  // user hasn't manually changed the picker yet.  In create-mode
+  // this is the single biggest UX nicety — Nick's "primary"
+  // calendar (NC default) gets used reliably instead of whichever
+  // calendar happened to come back first from the cache.
+  $effect(() => {
+    if (mode !== 'create') return
+    void invoke<{ default_calendar_id: string | null }>('get_app_settings')
+      .then((s) => {
+        const def = s.default_calendar_id
+        if (def && calendars.some((c) => c.id === def)) {
+          calendarId = def
+        }
+      })
+      .catch(() => {})
+  })
 
   // svelte-ignore state_referenced_locally
   const initialAllDay = inferAllDay()
@@ -194,53 +196,320 @@
   // svelte-ignore state_referenced_locally
   let endDate = $state(toDateInput(initialEnd()))
 
-  // Attendees are edited as a comma-separated address list. We seed
-  // each existing attendee in RFC `"Common Name" <addr>` form so the
-  // shape matches what `<AddressAutocomplete>` emits when the user
-  // picks a contact — that way edits round-trip cleanly. Existing CN /
-  // PARTSTAT data is held in `originalAttendees` and merged back by
-  // email at save time.
+  // ── Attendees ─────────────────────────────────────────────
+  // Three role-bucketed lists drive the chip-row UI; the input
+  // beneath each bucket adds *new* attendees with the matching
+  // ROLE.  Existing attendees from `event` are seeded into
+  // whichever bucket their ROLE points at, defaulting to
+  // Required when the property is missing (RFC 5545 §3.2.18).
+  // Each seed preserves its `common_name` / `status` (PARTSTAT)
+  // so a save round-trip doesn't reset accepted/declined badges.
+  type Role = 'REQ-PARTICIPANT' | 'OPT-PARTICIPANT' | 'CHAIR'
+  function bucketFor(att: EventAttendee): Role {
+    const r = (att.role ?? 'REQ-PARTICIPANT').toUpperCase()
+    if (r === 'OPT-PARTICIPANT') return 'OPT-PARTICIPANT'
+    if (r === 'CHAIR') return 'CHAIR'
+    return 'REQ-PARTICIPANT'
+  }
   // svelte-ignore state_referenced_locally
-  // From-mail-account picker — only relevant in create mode + when
-  // the embedder actually passes a mailAccounts list.  Defaulting
-  // to the first account matches what every other "send invite"
-  // surface in the app does; the user can flip via the dropdown.
+  let requiredAttendees = $state<EventAttendee[]>(
+    event ? (event.attendees ?? []).filter((a) => bucketFor(a) === 'REQ-PARTICIPANT')
+          : (draft?.attendees ?? []).map((s) => parseAddressToAttendee(s, 'REQ-PARTICIPANT')).filter((a): a is EventAttendee => !!a),
+  )
   // svelte-ignore state_referenced_locally
-  let inviteFromAccountId = $state<string | null>(
-    mailAccounts.length > 0 ? mailAccounts[0].id : null,
+  let optionalAttendees = $state<EventAttendee[]>(
+    event ? (event.attendees ?? []).filter((a) => bucketFor(a) === 'OPT-PARTICIPANT') : [],
+  )
+  // svelte-ignore state_referenced_locally
+  let chairAttendees = $state<EventAttendee[]>(
+    event ? (event.attendees ?? []).filter((a) => bucketFor(a) === 'CHAIR') : [],
   )
 
-  let attendeesText = $state(
-    event
-      ? (event.attendees ?? []).map(formatAddressForInput).join(', ')
-      : (draft?.attendees ?? []).join(', '),
-  )
-  // svelte-ignore state_referenced_locally
-  const originalAttendees = event?.attendees ?? []
+  // One pending input per role.  Each commits to its bucket on
+  // Enter / comma / blur.  Datalist suggestions come from the
+  // shared address book cache (loaded lazily once on mount).
+  let requiredInput = $state('')
+  let optionalInput = $state('')
+  let chairInput = $state('')
 
-  /** Render an existing attendee back into the address-input format. */
-  function formatAddressForInput(a: EventAttendee): string {
-    if (a.common_name && a.common_name !== a.email) {
-      const safe = a.common_name.replace(/"/g, '\\"')
-      return `"${safe}" <${a.email}>`
-    }
-    return a.email
+  /** Contact row mirroring the Rust `search_contacts` payload —
+   *  `id` is what the `contact-photo://` URI scheme keys off,
+   *  `email[]` is the typed-and-kinded list of vCard EMAIL
+   *  values, and `photo_mime` tells us whether to render the
+   *  photo or fall back to an initials bubble. */
+  interface ContactEmail {
+    kind: string
+    value: string
+  }
+  interface Contact {
+    id: string
+    display_name: string
+    email: ContactEmail[]
+    organization: string | null
+    photo_mime: string | null
+  }
+  /** Cached contact list keyed by lowercase email so chips —
+   *  which only know the email — can render the matching photo
+   *  + display name without an extra IPC round-trip per chip. */
+  let contactsByEmail = $state<Map<string, Contact>>(new Map())
+  $effect(() => {
+    void invoke<Contact[]>('search_contacts', { query: '', limit: 500 })
+      .then((rows) => {
+        const map = new Map<string, Contact>()
+        for (const c of rows) {
+          for (const e of c.email) {
+            if (e.value) map.set(e.value.toLowerCase(), c)
+          }
+        }
+        contactsByEmail = map
+      })
+      .catch(() => {})
+  })
+
+  /** Pick the first non-empty email from a Contact. */
+  function primaryEmail(c: Contact): string {
+    return c.email.find((e) => e.value.length > 0)?.value ?? ''
   }
 
-  /**
-   * Parse a single comma-separated piece into `{ email, name }`.
-   * Accepts `"Name" <addr>`, `Name <addr>`, or a bare `addr`.
-   * Returns null for empty / malformed pieces.
-   */
-  function parseAddress(piece: string): { email: string; name: string | null } | null {
+  /** `<img src>` against the custom `contact-photo://` scheme.
+   *  Falls back to `null` when the contact doesn't have a vCard
+   *  photo so chips/dropdown render an initials bubble. */
+  function photoUrl(c: Contact | undefined): string | null {
+    if (!c || !c.photo_mime) return null
+    return convertFileSrc(c.id, 'contact-photo')
+  }
+
+  function initials(name: string): string {
+    const parts = name.trim().split(/\s+/).filter(Boolean)
+    if (parts.length === 0) return '?'
+    if (parts.length === 1) return parts[0][0].toUpperCase()
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+  }
+
+  // ── Internal-vs-external resolution ──────────────────────
+  // Each attendee email is looked up once against NC's
+  // `sharees` endpoint; a hit means the address belongs to a
+  // local NC principal, which:
+  //   - flips the chip's "internal" badge on,
+  //   - lets the save flow add them to the Talk room as a
+  //     `users` participant (in-NC notification) rather than
+  //     an `emails` guest,
+  //   - drives the room-type decision (all-internal => private).
+  // `null` means "external"; `undefined` means "haven't asked
+  // yet" — the UI stays neutral until the lookup resolves.
+  interface InternalUser {
+    user_id: string
+    display_name: string
+  }
+  let internalLookup = $state<Map<string, InternalUser | null>>(new Map())
+
+  /** Resolve any unknown attendee emails against NC's
+   *  user-search.  Best-effort: failures cache as `null`
+   *  (treated as external) so the lookup doesn't retry every
+   *  effect cycle.  Fires whenever the bucket lists change. */
+  $effect(() => {
+    const all = [...requiredAttendees, ...optionalAttendees, ...chairAttendees]
+    const cal = calendars.find((c) => c.id === calendarId)
+    if (!cal) return
+    const ncId = cal.nextcloud_account_id
+    for (const att of all) {
+      const key = att.email.toLowerCase()
+      if (internalLookup.has(key)) continue
+      // Mark as in-flight (null sentinel — replaced when the
+      // OCS reply lands).  Without this guard, a re-render
+      // before the promise resolves would re-fire the lookup.
+      internalLookup.set(key, null)
+      void invoke<InternalUser | null>('find_nextcloud_user_by_email', {
+        ncId,
+        email: att.email,
+      })
+        .then((m) => {
+          internalLookup.set(key, m ?? null)
+          // Trigger reactivity: replacing the Map ref forces
+          // chip rows to re-render with the new badge state.
+          internalLookup = new Map(internalLookup)
+        })
+        .catch((e) => {
+          console.warn('find_nextcloud_user_by_email failed', e)
+          internalLookup.set(key, null)
+        })
+    }
+  })
+
+  function isInternal(email: string): boolean {
+    return !!internalLookup.get(email.toLowerCase())
+  }
+
+  // ── Per-role inline suggestion dropdown ──────────────────
+  // Each role's input has its own debounced `search_contacts`
+  // query and its own dropdown state — same plumbing
+  // `AddressAutocomplete` uses on Compose's To/Cc/Bcc, but
+  // adapted to the chip-based commit model: clicking a
+  // suggestion adds the contact directly to the role bucket
+  // instead of stuffing its address into a comma-separated
+  // string.
+  let activeSuggestionRole = $state<Role | null>(null)
+  let dropdownSuggestions = $state<Contact[]>([])
+  let activeIndex = $state(0)
+  const SEARCH_DEBOUNCE_MS = 150
+  const SUGGESTION_LIMIT = 8
+  let searchDebounce: number | null = null
+
+  function runSuggestionSearch(role: Role, query: string) {
+    if (query.trim().length < 2) {
+      dropdownSuggestions = []
+      activeSuggestionRole = null
+      return
+    }
+    if (searchDebounce !== null) window.clearTimeout(searchDebounce)
+    searchDebounce = window.setTimeout(async () => {
+      try {
+        const rows = await invoke<Contact[]>('search_contacts', {
+          query,
+          limit: SUGGESTION_LIMIT,
+        })
+        // Stale-response guard: only commit if this role is
+        // still the focused one.
+        if (activeSuggestionRole === role) {
+          dropdownSuggestions = rows
+          activeIndex = 0
+        }
+      } catch (e) {
+        console.warn('search_contacts failed', e)
+        dropdownSuggestions = []
+      }
+    }, SEARCH_DEBOUNCE_MS)
+  }
+
+  /** Add a contact directly to a role bucket via the
+   *  suggestion dropdown.  Skips if the email is already in
+   *  any bucket. */
+  function pickSuggestion(role: Role, c: Contact) {
+    const addr = primaryEmail(c)
+    if (!addr) return
+    const exists = [...requiredAttendees, ...optionalAttendees, ...chairAttendees].some(
+      (a) => a.email.toLowerCase() === addr.toLowerCase(),
+    )
+    // Always clear the input + close the dropdown — even when
+    // the contact's already added, so the user gets clear
+    // feedback ("nothing happened, but the field reset").
+    if (role === 'REQ-PARTICIPANT') requiredInput = ''
+    else if (role === 'OPT-PARTICIPANT') optionalInput = ''
+    else chairInput = ''
+    activeSuggestionRole = null
+    dropdownSuggestions = []
+    if (exists) return
+    const att: EventAttendee = {
+      email: addr,
+      common_name: c.display_name || null,
+      role,
+    }
+    if (role === 'REQ-PARTICIPANT') {
+      requiredAttendees = [...requiredAttendees, att]
+    } else if (role === 'OPT-PARTICIPANT') {
+      optionalAttendees = [...optionalAttendees, att]
+    } else {
+      chairAttendees = [...chairAttendees, att]
+    }
+    // Mirror into the by-email cache so the chip avatar
+    // resolves immediately (don't wait for the cache reload).
+    contactsByEmail.set(addr.toLowerCase(), c)
+    contactsByEmail = new Map(contactsByEmail)
+  }
+
+  /** Parse a single piece into an attendee with the given role.
+   *  Accepts `"Name" <addr>`, `Name <addr>`, or a bare `addr`.
+   *  Returns null for empty / malformed pieces. */
+  function parseAddressToAttendee(
+    piece: string,
+    role: Role,
+  ): EventAttendee | null {
     const trimmed = piece.trim()
     if (!trimmed) return null
     const m = trimmed.match(/^\s*(?:"([^"]*)"|([^<]*?))\s*<([^>]+)>\s*$/)
     if (m) {
       const name = (m[1] ?? m[2] ?? '').trim().replace(/\\"/g, '"')
-      return { email: m[3].trim(), name: name || null }
+      return {
+        email: m[3].trim(),
+        common_name: name || null,
+        role,
+      }
     }
-    return { email: trimmed, name: null }
+    // Bare email — also accept lookups against the cached
+    // contacts so a user who types just the display name and
+    // then commits (Enter / comma / blur) without using the
+    // dropdown still picks up the matching email automatically.
+    for (const c of contactsByEmail.values()) {
+      if ((c.display_name ?? '').toLowerCase() === trimmed.toLowerCase()) {
+        return { email: primaryEmail(c), common_name: c.display_name, role }
+      }
+    }
+    return { email: trimmed, common_name: null, role }
+  }
+
+  /** Add a comma- / semicolon-separated batch of pieces from
+   *  one of the three role inputs.  Splits on `,` / `;`, dedupes
+   *  by lowercase email across *all* buckets so the same
+   *  address can't be both Required and Optional. */
+  function commitInput(role: Role) {
+    const text =
+      role === 'REQ-PARTICIPANT'
+        ? requiredInput
+        : role === 'OPT-PARTICIPANT'
+          ? optionalInput
+          : chairInput
+    if (!text.trim()) return
+    const seen = new Set(
+      [...requiredAttendees, ...optionalAttendees, ...chairAttendees].map((a) =>
+        a.email.toLowerCase(),
+      ),
+    )
+    const adds: EventAttendee[] = []
+    for (const piece of text.split(/[,;]/)) {
+      const att = parseAddressToAttendee(piece, role)
+      if (!att) continue
+      const key = att.email.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      adds.push(att)
+    }
+    if (adds.length === 0) {
+      // Field had only invalid input — clear it so the user can
+      // try again.
+      if (role === 'REQ-PARTICIPANT') requiredInput = ''
+      else if (role === 'OPT-PARTICIPANT') optionalInput = ''
+      else chairInput = ''
+      return
+    }
+    if (role === 'REQ-PARTICIPANT') {
+      requiredAttendees = [...requiredAttendees, ...adds]
+      requiredInput = ''
+    } else if (role === 'OPT-PARTICIPANT') {
+      optionalAttendees = [...optionalAttendees, ...adds]
+      optionalInput = ''
+    } else {
+      chairAttendees = [...chairAttendees, ...adds]
+      chairInput = ''
+    }
+  }
+
+  function removeAttendee(role: Role, email: string) {
+    if (role === 'REQ-PARTICIPANT') {
+      requiredAttendees = requiredAttendees.filter((a) => a.email !== email)
+    } else if (role === 'OPT-PARTICIPANT') {
+      optionalAttendees = optionalAttendees.filter((a) => a.email !== email)
+    } else {
+      chairAttendees = chairAttendees.filter((a) => a.email !== email)
+    }
+  }
+
+  /** Render an attendee for the chip label — prefers display
+   *  name when present, otherwise the email. */
+  function chipLabel(a: EventAttendee): string {
+    if (a.common_name && a.common_name.trim() && a.common_name !== a.email) {
+      return a.common_name
+    }
+    return a.email
   }
 
   // Reminder picker: a single dropdown that maps to the most common
@@ -345,24 +614,17 @@
   }
 
   // ── Save / delete ───────────────────────────────────────────
+  /** Flatten the three role-bucketed attendee lists into the
+   *  single array the backend expects.  Each bucket already
+   *  carries the right `role`; PARTSTAT (`status`) is preserved
+   *  on existing rows because the buckets were seeded from the
+   *  inbound event verbatim.  Any pending text in the inputs is
+   *  flushed first so an unsaved last word doesn't get dropped. */
   function buildAttendees(): EventAttendee[] {
-    const seen = new Map<string, EventAttendee>()
-    for (const a of originalAttendees) seen.set(a.email.toLowerCase(), a)
-    const out: EventAttendee[] = []
-    for (const piece of attendeesText.split(/[,;]/)) {
-      const parsed = parseAddress(piece)
-      if (!parsed) continue
-      const prior = seen.get(parsed.email.toLowerCase())
-      // Prefer the freshly typed/picked name when present (the user may
-      // have updated it), and fall back to the server's prior CN.
-      const common_name = parsed.name ?? prior?.common_name ?? null
-      out.push({
-        email: parsed.email,
-        common_name,
-        status: prior?.status ?? null,
-      })
-    }
-    return out
+    if (requiredInput.trim()) commitInput('REQ-PARTICIPANT')
+    if (optionalInput.trim()) commitInput('OPT-PARTICIPANT')
+    if (chairInput.trim()) commitInput('CHAIR')
+    return [...requiredAttendees, ...optionalAttendees, ...chairAttendees]
   }
 
   function buildReminders(): EventReminder[] {
@@ -374,6 +636,181 @@
         action: 'DISPLAY',
       },
     ]
+  }
+
+  // ── Talk meeting button ───────────────────────────────────
+  // Mints a fresh Nextcloud Talk room on the calendar's parent
+  // Nextcloud account, then writes the room URL into the
+  // event's LOCATION field — same destination Nextcloud
+  // Calendar's own "Make it a Talk conversation" button uses
+  // (`AddTalkModal.vue` $emits `updateLocation`).  Putting the
+  // URL on LOCATION instead of URL is what triggers NC's
+  // Calendar UI to render the "Join Talk conversation"
+  // affordance, and what makes NC's iMIP template surface the
+  // call link in the invite mail's body.
+  //
+  // Falls back to appending the URL to DESCRIPTION when
+  // LOCATION is already set, again matching NC's modal
+  // (lines 247-257 in AddTalkModal.vue).  Best-effort: a
+  // failure surfaces in the local `error` banner but doesn't
+  // block saving the event.
+  /** Sync the editor's attendee list with the Talk room
+   *  created from this editor session.  For each attendee we
+   *  resolve internal-vs-external (using the cached lookup
+   *  from `internalLookup`, falling back to a fresh OCS query
+   *  for any address whose lookup hasn't landed yet) and POST
+   *  to Talk's `participants` endpoint with `users` or
+   *  `emails` source accordingly:
+   *    - `users` → in-NC notification, the participant joins
+   *      authenticated.
+   *    - `emails` → Talk emails them a guest URL alongside
+   *      the calendar invite NC's iMIP plugin already sends.
+   *  Then, if every attendee turned out internal, downgrade
+   *  the room from public to private — externals don't need
+   *  the guest-URL escape hatch any more.  Best-effort: each
+   *  POST that fails is logged (per-attendee) and we keep
+   *  going. */
+  async function syncTalkParticipants(attendees: EventAttendee[]) {
+    const room = pendingTalkRoom
+    if (!room) return
+    const cal = calendars.find((c) => c.id === calendarId)
+    if (!cal) return
+    const ncId = cal.nextcloud_account_id
+
+    // Fill any gaps in `internalLookup` synchronously here so
+    // the room-type decision is based on the *full* answer set
+    // — without this guard, an attendee added seconds before
+    // Save would still register as undefined and we'd
+    // pessimistically leave the room public.
+    const lookups: Promise<void>[] = []
+    for (const att of attendees) {
+      const key = att.email.toLowerCase()
+      if (internalLookup.has(key)) continue
+      internalLookup.set(key, null)
+      lookups.push(
+        invoke<InternalUser | null>('find_nextcloud_user_by_email', {
+          ncId,
+          email: att.email,
+        })
+          .then((m) => {
+            internalLookup.set(key, m ?? null)
+          })
+          .catch(() => {
+            internalLookup.set(key, null)
+          }),
+      )
+    }
+    await Promise.all(lookups)
+
+    let allInternal = attendees.length > 0
+    for (const att of attendees) {
+      const match = internalLookup.get(att.email.toLowerCase())
+      const participant = match
+        ? { kind: 'user' as const, value: match.user_id }
+        : { kind: 'email' as const, value: att.email }
+      if (!match) allInternal = false
+      try {
+        await invoke('add_talk_participant', {
+          ncId,
+          roomToken: room.token,
+          participant,
+        })
+      } catch (e) {
+        // Non-fatal — Talk returns 4xx when the participant is
+        // already on the room (e.g. the user re-saved an event
+        // they'd already invited people to), which we treat
+        // as a no-op.
+        console.warn('add_talk_participant failed', att.email, e)
+      }
+    }
+
+    // Toggle visibility iff the desired state differs from the
+    // last-known one.  An all-internal attendee set means we
+    // can switch to private (the URL-only join is no longer
+    // needed); any external attendee keeps it public.
+    const desiredPublic = !allInternal
+    if (desiredPublic !== room.isPublic) {
+      try {
+        await invoke('set_talk_room_public', {
+          ncId,
+          roomToken: room.token,
+          public: desiredPublic,
+        })
+        pendingTalkRoom = { ...room, isPublic: desiredPublic }
+      } catch (e) {
+        console.warn('set_talk_room_public failed', e)
+      }
+    }
+  }
+
+  // Tracks the Talk room created from this editor session so
+  // the save flow can post per-attendee participants and (when
+  // every attendee turned out internal) downgrade the room
+  // from public to private.  Cleared when the URL is no longer
+  // present in LOCATION (the user manually wiped it).
+  interface PendingTalkRoom {
+    token: string
+    web_url: string
+    /** Last-known visibility we set on the server so the save
+     *  flow only PATCHes when the desired state actually
+     *  changed — avoids spurious round-trips on every save. */
+    isPublic: boolean
+  }
+  // svelte-ignore state_referenced_locally
+  let pendingTalkRoom = $state<PendingTalkRoom | null>(null)
+  let creatingTalkRoom = $state(false)
+  async function addTalkLink() {
+    error = ''
+    const cal = calendars.find((c) => c.id === calendarId)
+    if (!cal) {
+      error = 'Pick a calendar before creating a Talk room.'
+      return
+    }
+    creatingTalkRoom = true
+    try {
+      // Room name = event title when present, falling back to a
+      // generic label.  Talk rejects empty names and clamps long
+      // ones; "Meeting" is the same default the NC Calendar app
+      // uses for unnamed rooms.
+      const roomName = summary.trim() || 'Meeting'
+      const room = await invoke<{ token: string; web_url: string }>('create_talk_room', {
+        ncId: cal.nextcloud_account_id,
+        roomName,
+        // No participants up-front — they're resolved + added
+        // on save once the user has finished typing the
+        // attendee list.
+        participants: [],
+        // Mirror Nextcloud Calendar's "Make it a Talk
+        // conversation" button: tag the room as event-bound so
+        // Talk's UI categorises it as a meeting room (filtered
+        // out of "select existing conversation" lists for other
+        // events).  The id is random — NC Calendar itself uses
+        // md5(Date.now()), not the iCal UID, so there's no real
+        // foreign-key here, just a tag.
+        objectType: 'event',
+        objectId: crypto.randomUUID(),
+        // Public by default so externals invited to the event
+        // can join via the calendar URL without an NC login.
+        // The save flow downgrades to private when every
+        // attendee resolves internal.
+        roomType: 3,
+      })
+      pendingTalkRoom = { token: room.token, web_url: room.web_url, isPublic: true }
+      if (!location.trim()) {
+        location = room.web_url
+      } else {
+        // NC's modal does the same: separator + the URL appended
+        // to the existing description.  Avoids clobbering any
+        // location the user already typed.
+        description = description.trim()
+          ? `${description}\n\n${room.web_url}`
+          : room.web_url
+      }
+    } catch (e) {
+      error = `Failed to create Talk room: ${formatError(e) || e}`
+    } finally {
+      creatingTalkRoom = false
+    }
   }
 
   function buildInput() {
@@ -390,7 +827,13 @@
       start: start.toISOString(),
       end: end.toISOString(),
       allDay,
-      url: url.trim() ? url.trim() : null,
+      // URL field on iCalendar events isn't surfaced as a
+      // first-class control any more — Talk meetings write
+      // their join link into LOCATION (matching what
+      // Nextcloud Calendar's "Make it a Talk conversation"
+      // button does).  Pass null so the backend doesn't carry
+      // a stale value forward in edit mode either.
+      url: null,
       transparency: transparency || null,
       attendees: buildAttendees(),
       reminders: buildReminders(),
@@ -414,22 +857,47 @@
       return
     }
     saving = true
+    // ORGANIZER on the CalDAV PUT is resolved server-side from
+    // the user's NC profile email (see `create_calendar_event`
+    // in main.rs).  That address is what NC's Mail Provider
+    // matches against the configured Mail-app account to pick
+    // the SMTP for outbound iMIP — so it MUST be the user's
+    // real address, not a synthetic hostname-based one.  No
+    // override threading from the editor any more; the editor
+    // doesn't know which mail account is "primary" and the
+    // backend has authoritative information.
     try {
       if (mode === 'create') {
-        const created = await invoke<{ id: string }>('create_calendar_event', { calendarId, input })
+        const created = await invoke<{ id: string }>('create_calendar_event', {
+          calendarId,
+          input,
+        })
         onsaved({
           uid: created.id,
           summary: input.summary,
           start: input.start,
           end: input.end,
-          url: input.url,
+          url: null,
           attendees: input.attendees.map((a) => a.email),
-          inviteFromAccountId,
         })
       } else if (event) {
-        await invoke('update_calendar_event', { eventId: event.id, input })
+        await invoke('update_calendar_event', {
+          eventId: event.id,
+          input,
+        })
         onsaved()
       }
+
+      // Sync Talk participants + room visibility once the
+      // CalDAV save has stuck.  Only fires when the user
+      // created a Talk room from this editor session and
+      // there's at least one attendee — pure "Talk-but-no-
+      // attendees" rooms behave like personal scratch rooms
+      // and don't need any of this.
+      if (pendingTalkRoom && input.attendees.length > 0) {
+        await syncTalkParticipants(input.attendees)
+      }
+
       onclose()
     } catch (e) {
       error = formatError(e) || 'Failed to save event'
@@ -461,11 +929,33 @@
 
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" role="dialog" aria-modal="true">
   <div class="w-[640px] max-h-[90vh] bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col">
-    <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
-      <h2 class="text-base font-semibold">
+    <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between gap-3">
+      <h2 class="text-base font-semibold shrink-0">
         {mode === 'create' ? 'New event' : 'Edit event'}
       </h2>
-      <button class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100" onclick={onclose} aria-label="Close">✕</button>
+      <div class="flex items-center gap-2">
+        <!-- Talk meeting shortcut.  Mints a fresh Nextcloud Talk
+             room on the calendar's parent NC account and writes
+             its URL into the event's LOCATION field — same path
+             Nextcloud Calendar's "Make it a Talk conversation"
+             button uses, which is what NC's Calendar UI keys off
+             to render the "Join Talk" affordance.  Disabled
+             before a calendar is picked. -->
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-primary-500 whitespace-nowrap"
+          disabled={creatingTalkRoom || !calendarId}
+          title="Create a Nextcloud Talk room and use its link as the location"
+          onclick={() => void addTalkLink()}
+        >
+          {creatingTalkRoom ? 'Creating…' : '💬 Talk meeting'}
+        </button>
+        <button
+          class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
+          onclick={onclose}
+          aria-label="Close"
+        >✕</button>
+      </div>
     </header>
 
     <div class="flex-1 overflow-y-auto p-5 space-y-3">
@@ -558,16 +1048,6 @@
       </div>
 
       <div class="flex items-center gap-2">
-        <label class="text-xs w-20 text-surface-500" for="event-url">URL</label>
-        <input
-          id="event-url"
-          class="input flex-1 px-3 py-2 text-sm rounded-md"
-          bind:value={url}
-          placeholder="Meeting link, agenda doc, …"
-        />
-      </div>
-
-      <div class="flex items-center gap-2">
         <label class="text-xs w-20 text-surface-500" for="event-transp">Show as</label>
         <select
           id="event-transp"
@@ -598,38 +1078,185 @@
         </select>
       </div>
 
-      <div class="flex items-start gap-2">
-        <label class="text-xs w-20 text-surface-500 pt-2" for="event-attendees">Attendees</label>
-        <AddressAutocomplete
-          id="event-attendees"
-          bind:value={attendeesText}
-          placeholder="alice@example.com, bob@example.com"
-        />
-      </div>
+      <!-- Per-role attendee section.  Each role gets its own row:
+           a chip list of already-added participants (large chips
+           with the CardDAV photo when known, and a × remove
+           button) above an input that adds new ones.  Each input
+           drives its own debounced `search_contacts` dropdown —
+           same plumbing AddressAutocomplete uses on Compose,
+           adapted so a click adds the contact straight into the
+           bucket instead of into a comma-separated string. -->
 
-      <!-- "Send invitations from" picker — only renders in
-           create-mode when the caller supplied at least one mail
-           account AND the user has typed at least one attendee
-           (an event with no attendees doesn't trigger an outbound
-           invite anyway, so no need to ask which account).  Edit
-           mode never re-sends invites — saving an existing event
-           just updates the local CalDAV copy. -->
-      {#if mode === 'create' && mailAccounts.length > 0 && attendeesText.trim().length > 0}
+      {#snippet attendeeRow(label: string, role: Role, list: EventAttendee[], placeholder: string)}
         <div class="flex items-start gap-2">
-          <label class="text-xs w-20 text-surface-500 pt-2" for="event-invite-from">From</label>
-          <select
-            id="event-invite-from"
-            class="input flex-1 px-3 py-2 text-sm rounded-md"
-            bind:value={inviteFromAccountId}
-          >
-            {#each mailAccounts as a (a.id)}
-              <option value={a.id}>
-                {a.display_name ? `${a.display_name} <${a.email}>` : a.email}
-              </option>
-            {/each}
-          </select>
+          <div class="text-xs w-20 text-surface-500 pt-2">{label}</div>
+          <div class="flex-1 min-w-0">
+            {#if list.length > 0}
+              <div class="flex flex-wrap gap-2 mb-2">
+                {#each list as a (a.email)}
+                  {@const c = contactsByEmail.get(a.email.toLowerCase())}
+                  {@const photo = photoUrl(c)}
+                  <span class="inline-flex items-center gap-2 pl-1 pr-2 py-1 rounded-full text-sm bg-surface-200 dark:bg-surface-700 max-w-full">
+                    {#if photo}
+                      <img
+                        src={photo}
+                        alt=""
+                        loading="lazy"
+                        class="w-7 h-7 rounded-full object-cover flex-shrink-0"
+                      />
+                    {:else}
+                      <div class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 flex items-center justify-center text-[11px] font-semibold flex-shrink-0">
+                        {initials(chipLabel(a))}
+                      </div>
+                    {/if}
+                    <span class="flex flex-col min-w-0">
+                      <span class="flex items-center gap-1.5 max-w-[260px]">
+                        <span class="truncate leading-tight font-medium" title={a.email}>{chipLabel(a)}</span>
+                        {#if isInternal(a.email)}
+                          <!-- Tag for NC-internal users — set when
+                               `find_nextcloud_user_by_email` returns
+                               a hit.  Drives the participant-add flow
+                               (internals go in as `users` source) and
+                               the room-visibility downgrade (private
+                               when *every* attendee is internal). -->
+                          <span
+                            class="text-[9px] uppercase tracking-wide font-semibold px-1 py-px rounded bg-primary-500/20 text-primary-700 dark:text-primary-300 leading-tight shrink-0"
+                            title="Nextcloud user on this server"
+                          >internal</span>
+                        {/if}
+                      </span>
+                      {#if a.status && a.status.toUpperCase() !== 'NEEDS-ACTION'}
+                        <span class="text-[10px] uppercase tracking-wide text-surface-500 leading-tight" title="Response status">
+                          {a.status.toLowerCase()}
+                        </span>
+                      {:else if c && c.organization}
+                        <span class="text-[11px] text-surface-500 leading-tight truncate max-w-[220px]">{c.organization}</span>
+                      {/if}
+                    </span>
+                    <button
+                      type="button"
+                      class="text-surface-500 hover:text-red-500 ml-1 text-base leading-none"
+                      title="Remove"
+                      aria-label={`Remove ${a.email}`}
+                      onclick={() => removeAttendee(role, a.email)}
+                    >×</button>
+                  </span>
+                {/each}
+              </div>
+            {/if}
+            <div class="relative">
+              <input
+                type="text"
+                class="input w-full px-3 py-2 text-sm rounded-md"
+                {placeholder}
+                autocomplete="off"
+                value={role === 'REQ-PARTICIPANT'
+                  ? requiredInput
+                  : role === 'OPT-PARTICIPANT'
+                    ? optionalInput
+                    : chairInput}
+                oninput={(e) => {
+                  const v = (e.currentTarget as HTMLInputElement).value
+                  if (role === 'REQ-PARTICIPANT') requiredInput = v
+                  else if (role === 'OPT-PARTICIPANT') optionalInput = v
+                  else chairInput = v
+                  activeSuggestionRole = role
+                  runSuggestionSearch(role, v)
+                }}
+                onfocus={() => {
+                  activeSuggestionRole = role
+                  const v =
+                    role === 'REQ-PARTICIPANT'
+                      ? requiredInput
+                      : role === 'OPT-PARTICIPANT'
+                        ? optionalInput
+                        : chairInput
+                  if (v.trim().length >= 2) runSuggestionSearch(role, v)
+                }}
+                onblur={() => {
+                  // Defer the close so a click on a suggestion
+                  // can fire its onmousedown handler first.
+                  setTimeout(() => {
+                    if (activeSuggestionRole === role) {
+                      activeSuggestionRole = null
+                      dropdownSuggestions = []
+                    }
+                    commitInput(role)
+                  }, 120)
+                }}
+                onkeydown={(e) => {
+                  const open = activeSuggestionRole === role && dropdownSuggestions.length > 0
+                  if (open && e.key === 'ArrowDown') {
+                    e.preventDefault()
+                    activeIndex = (activeIndex + 1) % dropdownSuggestions.length
+                  } else if (open && e.key === 'ArrowUp') {
+                    e.preventDefault()
+                    activeIndex =
+                      (activeIndex - 1 + dropdownSuggestions.length) %
+                      dropdownSuggestions.length
+                  } else if (open && (e.key === 'Enter' || e.key === 'Tab')) {
+                    e.preventDefault()
+                    pickSuggestion(role, dropdownSuggestions[activeIndex])
+                  } else if (e.key === 'Enter' || e.key === ',') {
+                    e.preventDefault()
+                    commitInput(role)
+                  } else if (e.key === 'Escape') {
+                    activeSuggestionRole = null
+                    dropdownSuggestions = []
+                  }
+                }}
+              />
+
+              {#if activeSuggestionRole === role && dropdownSuggestions.length > 0}
+                <ul
+                  class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-700 rounded-md shadow-lg"
+                  role="listbox"
+                >
+                  {#each dropdownSuggestions as c, i (c.id)}
+                    {@const url = photoUrl(c)}
+                    <li
+                      role="option"
+                      aria-selected={i === activeIndex}
+                      class="flex items-center gap-3 px-3 py-2 cursor-pointer text-sm {i === activeIndex
+                        ? 'bg-primary-500/15'
+                        : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
+                      onmousedown={(e) => {
+                        e.preventDefault()
+                        pickSuggestion(role, c)
+                      }}
+                      onmouseenter={() => (activeIndex = i)}
+                    >
+                      {#if url}
+                        <img
+                          src={url}
+                          alt=""
+                          loading="lazy"
+                          class="w-8 h-8 rounded-full object-cover flex-shrink-0"
+                        />
+                      {:else}
+                        <div class="w-8 h-8 rounded-full bg-surface-300 dark:bg-surface-700 flex items-center justify-center text-xs font-semibold flex-shrink-0">
+                          {initials(c.display_name)}
+                        </div>
+                      {/if}
+                      <div class="flex-1 min-w-0">
+                        <p class="font-medium truncate">{c.display_name}</p>
+                        <p class="text-xs text-surface-500 truncate">
+                          {primaryEmail(c)}
+                          {#if c.organization}· {c.organization}{/if}
+                        </p>
+                      </div>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+          </div>
         </div>
-      {/if}
+      {/snippet}
+
+      {@render attendeeRow('Required', 'REQ-PARTICIPANT', requiredAttendees, 'alice@example.com')}
+      {@render attendeeRow('Optional', 'OPT-PARTICIPANT', optionalAttendees, 'bob@example.com')}
+      {@render attendeeRow('Chair', 'CHAIR', chairAttendees, 'meeting host (usually one)')}
 
       <div class="flex items-start gap-2">
         <label class="text-xs w-20 text-surface-500 pt-2" for="event-description">Notes</label>

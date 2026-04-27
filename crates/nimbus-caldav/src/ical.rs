@@ -180,6 +180,8 @@ fn attendee_from_property(prop: &Property, value: &str) -> Option<EventAttendee>
         email,
         common_name: property_param(prop, "CN").map(|s| s.to_string()),
         status: property_param(prop, "PARTSTAT").map(|s| s.to_ascii_uppercase()),
+        role: property_param(prop, "ROLE").map(|s| s.to_ascii_uppercase()),
+        force_send_reply: false,
     })
 }
 
@@ -634,14 +636,64 @@ pub fn build_ics_with_method(
             }
             lines.push(format!("ORGANIZER{params}:mailto:{email}"));
         }
+    // For iMIP REQUESTs we enrich each ATTENDEE with the params
+    // Apple Mail / Outlook need to surface RSVP UI: ROLE,
+    // CUTYPE, and especially `RSVP=TRUE` (Apple Mail hides the
+    // Accept / Decline / Tentative buttons entirely when RSVP is
+    // absent, treating the message as informational only).
+    // CalDAV PUTs (method=None) don't need these — Sabre/DAV
+    // tolerates them but the simpler shape is what we've been
+    // round-tripping through the cache, so we only opt in for
+    // the iMIP path to avoid disturbing existing data.
+    let is_imip_request = matches!(method, Some("REQUEST"));
     for att in &event.attendees {
         let mut params = String::new();
         if let Some(cn) = &att.common_name {
             params.push_str(&format!(";CN={}", cn));
         }
+        // ROLE is emitted whenever the model carries one (so the
+        // EventEditor's Required / Optional / Chair selection
+        // round-trips through Nextcloud's Calendar UI).  iMIP
+        // REQUESTs additionally guarantee the RFC 5545 default of
+        // REQ-PARTICIPANT when the model is silent — Apple Mail's
+        // RSVP detection requires ROLE + RSVP=TRUE to be present.
+        let role = att.role.as_deref().filter(|s| !s.is_empty());
+        match (role, is_imip_request) {
+            (Some(r), _) => params.push_str(&format!(";ROLE={r}")),
+            (None, true) => params.push_str(";ROLE=REQ-PARTICIPANT"),
+            (None, false) => {}
+        }
+        if is_imip_request {
+            params.push_str(";CUTYPE=INDIVIDUAL");
+            params.push_str(";RSVP=TRUE");
+        }
+        if att.force_send_reply {
+            // RFC 6638 §7.3 — tells Sabre's CalDAV-Schedule
+            // plugin to dispatch a METHOD:REPLY iMIP for this
+            // attendee unconditionally, bypassing its usual
+            // "is this change significant?" heuristics.  Set by
+            // the inbound-RSVP path on the responding
+            // attendee's row.  Other clients ignore the
+            // parameter; only the server reads it.
+            params.push_str(";SCHEDULE-FORCE-SEND=REPLY");
+        }
         let status = att.status.as_deref().unwrap_or("NEEDS-ACTION");
         params.push_str(&format!(";PARTSTAT={status}"));
         lines.push(format!("ATTENDEE{params}:mailto:{}", att.email));
+    }
+    // SEQUENCE is required by RFC 5546 on every METHOD-tagged
+    // body.  STATUS reflects the REQUEST/CANCEL distinction —
+    // Apple Mail uses STATUS to render the cancelled-meeting
+    // strikethrough on inbox previews.  REPLY messages don't
+    // carry STATUS (it's the attendee's PARTSTAT that conveys
+    // the answer, not the event status), so we skip it there.
+    if method.is_some() {
+        lines.push("SEQUENCE:0".into());
+    }
+    match method {
+        Some("REQUEST") => lines.push("STATUS:CONFIRMED".into()),
+        Some("CANCEL") => lines.push("STATUS:CANCELLED".into()),
+        _ => {}
     }
 
     for r in &event.reminders {
@@ -657,6 +709,194 @@ pub fn build_ics_with_method(
 
     let folded: Vec<String> = lines.iter().map(|l| fold_line(l)).collect();
     folded.join("\r\n") + "\r\n"
+}
+
+/// Surgical edit of one `ATTENDEE` line in an iCalendar body,
+/// preserving everything else byte-for-byte.  Used by the
+/// inbound-RSVP flow: Sabre/DAV restricts what an attendee can
+/// modify on an event (anything beyond their own ATTENDEE row's
+/// `PARTSTAT` is treated as out-of-scope), and a full
+/// regenerate via `build_ics` drops unknown properties /
+/// re-orders things in ways that suppress Sabre's iTIP REPLY
+/// dispatch even when the PARTSTAT change itself sticks.  This
+/// helper edits **only** the matching attendee's parameters
+/// (replaces `PARTSTAT`, optionally adds `SCHEDULE-FORCE-SEND=
+/// REPLY`) and leaves the rest of the body identical to the
+/// input.
+///
+/// `user_email` is matched case-insensitively against the
+/// `mailto:` value of each ATTENDEE line; the first match wins.
+/// When no line matches, the body is returned unchanged — the
+/// caller decides whether to fall through (e.g. add a fresh
+/// ATTENDEE row via the heavier full-rebuild path).
+pub fn surgical_set_partstat(
+    ics: &str,
+    user_email: &str,
+    partstat: &str,
+    force_send_reply: bool,
+) -> String {
+    // Unfold first — RFC 5545 wraps long lines with `CRLF` plus
+    // one whitespace character.  We need logical lines to find
+    // the user's ATTENDEE row reliably.
+    let unfolded = unfold(ics);
+    let user_lc = user_email.trim().to_ascii_lowercase();
+
+    // Carry CRLF semantics through: the input may have either
+    // `\r\n` (RFC) or `\n` line endings; we normalise to LF
+    // here for processing, then `fold_line` re-emits with
+    // `\r\n` continuations and we join with `\r\n`.
+    //
+    // Strip top-level `METHOD:` and `PRODID:` lines along the
+    // way:
+    // - `METHOD:` is illegal on CalDAV PUT bodies (Sabre returns
+    //   415 if present — the property is defined for iMIP
+    //   transport only, not for stored calendar objects).  The
+    //   inbound body almost always has `METHOD:REQUEST` so we
+    //   have to drop it.
+    // - `PRODID:` is replaced with our own so the stored body
+    //   identifies as Nimbus rather than the originating
+    //   client.  Cosmetic but matches what every CalDAV
+    //   client does.
+    let mut matched = false;
+    let mut emitted_prodid = false;
+    let edited: Vec<String> = unfolded
+        .lines()
+        .filter_map(|line| {
+            if line.starts_with(' ') || line.starts_with('\t') {
+                // Stray continuation post-unfold (shouldn't
+                // happen, but be safe).
+                return Some(line.to_string());
+            }
+            if line.starts_with("METHOD:") || line.starts_with("METHOD;") {
+                // Storage-illegal — drop entirely.
+                return None;
+            }
+            if line.starts_with("PRODID:") || line.starts_with("PRODID;") {
+                if emitted_prodid {
+                    return None;
+                }
+                emitted_prodid = true;
+                return Some(format!(
+                    "PRODID:-//Nimbus Mail//CalDAV {}//EN",
+                    env!("CARGO_PKG_VERSION")
+                ));
+            }
+            if !line.starts_with("ATTENDEE") {
+                return Some(line.to_string());
+            }
+            let (head, tail) = match split_property_head(line) {
+                Some(pair) => pair,
+                None => return Some(line.to_string()),
+            };
+            let addr = tail
+                .strip_prefix("mailto:")
+                .or_else(|| tail.strip_prefix("MAILTO:"))
+                .unwrap_or(&tail)
+                .trim()
+                .to_ascii_lowercase();
+            if addr != user_lc {
+                return Some(line.to_string());
+            }
+            matched = true;
+            let new_head = rewrite_attendee_params(&head, partstat, force_send_reply);
+            Some(format!("{new_head}:{tail}"))
+        })
+        .collect();
+    let _ = matched;
+
+    let folded: Vec<String> = edited.iter().map(|l| fold_line(l)).collect();
+    folded.join("\r\n") + "\r\n"
+}
+
+/// RFC 5545 line unfolding: collapse `CRLF + WSP` continuations
+/// into a single logical line.  Tolerates LF-only inputs (some
+/// servers strip CRs in transit) and the rare `\t` continuation.
+fn unfold(s: &str) -> String {
+    s.replace("\r\n ", "")
+        .replace("\r\n\t", "")
+        .replace("\n ", "")
+        .replace("\n\t", "")
+}
+
+/// Split a property line into `(name+params, value)` on the
+/// first colon that's NOT inside a quoted-string parameter
+/// value.  Returns `None` if no separating colon is found
+/// (malformed line).
+fn split_property_head(line: &str) -> Option<(String, String)> {
+    let bytes = line.as_bytes();
+    let mut in_quote = false;
+    for (i, b) in bytes.iter().enumerate() {
+        match *b {
+            b'"' => in_quote = !in_quote,
+            b':' if !in_quote => {
+                return Some((line[..i].to_string(), line[i + 1..].to_string()));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Rewrite the parameters on an ATTENDEE property line:
+/// replace `PARTSTAT=...` with the given value (or append it
+/// when absent), and add `SCHEDULE-FORCE-SEND=REPLY` when
+/// `force_send_reply` is true (replacing any existing one).
+/// Preserves all other parameters (CN, ROLE, CUTYPE, etc.) in
+/// their original order and casing.
+fn rewrite_attendee_params(head: &str, partstat: &str, force_send_reply: bool) -> String {
+    // `head` is like `ATTENDEE` or `ATTENDEE;CN="Jane Doe";PARTSTAT=NEEDS-ACTION`.
+    // Split on `;` outside of quoted strings to keep `CN="Last, First"` intact.
+    let parts = split_params(head);
+    let mut out: Vec<String> = Vec::with_capacity(parts.len() + 1);
+    let mut wrote_partstat = false;
+    let mut wrote_force = false;
+    for (idx, p) in parts.iter().enumerate() {
+        if idx == 0 {
+            // The property name itself (`ATTENDEE`).
+            out.push(p.clone());
+            continue;
+        }
+        let upper = p.to_ascii_uppercase();
+        if upper.starts_with("PARTSTAT=") {
+            out.push(format!("PARTSTAT={partstat}"));
+            wrote_partstat = true;
+        } else if upper.starts_with("SCHEDULE-FORCE-SEND=") {
+            if force_send_reply {
+                out.push("SCHEDULE-FORCE-SEND=REPLY".to_string());
+                wrote_force = true;
+            }
+            // Drop the existing one when not forcing.
+        } else {
+            out.push(p.clone());
+        }
+    }
+    if !wrote_partstat {
+        out.push(format!("PARTSTAT={partstat}"));
+    }
+    if force_send_reply && !wrote_force {
+        out.push("SCHEDULE-FORCE-SEND=REPLY".to_string());
+    }
+    out.join(";")
+}
+
+/// Split a property head on `;` outside of quoted strings.
+fn split_params(head: &str) -> Vec<String> {
+    let bytes = head.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut in_quote = false;
+    for (i, b) in bytes.iter().enumerate() {
+        match *b {
+            b'"' => in_quote = !in_quote,
+            b';' if !in_quote => {
+                out.push(head[start..i].to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(head[start..].to_string());
+    out
 }
 
 /// Detect the all-day shape `to_utc_end` produces: midnight start and

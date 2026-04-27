@@ -26,9 +26,7 @@
   import AddressAutocomplete from './AddressAutocomplete.svelte'
   import NextcloudFilePicker, { type ShareLink } from './NextcloudFilePicker.svelte'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
-  import EventEditor, { type SavedEvent } from './EventEditor.svelte'
   import { openComposeInStandaloneWindow } from './standaloneComposeWindow'
-  import { buildInviteEmail } from './inviteEmail'
 
   /** Slim Nextcloud account row — same shape `TalkView` / `Sidebar` use.
       We only need the id to pass to the Talk + Calendar commands. */
@@ -169,16 +167,6 @@
   // svelte-ignore state_referenced_locally
   let attachments = $state<Attachment[]>(initial?.attachments ?? [])
 
-  /** iMIP calendar payload set by `onEventSaved` when the user
-   *  attaches an event via "Add Event".  Threaded into
-   *  `send_email` so the SMTP layer emits the canonical iMIP
-   *  MIME tree (text/calendar inside the body's
-   *  multipart/alternative + a downloadable invite.ics) — that
-   *  shape is what Outlook / Apple Mail / Gmail / Thunderbird
-   *  recognise as a real invite, surfacing their native
-   *  Accept/Decline/Tentative buttons.  Plain `null` for ordinary
-   *  mails. */
-  let pendingCalendarPart = $state<{ method: string; ics: string } | null>(null)
 
   /** Human-readable label attached to every Nextcloud share minted
    *  from this Compose instance (#91).  Used to give each share an
@@ -424,23 +412,25 @@
   let sending = $state(false)
   let error = $state('')
 
-  // ── Talk room + Calendar event creation from Compose ────────
-  // Both flows piggyback on the existing modals (`CreateTalkRoomModal`,
-  // `EventEditor`) so the UX matches what the user already sees in
-  // TalkView / CalendarView. We lazy-load the Nextcloud account list
-  // and calendar list — neither is needed unless the user opens one
-  // of these flows.
+  // ── Talk room creation from Compose ────────────────────────
+  // The "Add Event" flow used to live here too — it's been removed
+  // now that calendar events are created exclusively from
+  // CalendarView and Nextcloud's iMIP plugin (NC 30+ Mail Provider)
+  // handles outbound invitation mail server-side.  Composing a
+  // standalone iMIP attachment from a regular email is a footgun:
+  // the event never lands in CalDAV, so RSVPs from attendees can't
+  // pair back to anything on the organiser's side.  Talk rooms
+  // remain a Compose-side feature — they're a meeting-link helper,
+  // not a calendar entry.
   let showTalkModal = $state(false)
-  let showEventEditor = $state(false)
   let ncAccountId = $state('')
-  let calendars = $state<CalendarSummary[]>([])
-  /** The Talk room created during this compose session (if any). Used
-      to seed the "URL" field of the Calendar event so the meeting
-      invite carries the join link. */
+  /** The Talk room created during this compose session (if any).
+      Used solely for body-block injection of the join link — no
+      longer threaded into a calendar event from this surface. */
   let createdTalkLink = $state<{ name: string; url: string } | null>(null)
   /** Token of the room behind `createdTalkLink` — needed by
-      `add_talk_participant` when we sync event attendees back into
-      the room after the event is saved. */
+      `add_talk_participant` when we sync recipients back into the
+      room on Send. */
   let talkRoomToken: string | null = null
   /** Lower-cased bare addresses we've already POSTed to Talk's
       participant endpoint, so the post-save sync skips them. */
@@ -448,16 +438,13 @@
   /** Bare addresses the user wants invited to the Talk room but we
       haven't POSTed yet (#86: defer until Send so a discarded draft
       doesn't leak invites).  Compose accumulates these from the
-      modal / silent-create flows; `send()` calls
-      `add_talk_participants` for the lot once the mail actually
-      sends.  `cancel()` ignores them — the room itself gets
-      DELETEd so any pending invites are moot. */
+      modal flow; `send()` calls `add_talk_participants` for the lot
+      once the mail actually sends.  `cancel()` ignores them — the
+      room itself gets DELETEd so any pending invites are moot. */
   let pendingTalkParticipants = $state<string[]>([])
   /** Whether the "Join the Talk room" body block has been appended
-      yet. The Talk button injects immediately; the Add-Event auto-
-      create defers injection until the event is saved. */
+      yet. The Talk button injects immediately. */
   let talkLinkInjected = false
-  let openingEvent = $state(false)
 
   /** Resolve a Nextcloud account id (cached for the rest of the
       session). Sets `error` and returns null if none configured. */
@@ -605,170 +592,6 @@
     }
   }
 
-  async function openEventEditor() {
-    error = ''
-    openingEvent = true
-    try {
-      // Calendars come from every connected Nextcloud account so the
-      // user can drop the event into any of their calendars — same
-      // aggregation CalendarView does on its own load.
-      const accounts = await invoke<NextcloudAccount[]>('get_nextcloud_accounts')
-      if (accounts.length === 0) {
-        error = 'Connect a Nextcloud account first (Settings → Nextcloud).'
-        return
-      }
-      if (!ncAccountId) ncAccountId = accounts[0].id
-      const all: CalendarSummary[] = []
-      for (const acc of accounts) {
-        try {
-          const cs = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId: acc.id })
-          all.push(...cs)
-        } catch (e) {
-          console.warn('get_cached_calendars failed:', e)
-        }
-      }
-      // Hidden calendars stay out of the "Add event" picker —
-      // consistent with the CalendarView sidebar. The flag is
-      // local-only, so the same Nextcloud account can expose
-      // different sets on different devices without server round-
-      // trips.
-      calendars = all.filter((c) => !c.hidden)
-      if (calendars.length === 0) {
-        error = all.length === 0
-          ? 'No calendars cached yet. Open the Calendar tab once to sync.'
-          : 'All calendars are hidden. Toggle visibility in Settings.'
-        return
-      }
-      // Auto-create a Talk room so the event's URL field carries the
-      // join link from the start. We skip this if the user already
-      // created one via the Talk button (or via an earlier click of
-      // Add Event in the same Compose session). Failure is non-fatal:
-      // surface the error and still open the editor — the user can
-      // create the event without a link or paste one in by hand.
-      if (!createdTalkLink) {
-        try {
-          await createTalkRoomSilently()
-        } catch (e) {
-          error = formatError(e) || 'Failed to create Talk room for event'
-        }
-      }
-      showEventEditor = true
-    } finally {
-      openingEvent = false
-    }
-  }
-
-  /** Build the create-mode draft passed to EventEditor. Default time
-      window is the next half-hour for one hour — same behaviour the
-      grid's "+ New event" button uses. Subject, attendees, and the
-      Talk URL (if a room was just created) seed the editor so the
-      user only has to confirm the time. */
-  function eventDraft() {
-    const start = new Date()
-    // Round up to the next 30-minute mark so the prefilled slot is
-    // visually clean (no "10:13" oddities).
-    const minute = start.getMinutes()
-    const bump = (30 - (minute % 30)) % 30 || 30
-    start.setMinutes(minute + bump, 0, 0)
-    const end = new Date(start)
-    end.setHours(end.getHours() + 1)
-    return {
-      calendarId: calendars[0]?.id ?? '',
-      start,
-      end,
-      summary: subject,
-      attendees: recipients(),
-      url: createdTalkLink?.url ?? '',
-    }
-  }
-
-  /** After the EventEditor saves, do the post-save bookkeeping:
-   *
-   *   1. Add any new event attendees to the email's To field so the
-   *      mail recipients track the invite list.
-   *   2. Inject the deferred "Join the Talk room" body block (the
-   *      auto-create path skips immediate injection so the link
-   *      lands in the body once the meeting is actually scheduled).
-   *   3. Append the "📅 Meeting" block with title / when / link.
-   *   4. Best-effort: POST any new event attendees to the Talk room
-   *      so the room's participant list stays aligned with the
-   *      event's. EventEditor doesn't await this callback so the
-   *      sync happens in the background; per-address failures
-   *      (already-added, invalid email) are logged and skipped.
-   */
-  async function onEventSaved(saved?: SavedEvent) {
-    if (!saved) return
-    mergeIntoRecipients(saved.attendees)
-    if (createdTalkLink) injectTalkBlock(createdTalkLink)
-
-    // Build the iMIP REQUEST attachment + the matching HTML body
-    // block via the shared helper so this surface stays in lockstep
-    // with the calendar-grid creation flow (`CalendarView`) — both
-    // emit the same look and the same `text/calendar` payload.
-    try {
-      const built = await buildInviteEmail({
-        uid: saved.uid,
-        summary: saved.summary,
-        start: saved.start,
-        end: saved.end,
-        url: saved.url,
-        attendees: saved.attendees,
-        fromAddress,
-        fromName: fromAccount?.display_name ?? null,
-        // True only when the URL was minted by Nimbus's Talk
-        // integration (the `createdTalkLink` we tracked through
-        // the silent-create flow).  A plain meeting URL the user
-        // typed by hand stays labelled "Meeting link".
-        isTalkLink: !!saved.url && createdTalkLink?.url === saved.url,
-      })
-      pendingCalendarPart = built.calendarPart
-      editorApi?.appendHtml(built.html)
-    } catch (e) {
-      console.warn('Failed to build invite email', e)
-    }
-
-    // Rename the auto-created Talk room to match the final event
-    // title. The room was created up-front (see `createTalkRoomSilently`)
-    // with the email subject as a placeholder name so we could prefill
-    // its URL into the event editor; once the user has typed an actual
-    // event title we rename the room so the Talk web UI shows
-    // something sensible.
-    if (
-      talkRoomToken &&
-      ncAccountId &&
-      createdTalkLink &&
-      saved.summary &&
-      saved.summary !== createdTalkLink.name
-    ) {
-      try {
-        await invoke('rename_talk_room', {
-          ncId: ncAccountId,
-          roomToken: talkRoomToken,
-          newName: saved.summary,
-        })
-        createdTalkLink = { ...createdTalkLink, name: saved.summary }
-      } catch (e) {
-        console.warn('Failed to rename Talk room:', e)
-      }
-    }
-
-    if (talkRoomToken && ncAccountId) {
-      for (const addr of saved.attendees) {
-        const key = addr.toLowerCase()
-        if (!key || talkRoomParticipants.has(key)) continue
-        try {
-          await invoke('add_talk_participant', {
-            ncId: ncAccountId,
-            roomToken: talkRoomToken,
-            participant: { kind: 'email', value: addr },
-          })
-          talkRoomParticipants.add(key)
-        } catch (e) {
-          console.warn('Failed to add Talk participant', addr, ':', e)
-        }
-      }
-    }
-  }
 
   /** Persist the current compose state to the account's IMAP Drafts
       folder via `save_draft` on the backend. The draft lands in the
@@ -1055,7 +878,6 @@
           body_text: htmlToText(bodyHtml),
           body_html: bodyHtml || null,
           attachments,
-          calendar_part: pendingCalendarPart,
         },
       })
       // Flush deferred Talk-room invites (#86).  The room was minted
@@ -1406,20 +1228,6 @@
     <span class="rt-btn-icon">💬</span>
     <span class="rt-btn-label">Talk</span>
   </button>
-  <button
-    type="button"
-    class="rt-btn"
-    disabled={openingEvent}
-    title={
-      createdTalkLink
-        ? 'Create a calendar event with the current recipients (existing Talk link prefilled)'
-        : 'Create a Talk room + calendar event with the current recipients'
-    }
-    onclick={openEventEditor}
-  >
-    <span class="rt-btn-icon">{openingEvent ? '⏳' : '📅'}</span>
-    <span class="rt-btn-label">{openingEvent ? 'Creating…' : 'Event'}</span>
-  </button>
 {/snippet}
 
 <!-- Always-visible Save / Discard / Send actions in the tab-strip
@@ -1520,16 +1328,6 @@
     deferParticipants={true}
     onclose={() => (showTalkModal = false)}
     oncreated={onTalkRoomCreated}
-  />
-{/if}
-
-{#if showEventEditor}
-  <EventEditor
-    mode="create"
-    {calendars}
-    draft={eventDraft()}
-    onclose={() => (showEventEditor = false)}
-    onsaved={onEventSaved}
   />
 {/if}
 

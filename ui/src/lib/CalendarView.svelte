@@ -33,7 +33,6 @@
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
   import EventEditor, { type SavedEvent } from './EventEditor.svelte'
-  import { buildInviteEmail } from './inviteEmail'
 
   interface Props {
     onclose: () => void
@@ -123,17 +122,6 @@
   let calendars = $state<CalendarSummary[]>([])
   let events = $state<CalendarEvent[]>([])
 
-  /** Mail accounts the user can pick to send invites from when
-   *  they create an event with attendees (#58).  Loaded once on
-   *  mount alongside the calendars.  An empty list disables the
-   *  picker in `EventEditor` and naturally suppresses the invite
-   *  mail step (we have nothing to send From). */
-  interface MailAccountRow {
-    id: string
-    email: string
-    display_name: string
-  }
-  let mailAccounts = $state<MailAccountRow[]>([])
   let loading = $state(true)
   let syncing = $state(false)
   let error = $state('')
@@ -536,6 +524,17 @@
     void init()
   })
 
+  /** Lower-cased addresses we consider "the user".  Drives the
+   *  "you declined this event" detection — when an event has
+   *  an ATTENDEE row whose email matches one of these AND the
+   *  row's PARTSTAT is DECLINED, the grid renders it with the
+   *  declined visual treatment (transparent fill, coloured
+   *  border) instead of the regular filled block.  Loaded once
+   *  on init from `get_accounts` (Nimbus mail-account emails);
+   *  empty by default so events still render correctly when
+   *  the lookup fails. */
+  let userIdentities = $state<Set<string>>(new Set())
+
   async function init() {
     loading = true
     error = ''
@@ -546,15 +545,18 @@
         loading = false
         return
       }
-      // Load mail accounts in parallel for the From picker on the
-      // event-creation modal.  Best-effort — failure leaves the
-      // picker hidden (event still saves to CalDAV, no invite
-      // mail goes out).
+      // Best-effort identity load — failure leaves the set
+      // empty and "user-declined" detection silently no-ops
+      // (events render normally).
       try {
-        mailAccounts = await invoke<MailAccountRow[]>('get_accounts')
+        const mailAccounts = await invoke<{ email: string }[]>('get_accounts')
+        const set = new Set<string>()
+        for (const a of mailAccounts) {
+          if (a.email) set.add(a.email.toLowerCase())
+        }
+        userIdentities = set
       } catch (e) {
-        console.warn('CalendarView: get_accounts failed', e)
-        mailAccounts = []
+        console.warn('CalendarView: identity load failed', e)
       }
       const now = new Date()
       const start = addDays(now, -INITIAL_PAST_DAYS)
@@ -568,6 +570,40 @@
     // Background sync for anything new server-side. Completes silently
     // except for the banner below the header when errors occur.
     void syncInBackground()
+  }
+
+  /** True when the user's own ATTENDEE row on this event
+   *  carries `PARTSTAT=DECLINED`.  Drives the declined
+   *  visual treatment in the grid — transparent fill with a
+   *  calendar-coloured border so the slot is visible but
+   *  clearly de-committed. */
+  function userDeclined(ev: CalendarEvent): boolean {
+    return userPartstatIs(ev, 'DECLINED')
+  }
+  /** True when the user's own ATTENDEE row carries
+   *  `PARTSTAT=TENTATIVE`.  Drives the tentative visual
+   *  (diagonal stripes).  Sourced from PARTSTAT — not from the
+   *  event's `TRANSP` property — because TRANSP is event-level
+   *  metadata that gets overwritten by CalDAV sync after our
+   *  surgical RSVP PUT (we only edit the ATTENDEE row, not
+   *  TRANSP), so the stripe class would otherwise drop off as
+   *  soon as the next sync round-trips the body.  PARTSTAT is
+   *  stored on the user's ATTENDEE row server-side and survives
+   *  every sync round-trip. */
+  function userTentative(ev: CalendarEvent): boolean {
+    return userPartstatIs(ev, 'TENTATIVE')
+  }
+  function userPartstatIs(ev: CalendarEvent, want: string): boolean {
+    if (userIdentities.size === 0) return false
+    for (const a of ev.attendees ?? []) {
+      if (
+        userIdentities.has(a.email.toLowerCase()) &&
+        (a.status ?? '').toUpperCase() === want
+      ) {
+        return true
+      }
+    }
+    return false
   }
 
   async function reloadFromCache(windowStart: Date, windowEnd: Date) {
@@ -845,87 +881,13 @@
     creatingDraft = null
   }
 
-  async function onEditorSaved(saved?: SavedEvent) {
-    // Easiest correct refresh: re-query the same window. The cache
-    // upsert/delete the backend already did is now visible.
+  async function onEditorSaved(_saved?: SavedEvent) {
+    // Re-query the loaded window so the new/updated/deleted event
+    // shows up.  Outbound iMIP invites for events with attendees
+    // are now sent server-side by Nextcloud's iMIP plugin (NC 30+
+    // Mail Provider routes them through the user's own SMTP) —
+    // nothing for the client to do beyond refreshing the grid.
     await reloadFromCache(loadedRangeStart, loadedRangeEnd)
-
-    // Fire the same outbound invite mail Compose's "Add Event"
-    // flow sends, so attendees added via the calendar grid
-    // (rather than via Compose) get the same nice HTML card +
-    // `text/calendar; method=REQUEST` attachment.  Edit-mode
-    // saves don't carry a `SavedEvent` — `onsaved()` is fired
-    // bare — so we naturally only auto-send on initial creation,
-    // which matches the user's mental model: "I just created a
-    // meeting, please tell the people I just invited".
-    if (saved && saved.attendees.length > 0) {
-      void sendInviteForCalendarEvent(saved)
-    }
-  }
-
-  /** Compose + ship the invite email for a freshly-created event.
-   *  Best-effort: the event itself is already saved server-side,
-   *  so an SMTP failure here logs + shows a banner but doesn't
-   *  unwind the calendar write.
-   *
-   *  The From account comes from the EventEditor's picker (cached
-   *  on `SavedEvent.inviteFromAccountId`); when no mail accounts
-   *  exist we silently skip — there's no From: to send from. */
-  async function sendInviteForCalendarEvent(saved: SavedEvent) {
-    if (!saved.inviteFromAccountId) {
-      console.info('No mail account selected; skipping calendar-event invite mail')
-      return
-    }
-    const account = mailAccounts.find((a) => a.id === saved.inviteFromAccountId)
-    if (!account) {
-      console.warn(
-        'Selected mail account not found; skipping calendar-event invite mail',
-      )
-      return
-    }
-
-    try {
-      const built = await buildInviteEmail({
-        uid: saved.uid,
-        summary: saved.summary,
-        start: saved.start,
-        end: saved.end,
-        url: saved.url,
-        attendees: saved.attendees,
-        fromAddress: account.email,
-        fromName: account.display_name || null,
-        // No Talk integration on the calendar-grid creation flow
-        // today — any URL the user typed is treated as a generic
-        // meeting link.  When CalendarView grows a "+ Talk room"
-        // shortcut, threading the flag through here keeps the
-        // CTA copy honest.
-        isTalkLink: false,
-      })
-
-      await invoke('send_email', {
-        accountId: account.id,
-        email: {
-          from: account.email,
-          to: saved.attendees,
-          cc: [],
-          bcc: [],
-          reply_to: null,
-          subject: built.subject,
-          body_text: built.text,
-          body_html: built.html,
-          attachments: [],
-          calendar_part: built.calendarPart,
-          // Auto-generated invite — keep it out of Sent.  The
-          // attendees still receive the mail; the organiser just
-          // doesn't see the machine-built copy clutter their
-          // own Sent folder.
-          skip_sent_copy: true,
-        },
-      })
-    } catch (e) {
-      console.warn('Failed to send calendar-event invite mail', e)
-      error = `Saved the event, but the invite mail to attendees failed: ${formatError(e) || e}`
-    }
   }
 
   // ── Click-and-drag in the time grid ─────────────────────────
@@ -1233,7 +1195,7 @@
                     {#each allDayVisible(b.allDay) as ev (ev.id)}
                       <button
                         type="button"
-                        class="ev-block ev-allday text-[11px] truncate rounded px-1.5 text-left"
+                        class="ev-block ev-allday text-[11px] truncate rounded px-1.5 text-left {userTentative(ev) ? 'ev-tentative' : ''} {userDeclined(ev) ? 'ev-declined' : ''}"
                         style="--ev-color: {eventColor(ev)}; height: {ALL_DAY_ROW_HEIGHT_PX}px; line-height: {ALL_DAY_ROW_HEIGHT_PX}px;"
                         title={`${ev.summary || '(no title)'} — All-day${ev.location ? ` @ ${ev.location}` : ''}`}
                         onclick={() => openEditor(ev)}
@@ -1322,7 +1284,7 @@
                       : 1}
                   {@const showLocationInline = p.event.location && p.heightPx > 80}
                   <div
-                    class="ev-block ev-timed absolute rounded-md text-[11px] overflow-hidden px-1.5 py-1 cursor-pointer leading-tight"
+                    class="ev-block ev-timed absolute rounded-md text-[11px] overflow-hidden px-1.5 py-1 cursor-pointer leading-tight {userTentative(p.event) ? 'ev-tentative' : ''} {userDeclined(p.event) ? 'ev-declined' : ''}"
                     style="--ev-color: {eventColor(p.event)}; top: {p.topPx}px; height: {p.heightPx}px; left: calc({(p.lane / p.laneCount) * 100}% + 2px); width: calc({(1 / p.laneCount) * 100}% - 4px);"
                     title={`${p.event.summary || '(no title)'} — ${fmtTime(p.event.start)}–${fmtTime(p.event.end)}${p.event.location ? ` @ ${p.event.location}` : ''}`}
                     onmousedown={(ev) => ev.stopPropagation()}
@@ -1379,7 +1341,6 @@
     mode="create"
     calendars={visibleCalendars}
     draft={creatingDraft}
-    {mailAccounts}
     onclose={closeEditor}
     onsaved={onEditorSaved}
   />
@@ -1388,7 +1349,6 @@
     mode="edit"
     calendars={visibleCalendars}
     event={editingEvent}
-    {mailAccounts}
     onclose={closeEditor}
     onsaved={onEditorSaved}
   />
@@ -1677,5 +1637,47 @@
   :global([data-mode='dark']) .ev-block.ev-timed:hover,
   :global([data-mode='dark']) .ev-block.ev-allday:hover {
     background-color: color-mix(in srgb, var(--ev-color) 38%, transparent);
+  }
+
+  /* Tentative events (TRANSP=TRANSPARENT — set by the RSVP card
+     when the user picks Tentative on an inbound invite, and by
+     anything else that opts into the "this slot might still be
+     free" semantic).  Diagonal stripe pattern, layered on top of
+     the regular tinted background, so the block is still readable
+     but visually marked as "soft commitment".  Rendered via a
+     repeating-linear-gradient on top of the base color-mix fill;
+     the `8%` stripe is faint enough on light backgrounds and
+     comes through subtly in dark mode too. */
+  .ev-block.ev-tentative {
+    background-image: repeating-linear-gradient(
+      45deg,
+      transparent 0,
+      transparent 6px,
+      color-mix(in srgb, var(--ev-color) 35%, transparent) 6px,
+      color-mix(in srgb, var(--ev-color) 35%, transparent) 8px
+    );
+  }
+
+  /* Declined events — the user RSVPed "no" but the meeting is
+     still on the calendar (Apple Calendar's behaviour).  No
+     fill so the block doesn't look like a real commitment, but
+     a fully-coloured border so it's still readable + the
+     calendar's identity colour stays visible.  Text de-emphasis
+     (lower opacity + line-through) makes the "I'm not going"
+     state unambiguous at a glance. */
+  .ev-block.ev-declined {
+    background: transparent !important;
+    background-image: none !important;
+    border: 1.5px solid var(--ev-color);
+    color: color-mix(in srgb, var(--ev-color) 80%, currentColor);
+    text-decoration: line-through;
+    opacity: 0.85;
+  }
+  .ev-block.ev-declined:hover {
+    background-color: color-mix(in srgb, var(--ev-color) 12%, transparent) !important;
+    opacity: 1;
+  }
+  :global([data-mode='dark']) .ev-block.ev-declined:hover {
+    background-color: color-mix(in srgb, var(--ev-color) 22%, transparent) !important;
   }
 </style>

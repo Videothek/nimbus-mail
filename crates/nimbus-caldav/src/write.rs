@@ -94,10 +94,14 @@ pub async fn update_event(
     .await?;
     let status = resp.status();
     if status == StatusCode::PRECONDITION_FAILED {
-        return Err(NimbusError::Nextcloud(
-            "event was modified on the server since last sync — refresh and try again"
-                .to_string(),
-        ));
+        // Programmatically-detectable variant — callers (the
+        // calendar-write Tauri commands, the RSVP path) catch
+        // `EtagMismatch`, run a single-calendar sync to pull
+        // the latest etag, and retry transparently.  The user
+        // never sees a "refresh and try again" toast.
+        return Err(NimbusError::EtagMismatch(format!(
+            "If-Match failed for {href} (server etag != cached)"
+        )));
     }
     if !status.is_success() {
         return Err(NimbusError::Nextcloud(format!(
@@ -118,8 +122,45 @@ pub async fn delete_event(
     app_password: &str,
     if_match_etag: &str,
 ) -> Result<(), NimbusError> {
+    delete_event_inner(href, username, app_password, if_match_etag, false).await
+}
+
+/// `delete_event` variant that suppresses Sabre/DAV's
+/// auto-iTIP via `Schedule-Reply: F`.  Used by the
+/// "Remove from my calendar" flow for a meeting the
+/// organiser already cancelled — without this header Sabre
+/// would emit a spurious `METHOD:REPLY;PARTSTAT=DECLINED`
+/// iMIP at the organiser when the attendee removes their
+/// local copy.
+pub async fn delete_event_silent(
+    href: &str,
+    username: &str,
+    app_password: &str,
+    if_match_etag: &str,
+) -> Result<(), NimbusError> {
+    delete_event_inner(href, username, app_password, if_match_etag, true).await
+}
+
+async fn delete_event_inner(
+    href: &str,
+    username: &str,
+    app_password: &str,
+    if_match_etag: &str,
+    suppress_itip: bool,
+) -> Result<(), NimbusError> {
     let http = build()?;
-    let resp = delete_resource(&http, href, username, app_password, Some(if_match_etag)).await?;
+    let resp = if suppress_itip {
+        crate::client::delete_resource_no_itip(
+            &http,
+            href,
+            username,
+            app_password,
+            Some(if_match_etag),
+        )
+        .await?
+    } else {
+        delete_resource(&http, href, username, app_password, Some(if_match_etag)).await?
+    };
     let status = resp.status();
     if status == StatusCode::PRECONDITION_FAILED {
         return Err(NimbusError::Nextcloud(

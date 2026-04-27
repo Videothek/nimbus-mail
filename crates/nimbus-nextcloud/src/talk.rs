@@ -219,27 +219,44 @@ pub async fn list_rooms(
 /// finish the join in the browser. The room itself is preserved on the
 /// server — leaving an empty room dangling is better than rolling back
 /// and silently dropping a working room the user can still use.
+// `room_type_override`: `2` = group/private (only invited NC
+// users can join), `3` = public (anyone with the URL joins as
+// guest).  `None` falls back to group/private — the
+// Compose-side "create Talk room" flow's behaviour.  Event-bound
+// rooms pass `Some(3)` so externals invited to the event can
+// click through the calendar link without an NC login.
 pub async fn create_room(
     server_url: &str,
     username: &str,
     app_password: &str,
     room_name: &str,
     participants: &[ParticipantSource],
+    object_type: Option<&str>,
+    object_id: Option<&str>,
+    room_type_override: Option<u8>,
 ) -> Result<TalkRoom, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let url = format!("{server}/ocs/v2.php/apps/spreed/api/v4/room?format=json");
 
     tracing::debug!("POST {url} (room_name={room_name:?})");
     let http = client::build()?;
+    let room_type = room_type_override.unwrap_or(ROOM_TYPE_GROUP).to_string();
+    let mut form: Vec<(&str, &str)> = vec![
+        ("roomType", room_type.as_str()),
+        ("roomName", room_name),
+    ];
+    if let Some(t) = object_type {
+        form.push(("objectType", t));
+    }
+    if let Some(id) = object_id {
+        form.push(("objectId", id));
+    }
     let resp = http
         .post(&url)
         .header("OCS-APIRequest", "true")
         .header("Accept", "application/json")
         .basic_auth(username, Some(app_password))
-        .form(&[
-            ("roomType", ROOM_TYPE_GROUP.to_string().as_str()),
-            ("roomName", room_name),
-        ])
+        .form(&form)
         .send()
         .await
         .map_err(|e| NimbusError::Network(format!("talk create request failed: {e}")))?;
@@ -330,6 +347,49 @@ pub async fn rename_room(
     // Discard the updated-room payload — we already track the room
     // locally and a rename doesn't change anything else we care about.
     let _: serde_json::Value = parse_ocs_data(&body, "talk rename room")?;
+    Ok(())
+}
+
+/// Toggle a Talk room's public-vs-group state.  `true` makes
+/// the room public (anyone with the URL joins as a guest);
+/// `false` reverts it to a group/private room (only invited
+/// NC users can join).  Used by the EventEditor save flow:
+/// rooms start public so externals can join via the calendar
+/// invite, and we downgrade to private when every attendee
+/// turns out to be an internal NC user.
+///
+/// Talk exposes this as two separate verbs on
+/// `/room/{token}/public` — POST to enable, DELETE to disable.
+/// We pick based on the boolean and emit the matching request.
+pub async fn set_room_public(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    room_token: &str,
+    public: bool,
+) -> Result<(), NimbusError> {
+    let server = client::normalize_server_url(server_url);
+    let url =
+        format!("{server}/ocs/v2.php/apps/spreed/api/v4/room/{room_token}/public?format=json");
+
+    let http = client::build()?;
+    let req = if public {
+        tracing::debug!("POST {url} (-> public)");
+        http.post(&url)
+    } else {
+        tracing::debug!("DELETE {url} (-> private)");
+        http.delete(&url)
+    };
+    let resp = req
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("talk set-public request failed: {e}")))?;
+
+    let body = ocs_text(resp, "talk set room public").await?;
+    let _: serde_json::Value = parse_ocs_data(&body, "talk set room public")?;
     Ok(())
 }
 

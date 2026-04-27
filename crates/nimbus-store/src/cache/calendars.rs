@@ -870,6 +870,103 @@ impl Cache {
         Ok(())
     }
 
+    /// Persist the user's RSVP answer (ACCEPTED / DECLINED / TENTATIVE)
+    /// for the iCalendar UID of an inbound invite. Called from the
+    /// `send_event_rsvp` Tauri command after the REPLY mail leaves
+    /// the SMTP server, so the card can re-render in the chosen
+    /// state on next open.  Overwrites a previous answer, which is
+    /// the right semantics: changing your mind replaces the row.
+    pub fn upsert_rsvp_response(
+        &self,
+        uid: &str,
+        partstat: &str,
+    ) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO rsvp_responses (uid, partstat, responded_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT (uid) DO UPDATE SET
+                partstat     = excluded.partstat,
+                responded_at = excluded.responded_at",
+            params![uid, partstat, now],
+        )?;
+        Ok(())
+    }
+
+    /// Look up the user's last RSVP answer for `uid`. Returns
+    /// `Ok(None)` if the user has never answered this invite (the
+    /// card should show the fresh Accept/Decline/Tentative state).
+    pub fn get_rsvp_response(
+        &self,
+        uid: &str,
+    ) -> Result<Option<String>, CacheError> {
+        let conn = self.pool.get()?;
+        let row = conn
+            .query_row(
+                "SELECT partstat FROM rsvp_responses WHERE uid = ?1",
+                params![uid],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Record that the iCalendar UID has been cancelled by the
+    /// organiser.  Called by MailView when it opens a
+    /// `METHOD:CANCEL` invite — the original REQUEST mail's
+    /// pre-render sync then sees this signal and flips its card
+    /// to the cancelled banner.  Idempotent: re-recording the
+    /// same UID just refreshes `cancelled_at`.
+    pub fn mark_invite_cancelled(&self, uid: &str) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO cancelled_invites (uid, cancelled_at)
+             VALUES (?1, ?2)
+             ON CONFLICT (uid) DO UPDATE SET cancelled_at = excluded.cancelled_at",
+            params![uid, now],
+        )?;
+        Ok(())
+    }
+
+    /// True when a `METHOD:CANCEL` for this UID has been seen
+    /// in the user's inbox at any point.  Used to flip the
+    /// REQUEST mail's RSVP card to the cancelled banner so the
+    /// user doesn't unwittingly respond to an already-cancelled
+    /// meeting.
+    pub fn is_invite_cancelled(&self, uid: &str) -> Result<bool, CacheError> {
+        let conn = self.pool.get()?;
+        let hit: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM cancelled_invites WHERE uid = ?1",
+                params![uid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(hit.is_some())
+    }
+
+    /// Find the first cached event whose iCalendar UID matches.
+    /// Used by the iMIP CANCEL flow: when an organiser cancels a
+    /// meeting we previously accepted, the inbound mail only carries
+    /// the UID — we need to map that back to the local event so we
+    /// can remove it from the user's calendar.
+    pub fn find_event_id_by_uid(
+        &self,
+        uid: &str,
+    ) -> Result<Option<String>, CacheError> {
+        let conn = self.pool.get()?;
+        let row = conn
+            .query_row(
+                "SELECT id FROM calendar_events WHERE uid = ?1 LIMIT 1",
+                params![uid],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(row)
+    }
+
     /// Remove one event row by its app-side id. Used after a successful
     /// DELETE to the server, so the next `get_cached_events` call
     /// doesn't ghost-render the deleted row until the next sync.

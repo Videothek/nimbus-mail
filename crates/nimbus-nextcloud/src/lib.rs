@@ -20,6 +20,7 @@ pub mod client;
 pub mod files;
 pub mod shares;
 pub mod talk;
+pub mod user;
 
 pub use auth::{LoginFlowInit, LoginFlowResult, poll_login, start_login};
 pub use capabilities::fetch_capabilities;
@@ -30,5 +31,6 @@ pub use files::{
 pub use shares::{PublicShare, create_public_share, update_share_label};
 pub use talk::{
     ParticipantSource, RoomType, TalkRoom, add_participant, create_room, delete_room, list_rooms,
-    rename_room,
+    rename_room, set_room_public,
 };
+pub use user::{NextcloudUserMatch, NextcloudUserProfile, fetch_current_user, find_user_by_email};
