@@ -2348,6 +2348,15 @@ async fn delete_calendar_event(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InviteSummary {
+    /// Calendar-level `METHOD:` value, upper-cased.  iTIP defines
+    /// REQUEST (organiser → attendee), REPLY (attendee →
+    /// organiser), CANCEL, PUBLISH, REFRESH, COUNTER, DECLINECOUNTER.
+    /// `MailView` only shows the RSVP card for REQUEST; the others
+    /// (especially REPLY) are typically attendee responses to OUR
+    /// invites and don't need a "you can RSVP" card on the
+    /// organiser's side.  `None` means no METHOD line was present
+    /// (treat as "not an iTIP message" and suppress the card).
+    method: Option<String>,
     /// VEVENT UID — the join key between REQUEST + REPLY.
     uid: String,
     /// SUMMARY (title) of the event.
@@ -2424,7 +2433,10 @@ fn parse_event_invite(bytes: Vec<u8>) -> Result<InviteSummary, NimbusError> {
         .next()
         .ok_or_else(|| NimbusError::Protocol("invite contains no VEVENT".into()))?;
 
+    let method = extract_calendar_method(&body);
+
     Ok(InviteSummary {
+        method,
         uid: event.id.clone(),
         summary: event.summary.clone(),
         start: event.start,
@@ -2436,6 +2448,24 @@ fn parse_event_invite(bytes: Vec<u8>) -> Result<InviteSummary, NimbusError> {
         attendees: event.attendees.clone(),
         raw_ics: body,
     })
+}
+
+/// Pull the calendar-level `METHOD:` value out of a raw ICS body
+/// without round-tripping through a full parser.  iTIP defines
+/// the line as a single token after the colon (REQUEST / REPLY /
+/// CANCEL / etc.); we just normalise to upper case so JS-side
+/// equality checks don't have to be case-insensitive.
+fn extract_calendar_method(ics: &str) -> Option<String> {
+    for line in ics.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("METHOD:") {
+            let m = rest.trim();
+            if !m.is_empty() {
+                return Some(m.to_uppercase());
+            }
+        }
+    }
+    None
 }
 
 /// Generate a `METHOD:REPLY` iCalendar body for the user's RSVP

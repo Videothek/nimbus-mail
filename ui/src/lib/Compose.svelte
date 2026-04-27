@@ -746,8 +746,18 @@
     })
     const timeFmt: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' }
     const when = sameDay
-      ? `${dateStr}, ${start.toLocaleTimeString(undefined, timeFmt)}–${end.toLocaleTimeString(undefined, timeFmt)}`
+      ? `${dateStr}, ${start.toLocaleTimeString(undefined, timeFmt)} – ${end.toLocaleTimeString(undefined, timeFmt)}`
       : `${start.toLocaleString(undefined, { ...timeFmt, dateStyle: 'medium' } as Intl.DateTimeFormatOptions)} – ${end.toLocaleString(undefined, { ...timeFmt, dateStyle: 'medium' } as Intl.DateTimeFormatOptions)}`
+    const durationMs = end.getTime() - start.getTime()
+    const durationLabel = (() => {
+      if (!isFinite(durationMs) || durationMs <= 0) return ''
+      const totalMin = Math.round(durationMs / 60_000)
+      const h = Math.floor(totalMin / 60)
+      const m = totalMin % 60
+      if (h === 0) return `${m}m`
+      if (m === 0) return `${h}h`
+      return `${h}h ${m}m`
+    })()
     const title = esc(saved.summary || '(untitled)')
     // Label the link as "Talk room" when the URL matches the one we
     // just created from the Talk button, otherwise call it "Meeting
@@ -755,14 +765,51 @@
     // misleading "Talk room" label.
     const isTalkLink =
       !!saved.url && createdTalkLink?.url === saved.url
-    const linkLabel = isTalkLink ? 'Talk room' : 'Meeting link'
-    const linkLine = saved.url
-      ? `<p>${linkLabel}: <a href="${saved.url}">${esc(saved.url)}</a></p>`
+    const linkLabel = isTalkLink ? 'Join Talk room' : 'Meeting link'
+
+    // Render as an inline-styled card.  Email clients strip out
+    // stylesheet blocks entirely, so every visual rule lives on
+    // the element itself.  Table-based layout (vs flexbox) is the
+    // robust play: Outlook for Windows uses the Word renderer
+    // and ignores `display: flex` / `gap` outright, but renders
+    // tables flawlessly.  Colour palette deliberately matches the
+    // inbound `CalendarInviteCard` so a user who's seen the
+    // recipient surface recognises the sender surface immediately.
+    const linkBlock = saved.url
+      ? `<tr>
+            <td style="padding-top:14px;">
+              <a href="${saved.url}" style="display:inline-block; padding:9px 18px; background:#3b82f6; color:#ffffff; border-radius:6px; text-decoration:none; font-weight:600; font-size:14px;">
+                ${isTalkLink ? '💬 ' : '🔗 '}${esc(linkLabel)}
+              </a>
+              <div style="margin-top:6px; font-size:12px; color:#6b7280;">
+                ${esc(saved.url)}
+              </div>
+            </td>
+          </tr>`
       : ''
-    const block =
-      `<p><strong>📅 Meeting:</strong> ${title}</p>` +
-      `<p>When: ${esc(when)}</p>` +
-      linkLine
+    const durationLine = durationLabel
+      ? `<span style="color:#9ca3af;"> · ${esc(durationLabel)}</span>`
+      : ''
+    const block = `
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate; border:1px solid #d1d5db; border-radius:10px; padding:18px 20px; max-width:560px; margin-top:14px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f9fafb;">
+        <tr>
+          <td style="padding-bottom:8px; font-size:12px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:#3b82f6;">
+            📅 Meeting invitation
+          </td>
+        </tr>
+        <tr>
+          <td style="font-size:18px; font-weight:600; color:#111827; padding-bottom:8px;">
+            ${title}
+          </td>
+        </tr>
+        <tr>
+          <td style="font-size:14px; color:#374151; padding-bottom:4px;">
+            <strong style="color:#111827;">🕐 When:</strong> ${esc(when)}${durationLine}
+          </td>
+        </tr>
+        ${linkBlock}
+      </table>
+    `.replace(/\n\s*/g, '')
     editorApi?.appendHtml(block)
 
     // Rename the auto-created Talk room to match the final event

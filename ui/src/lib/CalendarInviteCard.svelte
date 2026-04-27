@@ -30,6 +30,10 @@
    *  passed back verbatim to `send_event_rsvp` so the REPLY
    *  carries the right UID / DTSTAMP / SEQUENCE. */
   export interface InviteSummary {
+    /** Calendar-level METHOD (REQUEST / REPLY / CANCEL …).
+     *  `MailView` filters on this to suppress the card for
+     *  non-REQUEST messages. */
+    method: string | null
     uid: string
     summary: string
     start: string
@@ -68,9 +72,18 @@
     onresponded?: (partstat: 'ACCEPTED' | 'DECLINED' | 'TENTATIVE') => void
   } = $props()
 
-  let busy = $state<'ACCEPTED' | 'DECLINED' | 'TENTATIVE' | null>(null)
-  let respondedAs = $state<'ACCEPTED' | 'DECLINED' | 'TENTATIVE' | null>(null)
+  type Partstat = 'ACCEPTED' | 'DECLINED' | 'TENTATIVE'
+  let busy = $state<Partstat | null>(null)
+  let respondedAs = $state<Partstat | null>(null)
   let error = $state('')
+
+  /** Human-readable verb for the "You replied: …" callout.
+   *  Lower-case so the line reads as a sentence. */
+  function verbFor(p: Partstat): string {
+    if (p === 'ACCEPTED') return 'Accepted'
+    if (p === 'DECLINED') return 'Declined'
+    return 'Tentatively accepted'
+  }
 
   /** Pull the bare email out of an RFC 5322 address string ("Name
    *  <user@host>" → "user@host").  Same idea as Compose's helper —
@@ -118,8 +131,12 @@
     return `${hours}h ${mins}m`
   })
 
-  async function rsvp(partstat: 'ACCEPTED' | 'DECLINED' | 'TENTATIVE') {
+  async function rsvp(partstat: Partstat) {
+    // Allow clicking the same response again as a no-op, but
+    // skip while a request's already in flight so a double-click
+    // doesn't fire two REPLY emails.
     if (busy) return
+    if (respondedAs === partstat) return
     error = ''
     busy = partstat
     const organizer = invite.organizerEmail || bareAddr(fromAddress)
@@ -148,11 +165,6 @@
       <span class="text-lg">📅</span>
       <span class="font-semibold">{invite.summary || '(untitled meeting)'}</span>
     </div>
-    {#if respondedAs}
-      <span class="text-xs px-2 py-1 rounded-md bg-surface-200 dark:bg-surface-700">
-        Replied: {respondedAs.toLowerCase()}
-      </span>
-    {/if}
   </div>
 
   <!-- Time slot.  Front-and-centre so the user can decide
@@ -184,27 +196,54 @@
     <p class="text-xs text-red-500 mt-2">{error}</p>
   {/if}
 
-  <div class="flex flex-wrap items-center gap-2 mt-3">
-    <button
-      class="btn btn-sm preset-filled-primary-500 disabled:opacity-50"
-      disabled={busy !== null}
-      onclick={() => void rsvp('ACCEPTED')}
-    >
-      {busy === 'ACCEPTED' ? 'Sending…' : '✓ Accept'}
-    </button>
-    <button
-      class="btn btn-sm preset-outlined-surface-500 disabled:opacity-50"
-      disabled={busy !== null}
-      onclick={() => void rsvp('TENTATIVE')}
-    >
-      {busy === 'TENTATIVE' ? 'Sending…' : '? Tentative'}
-    </button>
-    <button
-      class="btn btn-sm preset-outlined-surface-500 disabled:opacity-50"
-      disabled={busy !== null}
-      onclick={() => void rsvp('DECLINED')}
-    >
-      {busy === 'DECLINED' ? 'Sending…' : '✗ Decline'}
-    </button>
-  </div>
+  {#if respondedAs}
+    <!-- Post-reply state.  The chosen response is highlighted as
+         primary-filled; the alternatives become outlined buttons
+         labelled "Change to …" so the user can flip their mind
+         without losing the visual confirmation of "what did I
+         answer?". -->
+    <p class="text-sm text-surface-700 dark:text-surface-300 mt-3">
+      <span class="font-medium">You replied:</span> {verbFor(respondedAs)}
+    </p>
+    <div class="flex flex-wrap items-center gap-2 mt-2">
+      {#each (['ACCEPTED', 'TENTATIVE', 'DECLINED'] as Partstat[]) as p}
+        {@const isCurrent = respondedAs === p}
+        {@const label = p === 'ACCEPTED' ? '✓ Accept' : p === 'TENTATIVE' ? '? Tentative' : '✗ Decline'}
+        <button
+          class="btn btn-sm disabled:opacity-50 {isCurrent
+            ? 'preset-filled-primary-500'
+            : 'preset-outlined-surface-500'}"
+          disabled={busy !== null}
+          onclick={() => void rsvp(p)}
+          title={isCurrent ? 'Your current response' : `Change response to ${verbFor(p)}`}
+        >
+          {busy === p ? 'Sending…' : isCurrent ? label : `Change to ${label}`}
+        </button>
+      {/each}
+    </div>
+  {:else}
+    <div class="flex flex-wrap items-center gap-2 mt-3">
+      <button
+        class="btn btn-sm preset-filled-primary-500 disabled:opacity-50"
+        disabled={busy !== null}
+        onclick={() => void rsvp('ACCEPTED')}
+      >
+        {busy === 'ACCEPTED' ? 'Sending…' : '✓ Accept'}
+      </button>
+      <button
+        class="btn btn-sm preset-outlined-surface-500 disabled:opacity-50"
+        disabled={busy !== null}
+        onclick={() => void rsvp('TENTATIVE')}
+      >
+        {busy === 'TENTATIVE' ? 'Sending…' : '? Tentative'}
+      </button>
+      <button
+        class="btn btn-sm preset-outlined-surface-500 disabled:opacity-50"
+        disabled={busy !== null}
+        onclick={() => void rsvp('DECLINED')}
+      >
+        {busy === 'DECLINED' ? 'Sending…' : '✗ Decline'}
+      </button>
+    </div>
+  {/if}
 </div>
