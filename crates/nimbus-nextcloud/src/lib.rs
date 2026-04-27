@@ -27,7 +27,7 @@ pub use files::{
     FileEntry, create_directory, delete_path, download_file, list_directory, propfind_fileid,
     upload_file,
 };
-pub use shares::{PublicShare, create_public_share};
+pub use shares::{PublicShare, create_public_share, update_share_label};
 pub use talk::{
     ParticipantSource, RoomType, TalkRoom, add_participant, create_room, list_rooms, rename_room,
 };

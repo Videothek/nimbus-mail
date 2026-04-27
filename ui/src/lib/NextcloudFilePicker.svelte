@@ -29,10 +29,18 @@
     content_type: string
     data: number[]
   }
-  /** A "share as link" result — name + the public Nextcloud URL. */
-  interface ShareLink {
+  /** A "share as link" result.
+   *
+   *  - `filename` / `url` — what the body block needs.
+   *  - `id` / `ncId`     — what `update_nextcloud_share_label`
+   *    needs so Compose can re-PUT the label whenever the
+   *    recipient list changes after the share was minted (#91).
+   */
+  export interface ShareLink {
     filename: string
     url: string
+    id: string
+    ncId: string
   }
 
   interface Props {
@@ -89,11 +97,41 @@
   // clicked "Share as link" so toggling the file tree behind the
   // modal can't change what gets shared. `password` is the in-flight
   // input — empty means "no password" (omitted from the OCS request,
-  // which keeps the share open as before).
+  // which keeps the share open as before).  `permissions` is the
+  // OCS bitfield value chosen via the dropdown — defaults to
+  // read-only so existing flows behave the same when the user
+  // clicks straight through.
   let sharePrompt = $state<{
     paths: string[]
     password: string
+    permissions: number
   } | null>(null)
+
+  /** Common public-link permission combinations Nextcloud's own
+   *  share UI exposes.  The bitfield (1 read, 2 update, 4 create,
+   *  8 delete, 16 share) gets sent to the OCS endpoint verbatim. */
+  const PERMISSION_OPTIONS = [
+    { value: 1, label: 'View only', hint: 'Recipient can read / download.' },
+    {
+      value: 3,
+      label: 'View and edit',
+      hint: 'Recipient can edit the file in Nextcloud.',
+    },
+    {
+      value: 15,
+      label: 'View, edit, upload, delete',
+      hint: 'Folder share with full read-write — recipient can drop files in and modify existing ones.',
+    },
+    {
+      value: 4,
+      label: 'File drop (upload only)',
+      hint: 'Folder share where recipients can upload but not see the contents.',
+    },
+  ] as const
+
+  function permHint(value: number): string {
+    return PERMISSION_OPTIONS.find((o) => o.value === value)?.hint ?? ''
+  }
 
   // Selection split by entry type. Folders can be shared as public
   // links but not attached as bytes (Nextcloud has no zip-folder
@@ -152,7 +190,11 @@
       a share if the user changes their mind mid-click. */
   function shareSelected() {
     if (selected.size === 0 || !onlinks) return
-    sharePrompt = { paths: Array.from(selected), password: '' }
+    sharePrompt = {
+      paths: Array.from(selected),
+      password: '',
+      permissions: 1, // View-only by default — matches Nextcloud's own picker.
+    }
     error = ''
   }
 
@@ -162,20 +204,29 @@
       direct flow. */
   async function commitShare() {
     if (!sharePrompt || !onlinks) return
-    const { paths, password } = sharePrompt
+    const { paths, password, permissions } = sharePrompt
     sharing = true
     error = ''
     try {
       const pw = password.trim() ? password : null
       const results = await Promise.all(
         paths.map(async (p) => {
-          const url = await invoke<string>('create_nextcloud_share', {
+          const r = await invoke<{ id: string; url: string }>(
+            'create_nextcloud_share',
+            {
+              ncId: accountId,
+              path: p,
+              password: pw,
+              label: shareLabel?.trim() || null,
+              permissions,
+            },
+          )
+          return {
+            filename: basename(p),
+            url: r.url,
+            id: r.id,
             ncId: accountId,
-            path: p,
-            password: pw,
-            label: shareLabel?.trim() || null,
-          })
-          return { filename: basename(p), url } satisfies ShareLink
+          } satisfies ShareLink
         }),
       )
       sharePrompt = null
@@ -317,6 +368,26 @@
           else if (e.key === 'Escape' && !sharing) { e.preventDefault(); sharePrompt = null }
         }}
       />
+
+      <!-- Permissions dropdown — mirrors Nextcloud's own share UI.
+           The bitmask values map to OCS's `permissions` form field.
+           File-only flows (where the picker is used to attach a
+           single document) practically only use 1 / 3; the upload
+           variants ride along for folder shares. -->
+      <label class="block text-xs text-surface-500 mb-1" for="share-perms">Permissions</label>
+      <select
+        id="share-perms"
+        class="input w-full text-sm px-2 py-1.5 rounded-md mb-1"
+        bind:value={sharePrompt.permissions}
+        disabled={sharing}
+      >
+        {#each PERMISSION_OPTIONS as opt}
+          <option value={opt.value}>{opt.label}</option>
+        {/each}
+      </select>
+      <p class="text-[11px] text-surface-500 mb-3">
+        {permHint(sharePrompt.permissions)}
+      </p>
 
       {#if error}
         <p class="text-xs text-red-500 mb-3 wrap-break-word">{error}</p>
