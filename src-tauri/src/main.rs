@@ -2318,12 +2318,163 @@ async fn delete_calendar_event(
     cache: State<'_, Cache>,
 ) -> Result<(), NimbusError> {
     let handle = load_event_handle(&cache, &event_id)?;
-    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let nc_account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
-    caldav_delete_event(&handle.href, &account.username, &app_password, &handle.etag).await?;
+    // Snapshot the original ICS BEFORE we delete — we need the
+    // attendee list + UID to mint the CANCEL message after.  The
+    // delete itself proceeds even if the snapshot fails: the user
+    // asked to delete the event and shouldn't be blocked on the
+    // notification step.
+    let ics_for_cancel = handle.ics_raw.clone();
+
+    caldav_delete_event(&handle.href, &nc_account.username, &app_password, &handle.etag).await?;
     cache.delete_event_by_id(&event_id)?;
+
+    // Best-effort cancellation notice (#58).  Build a
+    // METHOD:CANCEL iMIP from the original event and send it to
+    // every attendee.  Recipients on any RFC-compliant client
+    // (Outlook, Apple Mail, Gmail, Thunderbird) get a native
+    // "this meeting was cancelled" notice that updates their
+    // calendar automatically.  Any failure here logs + moves on
+    // — the event is already gone from the organiser's calendar.
+    if let Err(e) =
+        send_event_cancellation(&cache, &ics_for_cancel, &nc_account).await
+    {
+        tracing::warn!(
+            "Event deleted but cancellation notice to attendees failed: {e}"
+        );
+    }
     Ok(())
+}
+
+/// Mint + send a `METHOD:CANCEL` iMIP for a just-deleted event.
+///
+/// Uses the user's first configured mail account as the SMTP
+/// `from`; the iCalendar `ORGANIZER` line is the same one that
+/// went out on the original REQUEST (derived via `organizer_for`)
+/// so the recipient's mail client pairs the CANCEL back to the
+/// original event by UID + organiser.
+///
+/// Best-effort: returns `Ok(())` when there's nothing to do
+/// (event had no attendees, or no mail account is configured)
+/// so the caller can wrap with a silent log on error.
+async fn send_event_cancellation(
+    cache: &Cache,
+    raw_ics: &str,
+    nc_account: &NextcloudAccount,
+) -> Result<(), NimbusError> {
+    // Parse the original VEVENT so the CANCEL carries the same
+    // UID + DTSTART/DTEND.  Skip silently if the cached ICS is
+    // somehow empty / unparseable — the event is already gone
+    // from the organiser's calendar; we don't want to block the
+    // delete on a notification we can't generate.
+    let events = match nimbus_caldav::ical::parse_ics(raw_ics) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("Could not parse deleted event for cancel: {e}");
+            return Ok(());
+        }
+    };
+    let Some(event) = events.into_iter().next() else {
+        return Ok(());
+    };
+    if event.attendees.is_empty() {
+        return Ok(()); // No-one to notify.
+    }
+    let attendee_emails: Vec<String> = event
+        .attendees
+        .iter()
+        .map(|a| a.email.clone())
+        .collect();
+
+    let mail_accounts = account_store::load_accounts(cache).unwrap_or_default();
+    let Some(mail_account) = mail_accounts.into_iter().next() else {
+        tracing::info!("No mail account configured; skipping CANCEL notification");
+        return Ok(());
+    };
+    let smtp_password = credentials::get_imap_password(&mail_account.id)?;
+
+    let (organizer_email, organizer_name) = organizer_for(nc_account);
+    let cancel_ics = nimbus_caldav::ical::build_ics_with_method(
+        &event,
+        Some(&organizer_email),
+        organizer_name.as_deref(),
+        Some("CANCEL"),
+    );
+
+    let title = if event.summary.is_empty() {
+        "(untitled meeting)".to_string()
+    } else {
+        event.summary.clone()
+    };
+    let subject = format!("Cancelled: {title}");
+    let when = format_event_when(&event);
+
+    let body_text = format!(
+        "The meeting \"{title}\" scheduled for {when} has been cancelled.\n"
+    );
+    let body_html = format!(
+        r#"<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate; border:1px solid #fecaca; border-radius:10px; padding:18px 20px; max-width:560px; margin-top:14px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#fef2f2;"><tr><td style="padding-bottom:8px; font-size:12px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:#dc2626;">📅 Meeting cancelled</td></tr><tr><td style="font-size:18px; font-weight:600; color:#111827; padding-bottom:8px; text-decoration:line-through;">{title_html}</td></tr><tr><td style="padding-bottom:6px;"><span style="display:inline-block; padding:4px 10px; border-radius:999px; background:#dc2626; color:#ffffff; font-size:12px; font-weight:600; letter-spacing:0.05em;">CANCELLED</span></td></tr><tr><td style="font-size:14px; color:#374151; padding-top:6px;"><strong style="color:#111827;">🕐 Was scheduled for:</strong> {when_html}</td></tr></table>"#,
+        title_html = html_escape(&title),
+        when_html = html_escape(&when),
+    );
+
+    let outgoing = nimbus_core::models::OutgoingEmail {
+        from: mail_account.email.clone(),
+        to: attendee_emails,
+        cc: vec![],
+        bcc: vec![],
+        reply_to: None,
+        subject,
+        body_text: Some(body_text),
+        body_html: Some(body_html),
+        attachments: vec![],
+        calendar_part: Some(nimbus_core::models::CalendarPart {
+            method: "CANCEL".to_string(),
+            ics: cancel_ics,
+        }),
+        // Auto-generated machinery — keep it out of Sent.
+        skip_sent_copy: true,
+    };
+
+    let smtp = nimbus_smtp::SmtpClient::connect(
+        &mail_account.smtp_host,
+        mail_account.smtp_port,
+        &mail_account.email,
+        &smtp_password,
+        &mail_account.trusted_certs,
+    )
+    .await?;
+    smtp.send(&outgoing).await?;
+    Ok(())
+}
+
+/// Format a CalendarEvent's start/end as a human-readable
+/// "Wed, Jan 1, 2026, 09:00 – 10:00" string.  Used in the
+/// cancellation email's plain-text body and the styled card.
+fn format_event_when(event: &CalendarEvent) -> String {
+    use chrono::Datelike;
+    let start = event.start;
+    let end = event.end;
+    let same_day = start.year() == end.year()
+        && start.month() == end.month()
+        && start.day() == end.day();
+    let day = start.format("%a, %b %-d, %Y");
+    if same_day {
+        format!(
+            "{}, {} – {}",
+            day,
+            start.format("%H:%M"),
+            end.format("%H:%M")
+        )
+    } else {
+        format!(
+            "{} – {}",
+            start.format("%a, %b %-d, %Y %H:%M"),
+            end.format("%a, %b %-d, %Y %H:%M")
+        )
+    }
 }
 
 /// Minimal HTML escaper for plain-string fields the inline RSVP /
