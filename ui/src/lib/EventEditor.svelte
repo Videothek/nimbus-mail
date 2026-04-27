@@ -78,6 +78,12 @@
       `() => void` handler unchanged. Compose uses this to append a
       "📅 Meeting" block to the email body. */
   export interface SavedEvent {
+    /** VEVENT UID assigned by the CalDAV PUT — Compose passes this
+     *  to `build_event_invite_ics` so the iMIP REQUEST attached to
+     *  the outgoing mail uses the same UID as the organiser's
+     *  CalDAV copy.  The eventual iMIP REPLY then pairs back to
+     *  the right event in the organiser's calendar. */
+    uid: string
     summary: string
     start: string
     end: string
@@ -382,8 +388,9 @@
     saving = true
     try {
       if (mode === 'create') {
-        await invoke('create_calendar_event', { calendarId, input })
+        const created = await invoke<{ id: string }>('create_calendar_event', { calendarId, input })
         onsaved({
+          uid: created.id,
           summary: input.summary,
           start: input.start,
           end: input.end,

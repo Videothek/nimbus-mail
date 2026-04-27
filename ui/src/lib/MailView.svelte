@@ -15,6 +15,7 @@
   import { formatError } from './errors'
   import NextcloudFilePicker from './NextcloudFilePicker.svelte'
   import MoveFolderPicker from './MoveFolderPicker.svelte'
+  import CalendarInviteCard, { type InviteSummary } from './CalendarInviteCard.svelte'
   import { openMailInStandaloneWindow } from './standaloneMailWindow'
 
   interface EmailAttachment {
@@ -108,6 +109,77 @@
   let loading = $state(false)
   let refreshing = $state(false)
   let error = $state('')
+
+  // ── Calendar invite (#58 / iMIP) ──────────────────────────────
+  // Inbound mail carrying a `text/calendar` attachment surfaces an
+  // RSVP card above the body with Accept / Decline / Tentative
+  // buttons.  We detect the attachment by content-type, fetch its
+  // bytes through the existing `download_email_attachment` path,
+  // hand them to `parse_event_invite` for a slim summary, and
+  // mount `CalendarInviteCard` with the result.
+  let invite = $state<InviteSummary | null>(null)
+  let inviteLoadError = $state('')
+  let accountEmail = $state('')
+
+  /** Pick the first text/calendar attachment off the open mail.
+   *  Most invites only carry one; multi-event ICS files exist
+   *  but are exotic enough to warrant first-only-MVP. */
+  function pickInviteAttachment(em: Email | null): EmailAttachment | null {
+    if (!em) return null
+    return (
+      em.attachments.find((a) =>
+        a.content_type.toLowerCase().startsWith('text/calendar'),
+      ) ?? null
+    )
+  }
+
+  $effect(() => {
+    const att = pickInviteAttachment(email)
+    if (!att || !email || uid == null) {
+      invite = null
+      inviteLoadError = ''
+      return
+    }
+    const cur = email
+    void (async () => {
+      try {
+        const bytes = await invoke<number[]>('download_email_attachment', {
+          accountId: cur.account_id,
+          folder: cur.folder,
+          uid,
+          partId: att.part_id,
+        })
+        // Race-guard: bail if the user navigated to a different
+        // mail before our fetch completed.
+        if (email !== cur) return
+        const summary = await invoke<InviteSummary>('parse_event_invite', { bytes })
+        if (email !== cur) return
+        invite = summary
+        inviteLoadError = ''
+      } catch (e) {
+        console.warn('parse_event_invite failed:', e)
+        inviteLoadError = formatError(e) || 'Could not parse the calendar invite.'
+        invite = null
+      }
+    })()
+  })
+
+  /** Resolve the current mail account's email address — needed
+   *  by the RSVP card to flag the right ATTENDEE row when it
+   *  emits a REPLY.  Re-fetched per `accountId` change since
+   *  the editor / standalone-window might mount with a different
+   *  active account than App-level state. */
+  $effect(() => {
+    void (async () => {
+      try {
+        type AccountRow = { id: string; email: string }
+        const list = await invoke<AccountRow[]>('get_accounts')
+        accountEmail = list.find((a) => a.id === accountId)?.email ?? ''
+      } catch {
+        accountEmail = ''
+      }
+    })()
+  })
 
   $effect(() => {
     if (uid == null) {
@@ -955,6 +1027,25 @@
         title="Move this message to Trash (permanently deletes if already in Trash or if the account has no Trash folder)"
       >{removing ? '…' : 'Delete'}</button>
     </div>
+
+    <!-- Calendar invite (#58 / iMIP).  Mounted above the
+         attachment list so the user reaches for Accept / Decline
+         before scanning the rest of the message body. -->
+    {#if invite}
+      <div class="px-6 pt-3">
+        <CalendarInviteCard
+          invite={invite}
+          accountId={email.account_id}
+          accountEmail={accountEmail}
+          fromAddress={email.from}
+          onresponded={() => {
+            // The replied invite stays visible (the response chip
+            // tells the user what they sent) — no re-fetch needed
+            // since the RSVP doesn't change the inbound mail.
+          }}
+        />
+      </div>
+    {/if}
 
     <!-- Attachments — only renders when the message actually has any. -->
     {#if email.attachments.length > 0}
