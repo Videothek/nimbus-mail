@@ -427,8 +427,14 @@ fn build_with_calendar(
         .as_ref()
         .expect("build_with_calendar called without calendar_part");
 
+    // Content-Type for the inline calendar alternative.  Apple Mail,
+    // Outlook, and Gmail all sniff for the `name=` parameter on the
+    // text/calendar Content-Type (in addition to the canonical
+    // method= parameter).  Without it Apple Mail in particular falls
+    // back to the .ics attachment instead of the inline part and
+    // shows "Add to Calendar" instead of Accept/Decline/Tentative.
     let calendar_content_type: ContentType = format!(
-        "text/calendar; method={}; charset=utf-8",
+        "text/calendar; method={}; charset=utf-8; name=\"invite.ics\"",
         cal.method
     )
     .parse()
@@ -456,9 +462,19 @@ fn build_with_calendar(
                 .body(html.clone()),
         );
     }
+    // The calendar alternative MUST carry `Content-Disposition: inline`
+    // for Apple Mail to recognise it as the iTIP body part — without
+    // it, Apple Mail (especially on iOS) treats the inline part as
+    // ambiguous and falls through to the `.ics` attachment, showing
+    // only "Add to Calendar" instead of Accept/Decline/Tentative.
+    // Outlook and Gmail also prefer it.  Lettre's
+    // `ContentDisposition::inline()` doesn't take a filename, but we
+    // already encoded `name=` on the Content-Type so the filename
+    // hint is preserved.
     alternative = alternative.singlepart(
         SinglePart::builder()
             .header(calendar_content_type.clone())
+            .header(ContentDisposition::inline())
             .body(cal.ics.clone()),
     );
 
