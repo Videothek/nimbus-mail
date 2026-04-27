@@ -3,7 +3,7 @@
 use lettre::address::Envelope;
 use lettre::message::{
     Attachment as LettreAttachment, Mailbox, MessageBuilder, MultiPart, SinglePart,
-    header::{ContentDisposition, ContentId, ContentType},
+    header::{ContentDisposition, ContentId, ContentTransferEncoding, ContentType},
 };
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
@@ -396,28 +396,32 @@ fn build_with_attachments(
 
 /// Build an iMIP-flavoured invite email (#58).
 ///
-/// Structure (matches what Google Calendar / Outlook generate):
+/// Structure (matches what Google Calendar / Outlook actually emit):
+/// ```text
+/// multipart/alternative                       (when no other attachments)
+/// ├── text/plain                              ← fallback body
+/// ├── text/html                               ← rich body
+/// └── text/calendar; method=REQUEST           ← iTIP detection trigger
+/// ```
+/// or, when there are user attachments:
 /// ```text
 /// multipart/mixed
-/// ├── multipart/alternative
-/// │   ├── text/plain                    ← fallback body
-/// │   ├── text/html                     ← rich body
-/// │   └── text/calendar; method=…       ← iTIP detection trigger
-/// ├── (regular user attachments, if any)
-/// └── application/ics; name="invite.ics"  ← downloadable .ics
+/// ├── multipart/alternative                   (same three parts)
+/// └── (user attachments)
 /// ```
 ///
-/// The third `multipart/alternative` part is what makes
-/// Outlook / Apple Mail / Gmail / Thunderbird recognise the
-/// message as an iTIP invite and surface their native
-/// Accept / Decline / Tentative buttons.  Without it, those
-/// clients just see a regular email with a calendar attachment
-/// and don't render the RSVP UI.
+/// The text/calendar alternative is what makes Outlook / Apple Mail /
+/// Gmail / Thunderbird recognise the message as an iTIP invite and
+/// surface their native Accept / Decline / Tentative buttons.
 ///
-/// Keeping the `.ics` as a downloadable attachment too is
-/// belt-and-braces: clients that don't surface RSVP buttons
-/// (older Outlook web access, basic webmail) can still import
-/// the event manually by clicking the file.
+/// Critical Apple Mail quirks (learned the hard way):
+/// - The `text/calendar` part must have **no** `name=` parameter and
+///   **no** `Content-Disposition` header.  Either one causes Apple
+///   Mail to treat the part as an attachment, fall through to its
+///   "Add to Calendar" affordance, and hide the RSVP buttons.
+/// - We must NOT also include a duplicate `.ics` as a separate
+///   attachment.  When both are present Apple Mail prefers the
+///   attachment form and again drops the RSVP UI.
 fn build_with_calendar(
     builder: MessageBuilder,
     email: &OutgoingEmail,
@@ -427,28 +431,17 @@ fn build_with_calendar(
         .as_ref()
         .expect("build_with_calendar called without calendar_part");
 
-    // Content-Type for the inline calendar alternative.  Apple Mail,
-    // Outlook, and Gmail all sniff for the `name=` parameter on the
-    // text/calendar Content-Type (in addition to the canonical
-    // method= parameter).  Without it Apple Mail in particular falls
-    // back to the .ics attachment instead of the inline part and
-    // shows "Add to Calendar" instead of Accept/Decline/Tentative.
-    let calendar_content_type: ContentType = format!(
-        "text/calendar; method={}; charset=utf-8; name=\"invite.ics\"",
-        cal.method
-    )
-    .parse()
-    .map_err(|e| NimbusError::Protocol(format!("Bad calendar content-type: {e}")))?;
+    // Bare `text/calendar; method=…; charset=utf-8` — no `name=`,
+    // no Content-Disposition.  This matches what Google Calendar
+    // and Microsoft 365 actually wire on the network.
+    let calendar_content_type: ContentType =
+        format!("text/calendar; method={}; charset=utf-8", cal.method)
+            .parse()
+            .map_err(|e| NimbusError::Protocol(format!("Bad calendar content-type: {e}")))?;
 
-    // Body alternative — text/plain (always), text/html (if
-    // present), text/calendar (always).  Order matters: clients
-    // pick the LAST alternative they understand, so iTIP-aware
-    // clients land on text/calendar (and show RSVP UI) while
-    // text-only clients fall back to text/html → text/plain.
-    //
-    // `MultiPart::alternative()` returns a builder that becomes a
-    // MultiPart only after the first `.singlepart()`; we always
-    // seed with text/plain (possibly empty) so the chain is sane.
+    // Body alternative — text/plain (always), text/html (if present),
+    // text/calendar (always, last).  Clients pick the LAST alternative
+    // they understand, so iTIP-aware clients land on text/calendar.
     let plain_body = email.body_text.clone().unwrap_or_default();
     let mut alternative = MultiPart::alternative().singlepart(
         SinglePart::builder()
@@ -462,24 +455,31 @@ fn build_with_calendar(
                 .body(html.clone()),
         );
     }
-    // The calendar alternative MUST carry `Content-Disposition: inline`
-    // for Apple Mail to recognise it as the iTIP body part — without
-    // it, Apple Mail (especially on iOS) treats the inline part as
-    // ambiguous and falls through to the `.ics` attachment, showing
-    // only "Add to Calendar" instead of Accept/Decline/Tentative.
-    // Outlook and Gmail also prefer it.  Lettre's
-    // `ContentDisposition::inline()` doesn't take a filename, but we
-    // already encoded `name=` on the Content-Type so the filename
-    // hint is preserved.
+    // Force 8bit Content-Transfer-Encoding on the calendar part.
+    // Lettre's auto-encoder picks base64 whenever the body has any
+    // non-ASCII byte (e.g. an umlaut in SUMMARY), and Apple Mail's
+    // iMIP detector has a long-standing bug where base64-encoded
+    // text/calendar parts fall through to the "Add to Calendar"
+    // affordance instead of surfacing Accept / Decline / Tentative.
+    // 8bit is what Microsoft 365 emits and what Apple Mail
+    // reliably parses on every macOS / iOS version we've tested.
     alternative = alternative.singlepart(
         SinglePart::builder()
-            .header(calendar_content_type.clone())
-            .header(ContentDisposition::inline())
+            .header(calendar_content_type)
+            .header(ContentTransferEncoding::EightBit)
             .body(cal.ics.clone()),
     );
 
-    // Outer multipart/mixed: body alternative + user attachments
-    // + the downloadable .ics file copy.
+    // No extra attachments → emit the alternative directly.  Adding
+    // an outer multipart/mixed when not needed is what triggers the
+    // duplicate-ics confusion in some clients.
+    if email.attachments.is_empty() {
+        return builder
+            .multipart(alternative)
+            .map_err(|e| NimbusError::Protocol(format!("Failed to build invite email: {e}")));
+    }
+
+    // With user attachments, wrap in multipart/mixed.
     let mut mixed = MultiPart::mixed().multipart(alternative);
     for attachment in &email.attachments {
         let content_type = attachment
@@ -497,18 +497,6 @@ fn build_with_calendar(
         };
         mixed = mixed.singlepart(part);
     }
-    // Downloadable `.ics` for clients that can't import via the
-    // alternative.  `application/ics` (vs `text/calendar`) is the
-    // common pattern for the *attachment* form — Apple Mail and
-    // Outlook both recognise it as a calendar file with the
-    // standard "Add to Calendar" affordance.
-    let ics_attachment_type: ContentType = "application/ics; name=\"invite.ics\""
-        .parse()
-        .map_err(|e| NimbusError::Protocol(format!("Bad ics attach content-type: {e}")))?;
-    mixed = mixed.singlepart(
-        LettreAttachment::new("invite.ics".to_string())
-            .body(cal.ics.clone().into_bytes(), ics_attachment_type),
-    );
 
     builder
         .multipart(mixed)

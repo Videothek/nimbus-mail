@@ -51,6 +51,15 @@ pub struct AppSettings {
     /// previous behaviour where the reading pane goes blank after
     /// every delete.
     pub auto_advance_after_remove: bool,
+    /// Default calendar for events created in CalendarView and for
+    /// inbound RSVPs that the user accepts.  Stored as the app-side
+    /// calendar id (`{nc_id}::{path}`) so it's stable across syncs.
+    /// `None` = no preference yet — the EventEditor's calendar
+    /// dropdown defaults to whatever `calendars[0]` resolves to,
+    /// and the RSVP card's calendar picker forces the user to make
+    /// a one-time choice the first time they accept an invite.
+    #[serde(default)]
+    pub default_calendar_id: Option<String>,
 }
 
 /// Light/dark mode selection. `System` follows the OS preference
@@ -87,6 +96,7 @@ impl Default for AppSettings {
             theme_mode: ThemeMode::System,
             mail_html_white_background: true,
             auto_advance_after_remove: true,
+            default_calendar_id: None,
         }
     }
 }
@@ -616,6 +626,28 @@ pub struct EventAttendee {
     /// when written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// `ROLE=` parameter — `REQ-PARTICIPANT` (required) /
+    /// `OPT-PARTICIPANT` (optional) / `CHAIR` / `NON-PARTICIPANT`.
+    /// `None` is treated as `REQ-PARTICIPANT` per RFC 5545 §3.2.18.
+    /// The EventEditor exposes Required / Optional / Chair as
+    /// separate input fields and writes the appropriate ROLE here;
+    /// the CalDAV PUT carries it through verbatim so Nextcloud's
+    /// Calendar UI shows the role chip on each attendee row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Transient flag (RFC 6638 §7.3): emit
+    /// `SCHEDULE-FORCE-SEND=REPLY` on this ATTENDEE's
+    /// iCalendar property.  Set by `respond_to_invite` on the
+    /// responding attendee's row so Sabre's CalDAV-Schedule
+    /// plugin dispatches the REPLY iMIP unconditionally —
+    /// without this, the broker's "is this change significant
+    /// enough?" heuristics can decide to skip the send,
+    /// leaving the organiser without a notification even
+    /// though Sabre processed the PARTSTAT update.  Skipped
+    /// from serde so it doesn't survive cache round-trips
+    /// (it's purely an in-memory hint for the next PUT).
+    #[serde(skip)]
+    pub force_send_reply: bool,
 }
 
 /// A single VALARM block.

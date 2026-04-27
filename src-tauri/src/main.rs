@@ -1063,10 +1063,24 @@ async fn list_talk_rooms(nc_id: String) -> Result<Vec<nimbus_nextcloud::TalkRoom
 /// and the rest as `email`. (For the MVP we always send `email` and
 /// let Talk match users on the server side.)
 #[tauri::command]
+// `object_type` / `object_id` mirror Nextcloud Calendar's "Make
+// it a Talk conversation" flow — pass `objectType: "event"` plus
+// any random unique id to have Talk categorise the room as a
+// meeting room.  Plain Compose-side "create Talk room" flows
+// leave both `None`.
+//
+// `room_type` controls who can join: `2` = group/private (NC
+// users only), `3` = public (anyone with the URL joins as
+// guest).  Event-bound rooms default to `3` so externals
+// invited via the calendar invite can click through without
+// hitting the NC login wall.
 async fn create_talk_room(
     nc_id: String,
     room_name: String,
     participants: Vec<nimbus_nextcloud::ParticipantSource>,
+    object_type: Option<String>,
+    object_id: Option<String>,
+    room_type: Option<u8>,
 ) -> Result<nimbus_nextcloud::TalkRoom, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
@@ -1076,8 +1090,69 @@ async fn create_talk_room(
         &app_password,
         &room_name,
         &participants,
+        object_type.as_deref(),
+        object_id.as_deref(),
+        room_type,
     )
     .await
+}
+
+/// Toggle a Talk room's public/private visibility.  Used by
+/// the EventEditor save flow to downgrade a room from public
+/// to private once we've confirmed every attendee is an
+/// internal NC user — the externals-only flag is no longer
+/// needed and the room shouldn't be join-by-URL after that
+/// point.
+#[tauri::command]
+async fn set_talk_room_public(
+    nc_id: String,
+    room_token: String,
+    public: bool,
+) -> Result<(), NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::set_room_public(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &room_token,
+        public,
+    )
+    .await
+}
+
+/// Look up a Nextcloud user by email address.  Returns the
+/// matching userId + display name when the address is registered
+/// against an NC principal on this server, or `None` otherwise.
+/// Used by the EventEditor's chip badge ("internal" pill on
+/// attendees who are NC users) and by the Talk participant-add
+/// path (internal users get added as `users` source for an
+/// in-NC notification, externals get added as `emails` source
+/// so Talk emails them a guest URL).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NextcloudUserLookup {
+    user_id: String,
+    display_name: String,
+}
+#[tauri::command]
+async fn find_nextcloud_user_by_email(
+    nc_id: String,
+    email: String,
+) -> Result<Option<NextcloudUserLookup>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let m = nimbus_nextcloud::find_user_by_email(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &email,
+    )
+    .await?;
+    Ok(m.map(|m| NextcloudUserLookup {
+        user_id: m.user_id,
+        display_name: m.display_name,
+    }))
 }
 
 /// Add a single participant to an existing Talk room. Exposed so the
@@ -2179,19 +2254,66 @@ fn calendar_event_to_row(
     }
 }
 
-/// Derive the (email, display name) we surface as `ORGANIZER` on
-/// outbound VEVENTs. Nextcloud's CalDAV plugin (Sabre/DAV) returns
-/// `403 Forbidden` on a PUT that has any `ATTENDEE` but no
-/// `ORGANIZER`, so we always need *something* to put on that line
-/// when attendees are present.
+/// Resolve the `(email, display_name)` to write into `ORGANIZER`
+/// for an outbound VEVENT.  This drives whether NC's iMIP plugin
+/// can route the invite via the user's real Mail-app SMTP (NC 30+
+/// Mail Provider): the address must match the user's primary
+/// email exactly, otherwise NC falls back to the system mailer
+/// with `From: invitations-noreply@…`.
 ///
-/// The Nextcloud account model only carries `username` (which often
-/// is — but isn't required to be — an email). We use it directly
-/// when it parses as one, and otherwise synthesise `username@host`
-/// from the server URL. The synthetic value is opaque to the CalDAV
-/// validator (it just needs a syntactically valid `mailto:`), and
-/// for the user's own calendar it doesn't trigger iTIP delivery.
-fn organizer_for(account: &NextcloudAccount) -> (String, Option<String>) {
+/// Strategy:
+/// 1. **When attendees are present**, fetch the user's profile
+///    from `/ocs/v2.php/cloud/user`.  Its `email` field is what
+///    NC's Mail Provider keys against — same source of truth NC
+///    uses internally, so we can't get it wrong.
+/// 2. **When the OCS lookup fails or returns no email**, fall
+///    back to `organizer_local` (username if it parses as an
+///    email, else `username@server-host`) so the PUT still
+///    succeeds.  The fallback may not match a Mail-app account,
+///    in which case NC's system mailer takes over — better than
+///    failing the save.
+/// 3. **When there are no attendees**, skip the network call
+///    entirely and use the local fallback.  NC's scheduling plugin
+///    won't fire without attendees, so `ORGANIZER` here is just
+///    metadata for the calendar copy.
+async fn resolve_organizer(
+    account: &NextcloudAccount,
+    app_password: &str,
+    has_attendees: bool,
+) -> (String, Option<String>) {
+    if !has_attendees {
+        return organizer_local(account);
+    }
+    match nimbus_nextcloud::user::fetch_current_user(
+        &account.server_url,
+        &account.username,
+        app_password,
+    )
+    .await
+    {
+        Ok(profile) => {
+            if let Some(email) = profile.email {
+                let name = profile
+                    .display_name
+                    .or_else(|| account.display_name.clone());
+                return (email, name);
+            }
+            tracing::warn!(
+                "Nextcloud user has no email set in Personal info — \
+                 iMIP will fall back to system mailer"
+            );
+        }
+        Err(e) => tracing::warn!("OCS user lookup failed, using fallback ORGANIZER: {e}"),
+    }
+    organizer_local(account)
+}
+
+/// Local-only fallback when we can't reach OCS.  Same shape we used
+/// before: prefer `username` when it's already an email, else
+/// synthesise `username@host`.  This is unrouteable on the public
+/// internet but satisfies Sabre's "ATTENDEE without ORGANIZER is
+/// 403" check so the PUT itself succeeds.
+fn organizer_local(account: &NextcloudAccount) -> (String, Option<String>) {
     let email = if account.username.contains('@') {
         account.username.clone()
     } else {
@@ -2233,7 +2355,8 @@ async fn create_calendar_event(
 
     let uid = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     let event = input_to_calendar_event(&uid, &input);
-    let (organizer_email, organizer_name) = organizer_for(&account);
+    let (organizer_email, organizer_name) =
+        resolve_organizer(&account, &app_password, !event.attendees.is_empty()).await;
     let ics = caldav_build_ics(
         &event,
         Some(&organizer_email),
@@ -2285,20 +2408,19 @@ async fn update_calendar_event(
     // would silently demote a recurring series back to a singleton.
     event.recurrence_id = handle.recurrence_id;
 
-    let (organizer_email, organizer_name) = organizer_for(&account);
+    let (organizer_email, organizer_name) =
+        resolve_organizer(&account, &app_password, !event.attendees.is_empty()).await;
     let ics = caldav_build_ics(
         &event,
         Some(&organizer_email),
         organizer_name.as_deref(),
     );
-    let outcome = caldav_update_event(
-        &handle.href,
-        &account.username,
-        &app_password,
-        &handle.etag,
-        &ics,
-    )
-    .await?;
+    // Use the etag-aware retry helper so a concurrent edit on
+    // another device (NC web, phone) doesn't surface to the
+    // user as "refresh and try again" — it transparently syncs
+    // and re-PUTs once.
+    let (outcome, handle) =
+        update_event_with_etag_retry(&cache, &event_id, &ics).await?;
 
     let row = calendar_event_to_row(&event, &outcome.href, &outcome.etag, &ics);
     cache.upsert_single_event(&handle.calendar_id, &row)?;
@@ -2308,10 +2430,10 @@ async fn update_calendar_event(
     Ok(out)
 }
 
-/// Delete an event from the server and the local cache. The server
-/// delete is gated on the cached etag; if that fails we leave the
-/// cache row alone so the UI shows the user the fresh state on the
-/// next sync.
+/// Delete an event from the server and the local cache.  Server-side
+/// iTIP CANCEL notices to attendees are emitted by Nextcloud's
+/// `OCA\DAV\CalDAV\Schedule\IMipPlugin` on the DELETE — no
+/// client-side mail involved.
 #[tauri::command]
 async fn delete_calendar_event(
     event_id: String,
@@ -2321,171 +2443,92 @@ async fn delete_calendar_event(
     let nc_account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
-    // Snapshot the original ICS BEFORE we delete — we need the
-    // attendee list + UID to mint the CANCEL message after.  The
-    // delete itself proceeds even if the snapshot fails: the user
-    // asked to delete the event and shouldn't be blocked on the
-    // notification step.
-    let ics_for_cancel = handle.ics_raw.clone();
-
     caldav_delete_event(&handle.href, &nc_account.username, &app_password, &handle.etag).await?;
     cache.delete_event_by_id(&event_id)?;
-
-    // Best-effort cancellation notice (#58).  Build a
-    // METHOD:CANCEL iMIP from the original event and send it to
-    // every attendee.  Recipients on any RFC-compliant client
-    // (Outlook, Apple Mail, Gmail, Thunderbird) get a native
-    // "this meeting was cancelled" notice that updates their
-    // calendar automatically.  Any failure here logs + moves on
-    // — the event is already gone from the organiser's calendar.
-    if let Err(e) =
-        send_event_cancellation(&cache, &ics_for_cancel, &nc_account).await
-    {
-        tracing::warn!(
-            "Event deleted but cancellation notice to attendees failed: {e}"
-        );
-    }
     Ok(())
 }
 
-/// Mint + send a `METHOD:CANCEL` iMIP for a just-deleted event.
+/// Remove a locally-cached event whose iCalendar `UID` matches
+/// `uid`.  Surfaced from the inbound CANCEL card in MailView:
+/// when an external organiser sends a `METHOD:CANCEL` mail, the
+/// user clicks "Remove from my calendar" and we DELETE the
+/// CalDAV resource so the cancelled meeting disappears from the
+/// grid (and from any other CalDAV client, including their
+/// phone).  Idempotent: returns `Ok(())` when no row matches —
+/// the user may have already removed the event manually, or the
+/// invite never made it into their calendar in the first place.
 ///
-/// Uses the user's first configured mail account as the SMTP
-/// `from`; the iCalendar `ORGANIZER` line is the same one that
-/// went out on the original REQUEST (derived via `organizer_for`)
-/// so the recipient's mail client pairs the CANCEL back to the
-/// original event by UID + organiser.
-///
-/// Best-effort: returns `Ok(())` when there's nothing to do
-/// (event had no attendees, or no mail account is configured)
-/// so the caller can wrap with a silent log on error.
-async fn send_event_cancellation(
-    cache: &Cache,
-    raw_ics: &str,
-    nc_account: &NextcloudAccount,
+/// Note that we don't fight Sabre's iTIP machinery here.  An
+/// attendee-side DELETE of an event whose ORGANIZER is external
+/// would normally generate a `METHOD:REPLY;PARTSTAT=DECLINED`
+/// from NC's IMipPlugin; that's not what we want when responding
+/// to a CANCEL (the organiser already cancelled — a "decline" is
+/// noise).  In practice Sabre suppresses REPLY emission when the
+/// stored event already carries `STATUS:CANCELLED` or the user's
+/// PARTSTAT is unchanged from the previous version, which covers
+/// the common case.  Worth flagging explicitly if it turns out
+/// to send spurious mail in the wild.
+/// True when an event with the given iCalendar UID exists in
+/// any of the user's locally-cached calendars.  Used by the
+/// CANCEL card to decide whether to expose "Remove from my
+/// calendar" — only makes sense when there's actually a local
+/// copy to remove.  A miss here is the common case for invites
+/// the user never accepted (CANCEL arrives but the event was
+/// never imported into a calendar): the card should fall back
+/// to a passive "not in your calendar" line instead of the
+/// remove button.
+#[tauri::command]
+fn is_event_in_calendar(uid: String, cache: State<'_, Cache>) -> Result<bool, NimbusError> {
+    Ok(cache.find_event_id_by_uid(&uid)?.is_some())
+}
+
+/// Record that an iCalendar UID has been cancelled by its
+/// organiser.  Called by MailView when it surfaces a
+/// `METHOD:CANCEL` mail, so the original REQUEST mail's RSVP
+/// card can flip to the cancelled flavour on its next open.
+#[tauri::command]
+fn record_cancelled_invite(uid: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
+    cache.mark_invite_cancelled(&uid).map_err(NimbusError::from)
+}
+
+/// True when MailView has previously observed a `METHOD:CANCEL`
+/// mail for this iCalendar UID.  Used by the RSVP card to
+/// flip the original REQUEST mail's flavour to the cancelled
+/// banner so the user doesn't unwittingly answer a meeting
+/// that's been cancelled.
+#[tauri::command]
+fn is_invite_cancelled(uid: String, cache: State<'_, Cache>) -> Result<bool, NimbusError> {
+    cache.is_invite_cancelled(&uid).map_err(NimbusError::from)
+}
+
+#[tauri::command]
+async fn dismiss_cancelled_event(
+    uid: String,
+    cache: State<'_, Cache>,
 ) -> Result<(), NimbusError> {
-    // Parse the original VEVENT so the CANCEL carries the same
-    // UID + DTSTART/DTEND.  Skip silently if the cached ICS is
-    // somehow empty / unparseable — the event is already gone
-    // from the organiser's calendar; we don't want to block the
-    // delete on a notification we can't generate.
-    let events = match nimbus_caldav::ical::parse_ics(raw_ics) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("Could not parse deleted event for cancel: {e}");
-            return Ok(());
-        }
-    };
-    let Some(event) = events.into_iter().next() else {
+    let Some(event_id) = cache.find_event_id_by_uid(&uid)? else {
+        tracing::info!(
+            "dismiss_cancelled_event: no cached event with UID {uid}, treating as no-op"
+        );
         return Ok(());
     };
-    if event.attendees.is_empty() {
-        return Ok(()); // No-one to notify.
-    }
-    let attendee_emails: Vec<String> = event
-        .attendees
-        .iter()
-        .map(|a| a.email.clone())
-        .collect();
-
-    let mail_accounts = account_store::load_accounts(cache).unwrap_or_default();
-    let Some(mail_account) = mail_accounts.into_iter().next() else {
-        tracing::info!("No mail account configured; skipping CANCEL notification");
-        return Ok(());
-    };
-    let smtp_password = credentials::get_imap_password(&mail_account.id)?;
-
-    let (organizer_email, organizer_name) = organizer_for(nc_account);
-    let cancel_ics = nimbus_caldav::ical::build_ics_with_method(
-        &event,
-        Some(&organizer_email),
-        organizer_name.as_deref(),
-        Some("CANCEL"),
-    );
-
-    let title = if event.summary.is_empty() {
-        "(untitled meeting)".to_string()
-    } else {
-        event.summary.clone()
-    };
-    let subject = format!("Cancelled: {title}");
-    let when = format_event_when(&event);
-
-    let body_text = format!(
-        "The meeting \"{title}\" scheduled for {when} has been cancelled.\n"
-    );
-    let body_html = format!(
-        r#"<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate; border:1px solid #fecaca; border-radius:10px; padding:18px 20px; max-width:560px; margin-top:14px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#fef2f2;"><tr><td style="padding-bottom:8px; font-size:12px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:#dc2626;">📅 Meeting cancelled</td></tr><tr><td style="font-size:18px; font-weight:600; color:#111827; padding-bottom:8px; text-decoration:line-through;">{title_html}</td></tr><tr><td style="padding-bottom:6px;"><span style="display:inline-block; padding:4px 10px; border-radius:999px; background:#dc2626; color:#ffffff; font-size:12px; font-weight:600; letter-spacing:0.05em;">CANCELLED</span></td></tr><tr><td style="font-size:14px; color:#374151; padding-top:6px;"><strong style="color:#111827;">🕐 Was scheduled for:</strong> {when_html}</td></tr></table>"#,
-        title_html = html_escape(&title),
-        when_html = html_escape(&when),
-    );
-
-    let outgoing = nimbus_core::models::OutgoingEmail {
-        from: mail_account.email.clone(),
-        to: attendee_emails,
-        cc: vec![],
-        bcc: vec![],
-        reply_to: None,
-        subject,
-        body_text: Some(body_text),
-        body_html: Some(body_html),
-        attachments: vec![],
-        calendar_part: Some(nimbus_core::models::CalendarPart {
-            method: "CANCEL".to_string(),
-            ics: cancel_ics,
-        }),
-        // Auto-generated machinery — keep it out of Sent.
-        skip_sent_copy: true,
-    };
-
-    let smtp = nimbus_smtp::SmtpClient::connect(
-        &mail_account.smtp_host,
-        mail_account.smtp_port,
-        &mail_account.email,
-        &smtp_password,
-        &mail_account.trusted_certs,
+    let handle = load_event_handle(&cache, &event_id)?;
+    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+    // Use the silent variant — without `Schedule-Reply: F`,
+    // Sabre's attendee-side DELETE handler emits a spurious
+    // `METHOD:REPLY;PARTSTAT=DECLINED` to the organiser.  The
+    // organiser already sent CANCEL; mailing them a decline
+    // back is just noise (and confusing).
+    nimbus_caldav::delete_event_silent(
+        &handle.href,
+        &account.username,
+        &app_password,
+        &handle.etag,
     )
     .await?;
-    smtp.send(&outgoing).await?;
+    cache.delete_event_by_id(&event_id)?;
     Ok(())
-}
-
-/// Format a CalendarEvent's start/end as a human-readable
-/// "Wed, Jan 1, 2026, 09:00 – 10:00" string.  Used in the
-/// cancellation email's plain-text body and the styled card.
-fn format_event_when(event: &CalendarEvent) -> String {
-    use chrono::Datelike;
-    let start = event.start;
-    let end = event.end;
-    let same_day = start.year() == end.year()
-        && start.month() == end.month()
-        && start.day() == end.day();
-    let day = start.format("%a, %b %-d, %Y");
-    if same_day {
-        format!(
-            "{}, {} – {}",
-            day,
-            start.format("%H:%M"),
-            end.format("%H:%M")
-        )
-    } else {
-        format!(
-            "{} – {}",
-            start.format("%a, %b %-d, %Y %H:%M"),
-            end.format("%a, %b %-d, %Y %H:%M")
-        )
-    }
-}
-
-/// Minimal HTML escaper for plain-string fields the inline RSVP /
-/// invite mail bodies splice into their inline-styled card.  We
-/// only need to neuter the four characters that change HTML
-/// parsing — quote escaping isn't needed because we only inject
-/// into element text, never into attribute values.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 // ── iTIP / iMIP (#58) ─────────────────────────────────────────────
@@ -2546,34 +2589,6 @@ struct InviteSummary {
     raw_ics: String,
 }
 
-/// Render an event input as a `METHOD:REQUEST` iCalendar payload
-/// suitable for attaching to an outbound invite mail.  Same
-/// renderer the CalDAV PUT path uses, just with the calendar-
-/// level METHOD line set so RFC 5546 / iTIP-aware mail clients
-/// recognise it as an invite (instead of a passive PUBLISH).
-///
-/// `uid` MUST match the UID of the event the organiser just
-/// PUT to their CalDAV server — that's the join key any inbound
-/// REPLY uses to pair the response with the original event in
-/// the organiser's calendar.  Compose passes the UID it got
-/// back from `create_calendar_event`.
-#[tauri::command]
-fn build_event_invite_ics(
-    uid: String,
-    event: CalendarEventInput,
-    organizer_email: String,
-    organizer_name: Option<String>,
-    method: Option<String>,
-) -> Result<String, NimbusError> {
-    let cal_event = input_to_calendar_event(&uid, &event);
-    Ok(nimbus_caldav::ical::build_ics_with_method(
-        &cal_event,
-        Some(&organizer_email),
-        organizer_name.as_deref(),
-        Some(method.as_deref().unwrap_or("REQUEST")),
-    ))
-}
-
 /// Parse a raw `text/calendar` byte slice into the slim
 /// `InviteSummary` the inbound RSVP card consumes.  Looks at the
 /// FIRST VEVENT in the file — recurring series and overrides are
@@ -2617,6 +2632,7 @@ fn parse_event_invite(bytes: Vec<u8>) -> Result<InviteSummary, NimbusError> {
 /// the line as a single token after the colon (REQUEST / REPLY /
 /// CANCEL / etc.); we just normalise to upper case so JS-side
 /// equality checks don't have to be case-insensitive.
+
 fn extract_calendar_method(ics: &str) -> Option<String> {
     for line in ics.lines() {
         let trimmed = line.trim();
@@ -2637,146 +2653,561 @@ fn extract_calendar_method(ics: &str) -> Option<String> {
 /// organiser's mail client doesn't see spurious "everyone
 /// changed" diffs.
 ///
-/// `organizer_email` is the address we put on the REPLY's
-/// `ORGANIZER` line — caller derives it from the inbound mail's
-/// `From:` header (or the original invite's parsed organiser
-/// when surfaced).  RFC 5546 says REPLY messages MUST carry the
-/// organiser's address.
-fn build_rsvp_reply_ics(
-    raw_ics: &str,
-    attendee_email: &str,
-    partstat: &str,
-    organizer_email: &str,
-) -> Result<String, NimbusError> {
-    let events = nimbus_caldav::ical::parse_ics(raw_ics)
-        .map_err(|e| NimbusError::Protocol(format!("could not parse original invite: {e}")))?;
+/// Respond to an inbound invite by writing the user's PARTSTAT to
+/// CalDAV.  Nextcloud's CalDAV-Schedule plugin (with NC 30+ Mail
+/// Provider) generates and SMTPs the iMIP REPLY automatically —
+/// the client never touches SMTP for RSVPs.
+///
+/// Behaviour by partstat:
+/// - **ACCEPTED**: PUT into `calendar_id` with PARTSTAT=ACCEPTED,
+///   TRANSP=OPAQUE.  The event lands on the user's calendar (and
+///   syncs to their phone), and NC mails the organiser.
+/// - **TENTATIVE**: PUT with PARTSTAT=TENTATIVE, TRANSP=TRANSPARENT
+///   so the calendar can render it visually distinct (striped
+///   pattern in CalendarView).
+/// - **DECLINED**: PUT with PARTSTAT=DECLINED, then DELETE the
+///   resource.  The PUT triggers NC's REPLY (organiser notified);
+///   the DELETE removes the entry from the user's calendar so
+///   declined meetings don't clutter the grid.
+///
+/// Resolving the responding attendee's address goes through
+/// **every identity Nimbus knows about**, not just one: the NC
+/// user-profile email (Sabre's principal CUA), every configured
+/// mail-account address, plus an optional `attendee_email`
+/// hint from the card (the address the inbound mail was
+/// actually sent to).  We intersect that combined set with the
+/// inbound ATTENDEE list and use whichever address is *already
+/// in the invite* — that's the row Sabre's iTIP broker will
+/// match on the user's principal-CUA when generating the
+/// REPLY iMIP.
+///
+/// Why so many sources?  The chain is fragile: NC profile
+/// email → Sabre principal CUA → ATTENDEE-row match →
+/// IMipPlugin Mail Provider lookup against Mail-app accounts.
+/// All four addresses must equal each other for REPLY mail to
+/// actually leave NC.  Pinning to a single source means a
+/// single misconfiguration (empty NC profile email, mismatched
+/// Mail-app primary, etc.) silently breaks REPLY delivery —
+/// exactly what was happening before.
+// `attendee_hint`: optional hint from the card — the address
+// the inbound mail was actually sent to, resolved by the
+// frontend from the invite's ATTENDEE list intersected with
+// the user's configured mail-account addresses.  Used as the
+// highest-priority candidate when picking the row to mutate +
+// identify with on Sabre's principal CUA.  May be `None` if
+// the card couldn't resolve one.
+#[tauri::command]
+async fn respond_to_invite(
+    calendar_id: String,
+    raw_ics: String,
+    partstat: String,
+    attendee_hint: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    // Resolve the chosen calendar's location on the server.
+    let (nc_id, calendar_path) = cache
+        .get_calendar_server_path(&calendar_id)?
+        .ok_or_else(|| {
+            NimbusError::Other(format!(
+                "calendar '{calendar_id}' is not in the local cache — refresh and try again"
+            ))
+        })?;
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    // Build the candidate-identity list, in priority order:
+    //   1. The card's hint (transport-derived, most likely
+    //      verbatim in the invite).
+    //   2. NC profile email — Sabre's principal CUA, the
+    //      authoritative identity for the iTIP broker.
+    //   3. Every configured mail-account address (covers the
+    //      "I added a Nimbus mail account whose email differs
+    //      from my NC profile" case).
+    //   4. The synth `username@server-host` as a last resort.
+    // We then take the FIRST candidate that actually appears
+    // in the inbound ATTENDEE list — Sabre will match the
+    // same row when scanning the body for the principal's CUA.
+    // If no candidate matches, we fall back to candidate #2
+    // (NC profile email — the address Sabre's broker is most
+    // likely to identify as ours) and add a fresh row, so the
+    // server-side iTIP can still pair us against the principal.
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(hint) = attendee_hint.as_deref() {
+        let h = hint.trim();
+        if !h.is_empty() {
+            candidates.push(h.to_string());
+        }
+    }
+    let nc_profile_email = match nimbus_nextcloud::user::fetch_current_user(
+        &account.server_url,
+        &account.username,
+        &app_password,
+    )
+    .await
+    {
+        Ok(p) => p.email,
+        Err(e) => {
+            tracing::warn!("RSVP: NC user-profile lookup failed ({e})");
+            None
+        }
+    };
+    if let Some(e) = nc_profile_email.as_deref() {
+        candidates.push(e.to_string());
+    }
+    if let Ok(mail_accounts) = account_store::load_accounts(&cache) {
+        for a in mail_accounts {
+            candidates.push(a.email);
+        }
+    }
+    candidates.push(organizer_local(&account).0);
+    // Lower-cased, deduplicated, preserving priority order.
+    let mut seen = std::collections::HashSet::new();
+    let candidates: Vec<String> = candidates
+        .into_iter()
+        .filter(|s| !s.trim().is_empty())
+        .filter(|s| seen.insert(s.to_ascii_lowercase()))
+        .collect();
+    tracing::debug!("RSVP candidate identities: {candidates:?}");
+
+    // Pick the first candidate already present in the inbound
+    // ATTENDEE list.  If none match, default to the NC profile
+    // email (so Sabre's broker matches the new row we'll add
+    // against its principal CUA) — and last-ditch the first
+    // non-empty candidate so we always have something.
+    let attendee_email = {
+        let inbound_attendees: Vec<String> = nimbus_caldav::ical::parse_ics(&raw_ics)
+            .ok()
+            .and_then(|v| v.into_iter().next())
+            .map(|e| e.attendees.into_iter().map(|a| a.email).collect())
+            .unwrap_or_default();
+        let inbound_set: std::collections::HashSet<String> = inbound_attendees
+            .iter()
+            .map(|s| s.to_ascii_lowercase())
+            .collect();
+        candidates
+            .iter()
+            .find(|c| inbound_set.contains(&c.to_ascii_lowercase()))
+            .cloned()
+            .or(nc_profile_email)
+            .or_else(|| candidates.into_iter().next())
+            .unwrap_or_else(|| organizer_local(&account).0)
+    };
+    tracing::info!("RSVP: using attendee identity {attendee_email}");
+
+    // Parse the inbound ICS, flip the matching attendee's PARTSTAT,
+    // and (for TENTATIVE) override TRANSP so the calendar renders
+    // it differently.
+    let events = nimbus_caldav::ical::parse_ics(&raw_ics)
+        .map_err(|e| NimbusError::Protocol(format!("could not parse invite: {e}")))?;
     let mut event = events
         .into_iter()
         .next()
-        .ok_or_else(|| NimbusError::Protocol("original invite has no VEVENT".into()))?;
+        .ok_or_else(|| NimbusError::Protocol("invite has no VEVENT".into()))?;
 
-    // Flip just the matching attendee's PARTSTAT.  RFC 5546
-    // strictly says a REPLY only carries the responding
-    // attendee's row, but most clients tolerate the "full
-    // attendee list with one updated" shape, and surfacing
-    // everyone's existing status is useful when the organiser's
-    // client renders the response.
+    // Flip the matching ATTENDEE's PARTSTAT.  When no row
+    // matches — common for aliases, forwarded invites, or any
+    // case where the user's mail-account address differs from
+    // what the organiser typed into ATTENDEE — we ADD a fresh
+    // row with the user's address instead of failing.  Sabre's
+    // iTIP broker keys "is this PUT an RSVP from this user?"
+    // off the principal-email match against the ATTENDEE list,
+    // and an inserted row satisfies that check exactly the same
+    // as a mutated one.  A REPLY then goes out from NC's iMIP
+    // plugin with PARTSTAT carrying the user's chosen response.
+    let mut matched = false;
     for att in event.attendees.iter_mut() {
-        if att.email.eq_ignore_ascii_case(attendee_email) {
-            att.status = Some(partstat.to_string());
+        if att.email.eq_ignore_ascii_case(attendee_email.trim()) {
+            att.status = Some(partstat.clone());
+            // Force iMIP dispatch on the responding row — see
+            // EventAttendee::force_send_reply.  Without this,
+            // Sabre may process the PARTSTAT change locally
+            // but skip the outbound iMIP to the organiser if
+            // its "should this notify?" heuristics decline.
+            att.force_send_reply = true;
+            matched = true;
         }
     }
+    if !matched {
+        tracing::info!(
+            "RSVP for {attendee_email}: address not in original ATTENDEE list, \
+             adding a new row with PARTSTAT={partstat}"
+        );
+        event.attendees.push(EventAttendee {
+            email: attendee_email.trim().to_string(),
+            common_name: None,
+            status: Some(partstat.clone()),
+            role: Some("REQ-PARTICIPANT".into()),
+            force_send_reply: true,
+        });
+    }
+    if partstat == "TENTATIVE" {
+        event.transparency = Some("TRANSPARENT".into());
+    } else {
+        // ACCEPTED + DECLINED => OPAQUE so the slot blocks (or
+        // would block, before the DECLINE-side DELETE wipes it).
+        event.transparency = Some("OPAQUE".into());
+    }
 
-    Ok(nimbus_caldav::ical::build_ics_with_method(
-        &event,
-        Some(organizer_email),
-        None,
-        Some("REPLY"),
-    ))
+    // PUT strategy — Sabre's CalDAV-Schedule plugin only fires a
+    // REPLY iMIP when it sees a PARTSTAT diff against the
+    // previously-stored copy.  A fresh PUT with `If-None-Match: *`
+    // creates the resource for the first time and Sabre treats it
+    // as the *organiser* writing into their own calendar — no
+    // REPLY emerges.  To force the broker to see a real change,
+    // first-time PUTs go in two steps:
+    //   1. CREATE with the user's row at PARTSTAT=NEEDS-ACTION
+    //      (the same state the inbound REQUEST has).  No iTIP
+    //      runs here — there's no diff to compare.
+    //   2. UPDATE the same href with the user's chosen PARTSTAT.
+    //      Sabre sees NEEDS-ACTION → ACCEPTED/TENTATIVE/DECLINED,
+    //      generates a METHOD:REPLY iMIP, and IMipPlugin SMTPs it
+    //      to ORGANIZER through the system mailer.
+    // For events already in the user's cache (re-RSVP / changing
+    // your mind), one update_event keyed on the cached etag is
+    // enough — Sabre still sees the prior PARTSTAT and emits the
+    // REPLY iMIP.
+
+    // The local cache can fall out of sync with the server in
+    // ways that matter here: a previous DECLINED RSVP runs PUT
+    // followed by DELETE, and Sabre may "soft-delete" by
+    // converting the DELETE into a PARTSTAT=DECLINED on the
+    // existing resource (so the organiser still sees who
+    // declined).  We dropped the local row, but the server still
+    // has the resource — so when the user changes their mind,
+    // `find_event_id_by_uid` returns None and we'd try to CREATE
+    // a fresh resource with the same UID, which the server
+    // rejects with 412 ("already exists").  Refresh the cache
+    // via a single-calendar CalDAV sync first, so a soft-delete
+    // bounces back into the cache and we route through the
+    // update path.
+    let mut existing_id = cache.find_event_id_by_uid(&event.id)?;
+    if existing_id.is_none() {
+        if let Err(e) = refresh_calendar_cache(&cache, &nc_id, &calendar_path).await {
+            tracing::warn!(
+                "RSVP: pre-PUT cache refresh failed (continuing): {e}"
+            );
+        }
+        existing_id = cache.find_event_id_by_uid(&event.id)?;
+    }
+    // Track the body we actually PUT — used to mirror into the
+    // cache afterwards, so the next surgical edit operates on
+    // the body that's really on the server (not a regenerated
+    // approximation).
+    let body_put: String;
+    let put_outcome = match existing_id {
+        Some(existing_id) => {
+            // Surgical-edit path.  Sabre's iTIP broker only
+            // dispatches REPLY iMIP when the diff between the
+            // stored body and the new PUT is "clean" — just the
+            // user's PARTSTAT.  Regenerating the body via
+            // `build_ics` drops X-* properties / re-orders /
+            // loses params and Sabre then accepts the PARTSTAT
+            // change but suppresses the iTIP REPLY (the same
+            // restriction NC's web UI works around by editing
+            // only the one line).  We do the same here: pull
+            // the cached body, surgically replace just the user's
+            // ATTENDEE PARTSTAT (and add SCHEDULE-FORCE-SEND=
+            // REPLY), preserve everything else byte-for-byte.
+            let handle = load_event_handle(&cache, &existing_id)?;
+            let surgical = nimbus_caldav::ical::surgical_set_partstat(
+                &handle.ics_raw,
+                &attendee_email,
+                &partstat,
+                true,
+            );
+            let (out, _) =
+                update_event_with_etag_retry(&cache, &existing_id, &surgical).await?;
+            body_put = surgical;
+            out
+        }
+        None => {
+            // Step 1 with surgical edit on the inbound ICS so
+            // the body Sabre stores as the "before" state is a
+            // minimal mutation of the original — Sabre's iTIP
+            // restrictions accept it cleanly.
+            let step1_body = nimbus_caldav::ical::surgical_set_partstat(
+                &raw_ics,
+                &attendee_email,
+                "NEEDS-ACTION",
+                false,
+            );
+            let first = caldav_create_event(
+                &account.server_url,
+                &calendar_path,
+                &account.username,
+                &app_password,
+                &event.id,
+                &step1_body,
+            )
+            .await?;
+
+            // Step 2 — update keyed on the etag we just got, with
+            // the user's chosen PARTSTAT + SCHEDULE-FORCE-SEND.
+            // Sabre sees a clean PARTSTAT-only diff against
+            // step 1's stored body and dispatches the REPLY iMIP.
+            let step2_body = nimbus_caldav::ical::surgical_set_partstat(
+                &raw_ics,
+                &attendee_email,
+                &partstat,
+                true,
+            );
+            let out = caldav_update_event(
+                &first.href,
+                &account.username,
+                &app_password,
+                &first.etag,
+                &step2_body,
+            )
+            .await?;
+            body_put = step2_body;
+            out
+        }
+    };
+
+    // Mirror the new state into the local cache so CalendarView
+    // shows the accepted/tentative event without waiting for the
+    // next sync — and so the *next* surgical edit operates on
+    // the body that's actually on the server.
+    let row = calendar_event_to_row(&event, &put_outcome.href, &put_outcome.etag, &body_put);
+    cache.upsert_single_event(&calendar_id, &row)?;
+
+    // DECLINED used to also DELETE the resource here ("no
+    // clutter").  That removed user-declined events from the
+    // calendar entirely, which made the badge afterwards look
+    // like a cancellation (the event wasn't on any calendar but
+    // we had a persisted RSVP for it).  Apple Calendar's
+    // approach is right: keep the declined event around with
+    // PARTSTAT=DECLINED so it stays visible (faded /
+    // struck-through in the grid).  CalendarView can render the
+    // declined visual state separately; this command just stops
+    // deleting the row.
+
+    // Persist the chosen PARTSTAT keyed by UID so the inbox card
+    // re-renders the right state on reopen.  This mirrors what's
+    // now on the server but avoids a CalDAV round-trip just for
+    // UI feedback.
+    if let Err(e) = cache.upsert_rsvp_response(&event.id, &partstat) {
+        tracing::warn!("failed to persist RSVP response for {}: {e}", event.id);
+    }
+    Ok(())
 }
 
-/// Send an RSVP reply (Accept / Decline / Tentative) for an
-/// inbound invite.  Builds a `text/calendar; method=REPLY`
-/// attachment from the original ICS, composes a small notice
-/// email to the organiser, and ships it through the same
-/// `send_email` SMTP path the regular Compose flow uses.
-///
-/// Silent UX: this is the only step the user sees once they
-/// click Accept — no Compose modal, no confirmation dialog.
-/// Failures bubble back through the normal error toast.
+/// Look up the user's last RSVP answer (ACCEPTED / DECLINED /
+/// TENTATIVE) for an iCalendar UID. The invite card calls this on
+/// mount so a previously answered invite re-renders in its
+/// post-reply state instead of showing fresh Accept/Decline buttons.
 #[tauri::command]
-async fn send_event_rsvp(
-    account_id: String,
-    organizer_email: String,
-    attendee_email: String,
-    summary: String,
-    raw_ics: String,
-    partstat: String,
+async fn get_rsvp_response(
+    uid: String,
     cache: State<'_, Cache>,
+) -> Result<Option<String>, NimbusError> {
+    cache.get_rsvp_response(&uid).map_err(NimbusError::from)
+}
+
+/// Read the responding-user's PARTSTAT off the cached calendar
+/// event with `uid`, if any.  Source of truth for the inbox
+/// RSVP card so it reflects PARTSTAT changes made via NC web
+/// UI / the user's phone / any other CalDAV client — not just
+/// the changes Nimbus made itself (which is what the local
+/// `rsvp_responses` table tracks).
+///
+/// Runs a **differential CalDAV sync** of the calendar that
+/// contains the event before reading, so the card always
+/// reflects the latest server state without requiring the user
+/// to wait for the background-sync interval.  CalDAV's
+/// sync-collection report is incremental (only the deltas since
+/// the last sync token), so the round-trip is cheap even on
+/// large calendars.
+///
+/// Identity matching uses the same candidate list
+/// `respond_to_invite` builds: the optional `attendee_hint`
+/// from the card, the NC profile email, every configured mail
+/// account.  Returns `None` when no row matches (or the event
+/// isn't in the cache).
+#[tauri::command]
+async fn get_event_partstat_for_user(
+    uid: String,
+    attendee_hint: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<Option<String>, NimbusError> {
+    let Some(event_id) = cache.find_event_id_by_uid(&uid)? else {
+        return Ok(None);
+    };
+    let handle = cache
+        .get_event_server_handle(&event_id)?
+        .ok_or_else(|| NimbusError::Other("stale calendar cache entry".into()))?;
+
+    // Differential CalDAV sync of the parent calendar — picks
+    // up PARTSTAT changes made via NC web UI / phone / any other
+    // CalDAV client without waiting for the background-sync
+    // interval.  Best-effort: a sync failure leaves the cache
+    // as-is and we return the locally-known state.
+    if let Some((_, cal_path)) = cache.get_calendar_server_path(&handle.calendar_id)? {
+        if let Err(e) =
+            refresh_calendar_cache(&cache, &handle.nextcloud_account_id, &cal_path).await
+        {
+            tracing::warn!(
+                "RSVP badge: pre-read calendar sync failed (continuing with stale cache): {e}"
+            );
+        }
+    }
+    let Some(handle) = cache.get_event_server_handle(&event_id)? else {
+        return Ok(None);
+    };
+
+    // Build the candidate list — same shape as respond_to_invite.
+    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(h) = attendee_hint.as_deref() {
+        let h = h.trim();
+        if !h.is_empty() {
+            candidates.push(h.to_string());
+        }
+    }
+    if let Ok(profile) = nimbus_nextcloud::user::fetch_current_user(
+        &account.server_url,
+        &account.username,
+        &app_password,
+    )
+    .await
+        && let Some(email) = profile.email
+    {
+        candidates.push(email);
+    }
+    if let Ok(mail_accounts) = account_store::load_accounts(&cache) {
+        for a in mail_accounts {
+            candidates.push(a.email);
+        }
+    }
+    let candidates_lc: Vec<String> = candidates.iter().map(|s| s.to_ascii_lowercase()).collect();
+
+    let events = nimbus_caldav::ical::parse_ics(&handle.ics_raw)
+        .map_err(|e| NimbusError::Protocol(format!("parse cached event: {e}")))?;
+    let partstat = events.into_iter().next().and_then(|event| {
+        event.attendees.into_iter().find_map(|att| {
+            if candidates_lc.contains(&att.email.to_ascii_lowercase()) {
+                att.status.map(|s| s.to_ascii_uppercase())
+            } else {
+                None
+            }
+        })
+    });
+    Ok(partstat)
+}
+
+/// `caldav_update_event` with transparent etag-mismatch
+/// recovery.  When the cached etag is stale (another client
+/// edited the same event between our last sync and this PUT)
+/// we sync the parent calendar to pull the new etag, refetch
+/// the server handle, and retry the PUT once.  The user never
+/// sees the "refresh and try again" failure mode.
+///
+/// Caller passes the app-side `event_id` so we can refetch
+/// the handle after the sync — `event_row_id` is stable across
+/// syncs (`{calendar_id}::{uid}`), so the same id resolves to
+/// the freshly-synced row with the new etag.
+///
+/// Returns the (possibly second-attempt) `WriteOutcome` and
+/// the handle it was written against.  A second 412 bubbles
+/// up unwrapped — that means something else (not a simple
+/// stale-cache race) is in conflict, and the caller should
+/// surface it.
+async fn update_event_with_etag_retry(
+    cache: &Cache,
+    event_id: &str,
+    ics: &str,
+) -> Result<(nimbus_caldav::WriteOutcome, CalendarEventServerHandle), NimbusError> {
+    let handle = load_event_handle(cache, event_id)?;
+    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+
+    match caldav_update_event(
+        &handle.href,
+        &account.username,
+        &app_password,
+        &handle.etag,
+        ics,
+    )
+    .await
+    {
+        Ok(o) => Ok((o, handle)),
+        Err(NimbusError::EtagMismatch(_)) => {
+            tracing::info!(
+                "stale etag for {event_id}; refreshing calendar cache and retrying"
+            );
+            let cal_path = cache
+                .get_calendar_server_path(&handle.calendar_id)?
+                .map(|(_, p)| p)
+                .ok_or_else(|| {
+                    NimbusError::Other(format!(
+                        "calendar '{}' is not in the local cache",
+                        handle.calendar_id
+                    ))
+                })?;
+            refresh_calendar_cache(cache, &handle.nextcloud_account_id, &cal_path).await?;
+            let fresh = load_event_handle(cache, event_id)?;
+            let outcome = caldav_update_event(
+                &fresh.href,
+                &account.username,
+                &app_password,
+                &fresh.etag,
+                ics,
+            )
+            .await?;
+            Ok((outcome, fresh))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Pull the latest events for one calendar via CalDAV
+/// sync-collection and apply the delta to the local cache.
+/// Same plumbing as `sync_nextcloud_calendars`'s inner loop, but
+/// scoped to a single calendar so the inbound-RSVP path can
+/// freshen its cache before deciding create-vs-update.  Soft
+/// failures (server transient, no auth, anything) bubble back as
+/// `Err`; the caller decides whether to fall through.
+async fn refresh_calendar_cache(
+    cache: &Cache,
+    nc_id: &str,
+    calendar_path: &str,
 ) -> Result<(), NimbusError> {
-    let account = load_account(&cache, &account_id)?;
-    let password = credentials::get_imap_password(&account.id)?;
-
-    let reply_ics = build_rsvp_reply_ics(&raw_ics, &attendee_email, &partstat, &organizer_email)?;
-
-    let verb_subject = match partstat.as_str() {
-        "ACCEPTED" => "Accepted",
-        "DECLINED" => "Declined",
-        "TENTATIVE" => "Tentative",
-        _ => "Updated",
-    };
-    let subject = format!("{verb_subject}: {summary}");
-    let verb_body = match partstat.as_str() {
-        "ACCEPTED" => "accepted",
-        "DECLINED" => "declined",
-        "TENTATIVE" => "tentatively accepted",
-        _ => "updated their response for",
-    };
-    let body_text = format!(
-        "{} has {verb_body} the invitation to \"{summary}\".\n",
-        account.email
-    );
-    // Inline-styled HTML body matching the outbound invite card's
-    // visual language so the organiser's mail client renders the
-    // RSVP nicely rather than a plain "Bob accepted" line.  The
-    // accent colour flips per response — green for accept, amber
-    // for tentative, red for decline — so an inbox glance reads
-    // the verdict immediately.  Same table-based layout for
-    // Outlook-for-Windows compatibility.
-    let (accent, badge_text, headline) = match partstat.as_str() {
-        "ACCEPTED" => ("#16a34a", "ACCEPTED", "is going"),
-        "DECLINED" => ("#dc2626", "DECLINED", "won't make it"),
-        "TENTATIVE" => ("#ca8a04", "TENTATIVE", "might attend"),
-        _ => ("#3b82f6", "RESPONSE", "responded"),
-    };
-    let attendee_label = if account.display_name.trim().is_empty() {
-        account.email.as_str()
-    } else {
-        account.display_name.as_str()
-    };
-    let body_html = format!(
-        r#"<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate; border:1px solid #d1d5db; border-radius:10px; padding:18px 20px; max-width:560px; margin-top:14px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f9fafb;"><tr><td style="padding-bottom:8px; font-size:12px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:{accent};">📅 Meeting RSVP</td></tr><tr><td style="font-size:18px; font-weight:600; color:#111827; padding-bottom:8px;">{summary_html}</td></tr><tr><td style="padding-bottom:6px;"><span style="display:inline-block; padding:4px 10px; border-radius:999px; background:{accent}; color:#ffffff; font-size:12px; font-weight:600; letter-spacing:0.05em;">{badge_text}</span></td></tr><tr><td style="font-size:14px; color:#374151; padding-top:6px;"><strong style="color:#111827;">{attendee_html}</strong> {headline}.</td></tr></table>"#,
-        accent = accent,
-        badge_text = badge_text,
-        headline = headline,
-        summary_html = html_escape(&summary),
-        attendee_html = html_escape(attendee_label),
-    );
-
-    let outgoing = nimbus_core::models::OutgoingEmail {
-        from: account.email.clone(),
-        to: vec![organizer_email],
-        cc: vec![],
-        bcc: vec![],
-        reply_to: None,
-        subject,
-        body_text: Some(body_text),
-        body_html: Some(body_html),
-        attachments: vec![],
-        // Use the iMIP MIME structure (text/calendar inside the
-        // multipart/alternative + downloadable invite-reply.ics)
-        // so the organiser's mail client recognises this as an
-        // RSVP and pairs it back to the original invite — same
-        // shape an Outlook / Apple Mail / Google Calendar REPLY
-        // uses on the wire.
-        calendar_part: Some(nimbus_core::models::CalendarPart {
-            method: "REPLY".to_string(),
-            ics: reply_ics,
-        }),
-        // RSVPs are meeting machinery, not user-authored mail —
-        // every other mainstream client hides them from Sent too.
-        skip_sent_copy: true,
-    };
-
-    let client = nimbus_smtp::SmtpClient::connect(
-        &account.smtp_host,
-        account.smtp_port,
-        &account.email,
-        &password,
-        &account.trusted_certs,
+    let account = load_nextcloud_account(nc_id)?;
+    let app_password = credentials::get_nextcloud_password(nc_id)?;
+    // Look up the local calendar id by path so we can fetch its
+    // sync token and apply the delta against it.
+    let calendars = cache.list_calendars(nc_id)?;
+    let cal = calendars
+        .into_iter()
+        .find(|c| c.path == calendar_path)
+        .ok_or_else(|| {
+            NimbusError::Other(format!(
+                "calendar '{calendar_path}' is not in the local cache"
+            ))
+        })?;
+    let prev_token = cache
+        .get_calendar_sync_state(&cal.id)
+        .ok()
+        .flatten()
+        .and_then(|s| s.sync_token);
+    let delta = caldav_sync_calendar(
+        &account.server_url,
+        &cal.path,
+        &account.username,
+        &app_password,
+        prev_token.as_deref(),
     )
     .await?;
-    client.send(&outgoing).await?;
+    let upserts: Vec<CalendarEventRow> =
+        delta.upserts.iter().flat_map(raw_event_to_rows).collect();
+    cache.apply_event_delta(
+        &cal.id,
+        &upserts,
+        &delta.deleted_hrefs,
+        delta.new_sync_token.as_deref(),
+        cal.ctag.as_deref(),
+    )?;
     Ok(())
 }
 
@@ -3356,6 +3787,34 @@ async fn download_email_attachment(
     let (_meta, data) = client.fetch_attachment(&folder, uid, part_id).await?;
     let _ = client.logout().await;
     Ok(data)
+}
+
+/// Find an iCalendar payload anywhere in the message and return
+/// its raw bytes.  Used by MailView as a fallback for invites
+/// where the cached `attachments` array doesn't surface the
+/// calendar — most commonly the canonical iMIP MIME shape
+/// where `text/calendar` is a body alternative inside
+/// `multipart/alternative` and mail-parser classifies it as a
+/// body part rather than an attachment.  Returns `None` when
+/// the message genuinely has no calendar content (caller hides
+/// the RSVP card).
+#[tauri::command]
+async fn download_calendar_from_message(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    cache: State<'_, Cache>,
+) -> Result<Option<Vec<u8>>, NimbusError> {
+    let account = load_account(&cache, &account_id)?;
+    if uses_jmap(&account) {
+        return Err(NimbusError::Protocol(
+            "JMAP calendar extraction is not implemented yet".into(),
+        ));
+    }
+    let mut client = connect_imap(&account).await?;
+    let bytes = client.fetch_calendar_payload(&folder, uid).await?;
+    let _ = client.logout().await;
+    Ok(bytes)
 }
 
 /// Mark a message as read on the server and in the local cache.
@@ -4906,6 +5365,7 @@ fn main() {
             fetch_unified_envelopes,
             fetch_message,
             download_email_attachment,
+            download_calendar_from_message,
             fetch_folders,
             create_folder,
             delete_folder,
@@ -4939,6 +5399,8 @@ fn main() {
             create_nextcloud_directory,
             list_talk_rooms,
             create_talk_room,
+            set_talk_room_public,
+            find_nextcloud_user_by_email,
             add_talk_participants,
             delete_talk_room,
             add_talk_participant,
@@ -4971,11 +5433,16 @@ fn main() {
             set_nextcloud_calendar_muted,
             get_cached_events,
             create_calendar_event,
-            build_event_invite_ics,
             parse_event_invite,
-            send_event_rsvp,
+            respond_to_invite,
+            get_rsvp_response,
+            get_event_partstat_for_user,
             update_calendar_event,
             delete_calendar_event,
+            dismiss_cancelled_event,
+            is_event_in_calendar,
+            record_cancelled_invite,
+            is_invite_cancelled,
             // Issue #16: tray + notifications + preferences
             get_app_settings,
             update_app_settings,

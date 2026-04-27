@@ -598,6 +598,48 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE calendars
         ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v13 → v14: persisted iMIP RSVP responses (#58).
+    //
+    // When the user clicks Accept / Decline / Tentative on an
+    // inbound invite, we send a REPLY mail and remember the chosen
+    // PARTSTAT keyed by the event's iCalendar UID. Reopening the
+    // invite later (different folder, app restart, account switch)
+    // shows the post-reply state instead of the fresh "Accept /
+    // Decline" buttons.
+    //
+    // UID is the natural key — globally unique per RFC 5545 — and
+    // is what pairs the inbound REQUEST with whichever REPLY we
+    // sent for it. A later RSVP overwrites the previous row, so
+    // changing the answer just updates `partstat` + `responded_at`.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    CREATE TABLE IF NOT EXISTS rsvp_responses (
+        uid           TEXT PRIMARY KEY,
+        partstat      TEXT NOT NULL,
+        responded_at  INTEGER NOT NULL
+    );
+    "#,
+    // ─────────────────────────────────────────────────────────────
+    // v14 → v15: cancelled-invite registry.
+    //
+    // When MailView opens a `METHOD:CANCEL` iMIP message, we
+    // persist its iCalendar UID here.  The inbox RSVP card's
+    // pre-render sync checks this table and flips the original
+    // `METHOD:REQUEST` mail's card to the cancelled banner —
+    // stops the user from accidentally answering an invite
+    // whose meeting has since been cancelled.
+    //
+    // Keyed by UID since the same meeting can have a REQUEST
+    // mail and a CANCEL mail in different folders / accounts;
+    // both should reflect the cancellation.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    CREATE TABLE IF NOT EXISTS cancelled_invites (
+        uid           TEXT PRIMARY KEY,
+        cancelled_at  INTEGER NOT NULL
+    );
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

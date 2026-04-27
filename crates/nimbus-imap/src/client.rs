@@ -683,6 +683,62 @@ impl ImapClient {
     /// mean teaching the UI about MIME section numbers — and re-fetching
     /// is cheap enough for the "user clicked Download" case. BODY.PEEK[]
     /// keeps the message unread.
+    /// Find any iCalendar payload in the message and return its
+    /// raw bytes — regardless of whether mail-parser classified
+    /// it as an attachment or a body alternative.  Walks
+    /// `Message::parts` directly so canonical iMIP messages
+    /// (where `text/calendar` lives inside
+    /// `multipart/alternative` with no separate `.ics`
+    /// download) still surface their calendar payload.
+    /// Returns `None` when no calendar-shaped part exists in
+    /// the message — caller treats that as "this isn't an
+    /// invite mail at all".
+    pub async fn fetch_calendar_payload(
+        &mut self,
+        folder: &str,
+        uid: u32,
+    ) -> Result<Option<Vec<u8>>, NimbusError> {
+        let _ = self.select_folder(folder).await?;
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+        let fetches: Vec<_> = session
+            .uid_fetch(uid.to_string(), "(BODY.PEEK[])")
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID FETCH failed: {e}")))?
+            .try_collect()
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read UID FETCH: {e}")))?;
+        let fetch = fetches
+            .into_iter()
+            .next()
+            .ok_or_else(|| NimbusError::Protocol(format!("No message with UID {uid}")))?;
+        let raw = fetch
+            .body()
+            .ok_or_else(|| NimbusError::Protocol("FETCH returned no body".into()))?;
+        let parsed = MessageParser::default()
+            .parse(raw)
+            .ok_or_else(|| NimbusError::Protocol("Failed to parse message".into()))?;
+        for part in parsed.parts.iter() {
+            let ct = match part.content_type() {
+                Some(ct) => ct,
+                None => continue,
+            };
+            let ctype = ct.ctype().to_ascii_lowercase();
+            let subtype = ct
+                .subtype()
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
+            let is_calendar = (ctype == "text" && subtype == "calendar")
+                || (ctype == "application" && (subtype == "ics" || subtype == "ical"));
+            if is_calendar {
+                return Ok(Some(part.contents().to_vec()));
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn fetch_attachment(
         &mut self,
         folder: &str,
@@ -717,11 +773,23 @@ impl ImapClient {
             .parse(raw)
             .ok_or_else(|| NimbusError::Protocol("Failed to parse message".into()))?;
 
-        let part = parsed.attachment(part_id).ok_or_else(|| {
-            NimbusError::Protocol(format!(
-                "Message UID {uid} has no attachment #{part_id}"
-            ))
-        })?;
+        // Try mail-parser's `attachments()` iterator first
+        // (matches the listing path's primary indexing) and
+        // fall back to the parts-array.  The fallback rescues
+        // metadata that was cached during an earlier build
+        // where part_ids referenced the parts-array directly —
+        // without it those legacy entries fail to download
+        // and any UI keying off `download_email_attachment`
+        // (RSVP card, attachment download button) silently
+        // breaks for the affected messages.
+        let part = parsed
+            .attachment(part_id)
+            .or_else(|| parsed.parts.get(part_id as usize))
+            .ok_or_else(|| {
+                NimbusError::Protocol(format!(
+                    "Message UID {uid} has no part #{part_id}"
+                ))
+            })?;
 
         let filename = part
             .attachment_name()

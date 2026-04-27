@@ -80,6 +80,7 @@
     theme_mode: ThemeMode
     mail_html_white_background: boolean
     auto_advance_after_remove: boolean
+    default_calendar_id: string | null
   }
 
   let appSettings = $state<AppSettings>({
@@ -92,7 +93,21 @@
     theme_mode: 'system',
     mail_html_white_background: true,
     auto_advance_after_remove: true,
+    default_calendar_id: null,
   })
+
+  // Calendar list for the "default calendar" picker.  Loaded
+  // lazily once on mount alongside the other app settings.
+  // Empty list = no Nextcloud connected yet → setting is hidden.
+  interface CalendarRow {
+    id: string
+    nextcloud_account_id: string
+    display_name: string
+    color: string | null
+    last_synced_at: string | null
+    hidden?: boolean
+  }
+  let calendarsForPicker = $state<CalendarRow[]>([])
   let prefsSaveStatus = $state<'' | 'saving' | 'saved' | 'error'>('')
   let checkNowBusy = $state(false)
 
@@ -102,7 +117,29 @@
   $effect(() => {
     loadAccounts()
     loadAppSettings()
+    loadCalendarsForPicker()
   })
+
+  async function loadCalendarsForPicker() {
+    try {
+      const accounts = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      const all: CalendarRow[] = []
+      for (const acc of accounts) {
+        try {
+          const cs = await invoke<CalendarRow[]>('get_cached_calendars', {
+            ncId: acc.id,
+          })
+          all.push(...cs)
+        } catch (e) {
+          console.warn('default-calendar picker: get_cached_calendars failed', e)
+        }
+      }
+      calendarsForPicker = all.filter((c) => !c.hidden)
+    } catch (e) {
+      console.warn('default-calendar picker: get_nextcloud_accounts failed', e)
+      calendarsForPicker = []
+    }
+  }
 
   async function loadAppSettings() {
     try {
@@ -464,6 +501,28 @@
           />
           <span>After delete / archive, open the next message automatically</span>
         </label>
+
+        <!-- Default calendar.  Used by the EventEditor as the
+             pre-selected calendar in create-mode, and by the
+             RSVP card as the default destination for accepted
+             invites.  Hidden when no Nextcloud calendars are
+             cached yet (the user hasn't connected NC, or the
+             initial sync hasn't run). -->
+        {#if calendarsForPicker.length > 0}
+          <label class="flex items-center gap-2 pt-2">
+            <span class="shrink-0">Default calendar</span>
+            <select
+              class="select px-2 py-1 text-sm rounded-md flex-1 max-w-[320px]"
+              bind:value={appSettings.default_calendar_id}
+              onchange={scheduleSave}
+            >
+              <option value={null}>(use first available)</option>
+              {#each calendarsForPicker as c (c.id)}
+                <option value={c.id}>{c.display_name}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
       </div>
     </div>
 

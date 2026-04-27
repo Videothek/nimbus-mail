@@ -119,52 +119,87 @@
   // mount `CalendarInviteCard` with the result.
   let invite = $state<InviteSummary | null>(null)
   let inviteLoadError = $state('')
-  let accountEmail = $state('')
 
-  /** Pick the first text/calendar attachment off the open mail.
-   *  Most invites only carry one; multi-event ICS files exist
-   *  but are exotic enough to warrant first-only-MVP. */
+  /** Pick the first iCalendar-shaped attachment off the open
+   *  mail.  Senders differ — Google Calendar, NC iMIP, Outlook,
+   *  Apple Mail all pick differently between `text/calendar`,
+   *  `application/ics` and a generic Content-Type with an
+   *  `.ics` filename — so we match all of them. */
   function pickInviteAttachment(em: Email | null): EmailAttachment | null {
     if (!em) return null
     return (
-      em.attachments.find((a) =>
-        a.content_type.toLowerCase().startsWith('text/calendar'),
-      ) ?? null
+      em.attachments.find((a) => {
+        const ct = a.content_type.toLowerCase()
+        const fn = a.filename.toLowerCase()
+        return (
+          ct.startsWith('text/calendar') ||
+          ct.startsWith('application/ics') ||
+          ct.startsWith('application/ical') ||
+          fn.endsWith('.ics') ||
+          fn.endsWith('.ical') ||
+          fn.endsWith('.icalendar')
+        )
+      }) ?? null
     )
   }
 
   $effect(() => {
-    const att = pickInviteAttachment(email)
-    if (!att || !email || uid == null) {
+    if (!email || uid == null) {
       invite = null
       inviteLoadError = ''
       return
     }
+    const att = pickInviteAttachment(email)
     const cur = email
+    const curUid = uid
     void (async () => {
       try {
-        const bytes = await invoke<number[]>('download_email_attachment', {
-          accountId: cur.account_id,
-          folder: cur.folder,
-          uid,
-          partId: att.part_id,
-        })
+        const bytes = att
+          ? await invoke<number[]>('download_email_attachment', {
+              accountId: cur.account_id,
+              folder: cur.folder,
+              uid: curUid,
+              partId: att.part_id,
+            })
+          : await invoke<number[] | null>('download_calendar_from_message', {
+              accountId: cur.account_id,
+              folder: cur.folder,
+              uid: curUid,
+            })
+        if (!bytes) {
+          if (email === cur) {
+            invite = null
+            inviteLoadError = ''
+          }
+          return
+        }
         // Race-guard: bail if the user navigated to a different
         // mail before our fetch completed.
         if (email !== cur) return
         const summary = await invoke<InviteSummary>('parse_event_invite', { bytes })
         if (email !== cur) return
-        // Only show the RSVP card for organiser-sent invites
-        // (`METHOD:REQUEST`).  Attendee REPLY messages — which is
-        // what comes back when a recipient of OUR invite clicks
-        // Accept/Decline — also carry a `text/calendar` part, but
-        // they're not actionable for the organiser; the card
-        // would just be noise.  CANCEL / PUBLISH / etc. are
-        // similarly out of scope for the RSVP UX.
-        if (summary.method && summary.method !== 'REQUEST') {
+        // Surface the card for `METHOD:REQUEST` (organiser-sent
+        // invites — Accept / Tentative / Decline UI) and
+        // `METHOD:CANCEL` (organiser-sent cancellations —
+        // "Remove from my calendar" UI).  Other methods
+        // (`REPLY`, `PUBLISH`, etc.) aren't actionable inbound
+        // and would just be noise; we filter them out so the
+        // mail body renders unobstructed.
+        const m = summary.method?.toUpperCase()
+        if (m && m !== 'REQUEST' && m !== 'CANCEL') {
           invite = null
           inviteLoadError = ''
           return
+        }
+        // Record CANCEL observations so the original REQUEST
+        // mail's card can flip to the cancelled banner on its
+        // next open and the user doesn't unwittingly answer a
+        // meeting that's been cancelled.  Best-effort — a
+        // persistence failure doesn't block the card mounting.
+        if (m === 'CANCEL') {
+          void invoke('record_cancelled_invite', { uid: summary.uid }).catch(
+            (e) => console.warn('record_cancelled_invite failed', e),
+          )
         }
         invite = summary
         inviteLoadError = ''
@@ -176,22 +211,11 @@
     })()
   })
 
-  /** Resolve the current mail account's email address — needed
-   *  by the RSVP card to flag the right ATTENDEE row when it
-   *  emits a REPLY.  Re-fetched per `accountId` change since
-   *  the editor / standalone-window might mount with a different
-   *  active account than App-level state. */
-  $effect(() => {
-    void (async () => {
-      try {
-        type AccountRow = { id: string; email: string }
-        const list = await invoke<AccountRow[]>('get_accounts')
-        accountEmail = list.find((a) => a.id === accountId)?.email ?? ''
-      } catch {
-        accountEmail = ''
-      }
-    })()
-  })
+  // Note: the RSVP card no longer needs an `accountEmail`
+  // prop — `respond_to_invite` resolves the responding
+  // address from NC's user profile server-side, which is what
+  // Sabre uses internally to identify the responding attendee
+  // anyway.  Single source of truth, no client-side guessing.
 
   $effect(() => {
     if (uid == null) {
@@ -1047,9 +1071,6 @@
       <div class="px-6 pt-3">
         <CalendarInviteCard
           invite={invite}
-          accountId={email.account_id}
-          accountEmail={accountEmail}
-          fromAddress={email.from}
           onresponded={() => {
             // The replied invite stays visible (the response chip
             // tells the user what they sent) — no re-fetch needed

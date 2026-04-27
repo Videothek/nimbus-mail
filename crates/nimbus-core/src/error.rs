@@ -24,6 +24,15 @@ pub enum NimbusError {
     #[error("Nextcloud API error: {0}")]
     Nextcloud(String),
 
+    /// CalDAV / WebDAV `If-Match` precondition failed — the
+    /// resource on the server has a newer etag than the one we
+    /// cached.  Distinct from `Nextcloud` so callers can detect
+    /// it programmatically and retry transparently (sync to
+    /// refresh the cached etag → re-attempt the PUT) instead of
+    /// surfacing a "refresh and try again" toast to the user.
+    #[error("Resource changed on the server since last sync: {0}")]
+    EtagMismatch(String),
+
     #[error("{0}")]
     Other(String),
 }
