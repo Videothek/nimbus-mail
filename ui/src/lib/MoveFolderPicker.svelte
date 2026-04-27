@@ -1,0 +1,222 @@
+<script lang="ts">
+  /**
+   * MoveFolderPicker — modal that lists every folder for an account
+   * (#89).  Used by both the "Move" toolbar button in MailView and
+   * the "Move to folder…" right-click entry in MailList.  Visual
+   * style mirrors the Sidebar's folder list so the user reaches for
+   * the same icon they'd reach for in the tree.
+   *
+   * The picker is intentionally read-only — it doesn't trigger the
+   * IMAP MOVE itself.  `onpicked(folderName)` hands the selection
+   * back to the caller, which already has the source `{accountId,
+   * folder, uid}` context to fire the `move_message` command.
+   * Keeping the I/O on the caller side avoids prop drilling and
+   * makes this component reusable.
+   */
+
+  import { invoke } from '@tauri-apps/api/core'
+  import { formatError } from './errors'
+
+  interface Folder {
+    name: string
+    delimiter: string | null
+    attributes: string[]
+    unread_count: number | null
+  }
+
+  interface FolderIconRule {
+    keyword: string
+    icon: string
+  }
+
+  interface Account {
+    id: string
+    folder_icons?: FolderIconRule[]
+    folder_icon_overrides?: Record<string, string>
+  }
+
+  let {
+    accountId,
+    currentFolder,
+    accounts = [],
+    onpicked,
+    onclose,
+  }: {
+    accountId: string
+    /** The mail's current folder.  Disabled in the list (move-to-self
+     *  is a noop) and labelled so the user knows why. */
+    currentFolder: string
+    /** Optional accounts list — the picker uses it to resolve
+     *  per-folder icon overrides + keyword rules.  Same shape as
+     *  Sidebar's `accounts` prop.  Falls back to a generic 📁 when
+     *  nothing matches. */
+    accounts?: Account[]
+    onpicked: (folderName: string) => void
+    onclose: () => void
+  } = $props()
+
+  let folders = $state<Folder[]>([])
+  let loading = $state(true)
+  let error = $state('')
+
+  $effect(() => {
+    void (async () => {
+      loading = true
+      error = ''
+      try {
+        folders = await invoke<Folder[]>('get_cached_folders', { accountId })
+      } catch (e) {
+        error = formatError(e) || 'Failed to load folders'
+      } finally {
+        loading = false
+      }
+    })()
+  })
+
+  // Same folder-icon resolution chain Sidebar uses.  Lifted here so
+  // the picker stays self-contained — pulling it into a shared util
+  // is a follow-up if a third caller appears.
+  function folderIcon(f: Folder): string {
+    const account = accounts.find((a) => a.id === accountId)
+    const override = account?.folder_icon_overrides?.[f.name]
+    if (override) return override
+
+    const name = f.name.toLowerCase()
+    const attrs = f.attributes.map((a) => a.toLowerCase())
+    const has = (k: string) => attrs.some((a) => a.includes(k))
+    if (name === 'inbox' || has('inbox')) return '\u{1F4E5}'
+    if (has('sent')) return '\u{1F4E4}'
+    if (has('draft')) return '\u{1F4DD}'
+    if (has('trash') || has('deleted') || name === 'trash' || name === 'papierkorb') return '\u{1F5D1}\u{FE0F}'
+    if (has('junk') || has('spam') || name === 'spam' || name === 'junk') return '\u{1F6AB}'
+    if (has('flagged') || has('starred')) return '\u{2B50}'
+    if (has('archive')) return '\u{1F5C3}\u{FE0F}'
+
+    const rules = account?.folder_icons ?? []
+    for (const rule of rules) {
+      const kw = rule.keyword.trim().toLowerCase()
+      if (kw && name.includes(kw)) return rule.icon
+    }
+    return '\u{1F4C1}'
+  }
+
+  function displayName(f: Folder): string {
+    if (f.name.toUpperCase() === 'INBOX') return 'Inbox'
+    const delim = f.delimiter ?? '/'
+    const parts = f.name.split(delim)
+    return parts[parts.length - 1] || f.name
+  }
+
+  /** Indent depth — counts the path delimiters so subfolders nest
+   *  visually under their parent.  E.g. `INBOX/Work/Reports` lands
+   *  at depth 2.  Cheaper than building a real tree and good enough
+   *  to read the hierarchy at a glance. */
+  function depth(f: Folder): number {
+    const delim = f.delimiter ?? '/'
+    return Math.max(0, f.name.split(delim).length - 1)
+  }
+
+  // Same ordering Sidebar uses: standard folders first in canonical
+  // order (Inbox → Drafts → Sent → Flagged → Archive → Junk →
+  // Trash), then user folders alphabetically.
+  function standardRank(f: Folder): number {
+    const name = f.name.toLowerCase()
+    const attrs = f.attributes.map((a) => a.toLowerCase())
+    const has = (k: string) => attrs.some((a) => a.includes(k))
+    if (name === 'inbox' || has('inbox')) return 0
+    if (has('draft')) return 1
+    if (has('sent')) return 2
+    if (has('flagged') || has('starred')) return 3
+    if (has('archive')) return 4
+    if (has('junk') || has('spam') || name === 'spam' || name === 'junk') return 5
+    if (has('trash') || has('deleted') || name === 'trash' || name === 'papierkorb') return 6
+    return -1
+  }
+
+  let sortedFolders = $derived.by(() => {
+    const standard = folders
+      .filter((f) => standardRank(f) >= 0)
+      .sort((a, b) => standardRank(a) - standardRank(b))
+    const user = folders
+      .filter((f) => standardRank(f) < 0)
+      .sort((a, b) => a.name.localeCompare(b.name))
+    return [...standard, ...user]
+  })
+
+  let filterText = $state('')
+  let visibleFolders = $derived.by(() => {
+    const q = filterText.trim().toLowerCase()
+    if (!q) return sortedFolders
+    return sortedFolders.filter((f) => f.name.toLowerCase().includes(q))
+  })
+
+  function onPickFolder(name: string) {
+    if (name === currentFolder) return
+    onpicked(name)
+    onclose()
+  }
+</script>
+
+<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+<div
+  class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+  role="dialog"
+  aria-modal="true"
+  aria-label="Move message to folder"
+  tabindex="-1"
+  onclick={(e) => {
+    if (e.target === e.currentTarget) onclose()
+  }}
+>
+  <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col w-[420px] max-w-[90vw] max-h-[80vh]">
+    <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
+      <h2 class="text-base font-semibold">Move to folder</h2>
+      <button
+        class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
+        onclick={onclose}
+        aria-label="Close"
+      >✕</button>
+    </header>
+
+    <div class="px-3 py-2 border-b border-surface-200 dark:border-surface-700">
+      <input
+        type="text"
+        class="input w-full text-sm px-2 py-1 rounded-md"
+        placeholder="Filter folders…"
+        bind:value={filterText}
+      />
+    </div>
+
+    <div class="flex-1 overflow-y-auto px-2 py-2">
+      {#if loading}
+        <p class="px-3 py-2 text-xs text-surface-500">Loading folders…</p>
+      {:else if error}
+        <p class="px-3 py-2 text-sm text-red-500">{error}</p>
+      {:else if visibleFolders.length === 0}
+        <p class="px-3 py-2 text-xs text-surface-500">
+          {filterText ? 'No folders match.' : 'No folders.'}
+        </p>
+      {:else}
+        {#each visibleFolders as f (f.name)}
+          {@const isCurrent = f.name === currentFolder}
+          <button
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors disabled:text-surface-400 disabled:cursor-not-allowed
+              {isCurrent
+                ? 'bg-surface-200/50 dark:bg-surface-700/50'
+                : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            style:padding-left={`${0.75 + depth(f) * 1.25}rem`}
+            disabled={isCurrent}
+            onclick={() => onPickFolder(f.name)}
+            title={isCurrent ? 'Already in this folder' : `Move to ${f.name}`}
+          >
+            <span>{folderIcon(f)}</span>
+            <span class="flex-1 truncate">{displayName(f)}</span>
+            {#if isCurrent}
+              <span class="text-[10px] text-surface-500 uppercase tracking-wider">Current</span>
+            {/if}
+          </button>
+        {/each}
+      {/if}
+    </div>
+  </div>
+</div>

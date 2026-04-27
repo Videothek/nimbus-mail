@@ -14,6 +14,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
   import { openMailInStandaloneWindow } from './standaloneMailWindow'
+  import MoveFolderPicker from './MoveFolderPicker.svelte'
 
   // ── Props ───────────────────────────────────────────────────
   interface EmailEnvelope {
@@ -60,6 +61,12 @@
         used by the auto-advance-after-delete logic to pick the next
         UID below the removed row. */
     envelopes?: EmailEnvelope[]
+    /** Fires after the right-click "Move to folder…" picker (#89)
+        successfully moves a message.  Same shape as `onmessagemoved`
+        in `Sidebar`: parent uses it to drop the source-folder
+        envelope and run the auto-advance flow when the moved row
+        was the currently-open one. */
+    onmessagemoved?: (removedUid: number) => void
   }
   let {
     accounts = [],
@@ -70,6 +77,7 @@
     refreshToken = 0,
     onselect,
     envelopes = $bindable([]),
+    onmessagemoved,
   }: Props = $props()
 
   /** Short label for the per-row account chip in unified mode. We
@@ -93,6 +101,32 @@
   let loading = $state(true)
   let refreshing = $state(false)
   let error = $state('')
+
+  // ── Move-to-folder picker (#89) — opened via the right-click
+  // "Move to folder…" entry.  We hold the envelope being moved here
+  // (not just a UID) so the picker can target the right account
+  // even in unified mode, and so `move_message` gets the correct
+  // source `folder` field for that envelope.
+  let movingEnvelope = $state<EmailEnvelope | null>(null)
+
+  async function moveEnvelopeToFolder(env: EmailEnvelope, dest: string) {
+    movingEnvelope = null
+    const srcAccountId = unified && env.account_id ? env.account_id : accountId
+    const srcFolder = env.folder || folder
+    if (dest === srcFolder) return // move-to-self noop
+    try {
+      await invoke('move_message', {
+        accountId: srcAccountId,
+        folder: srcFolder,
+        uid: env.uid,
+        destFolder: dest,
+      })
+      onmessagemoved?.(env.uid)
+    } catch (err) {
+      console.warn('move_message via right-click failed', err)
+      error = formatError(err) || 'Failed to move message'
+    }
+  }
 
   // ── Drag source: serialize {accountId, folder, uid} into the
   // dataTransfer payload so Sidebar's folder rows (#89) can call
@@ -331,5 +365,29 @@
     >
       {contextMenu.env.is_read ? 'Mark as unread' : 'Mark as read'}
     </button>
+    <button
+      type="button"
+      class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+      onclick={() => {
+        if (!contextMenu) return
+        movingEnvelope = contextMenu.env
+        closeContextMenu()
+      }}
+    >
+      Move to folder…
+    </button>
   </div>
+{/if}
+
+{#if movingEnvelope}
+  <MoveFolderPicker
+    accountId={unified && movingEnvelope.account_id ? movingEnvelope.account_id : accountId}
+    currentFolder={movingEnvelope.folder || folder}
+    accounts={accounts}
+    onpicked={(name) => {
+      const env = movingEnvelope
+      if (env) void moveEnvelopeToFolder(env, name)
+    }}
+    onclose={() => (movingEnvelope = null)}
+  />
 {/if}

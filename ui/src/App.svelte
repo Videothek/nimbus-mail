@@ -929,6 +929,7 @@
               refreshToken={refreshToken}
               onselect={selectMessage}
               bind:envelopes={mailListEnvelopes}
+              onmessagemoved={onMessageRemoved}
             />
           {/if}
         </div>
