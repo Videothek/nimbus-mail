@@ -94,6 +94,24 @@
   let refreshing = $state(false)
   let error = $state('')
 
+  // ── Drag source: serialize {accountId, folder, uid} into the
+  // dataTransfer payload so Sidebar's folder rows (#89) can call
+  // `move_message` with the right source coordinates on drop.  The
+  // custom `application/x-nimbus-mail` MIME type means the browser
+  // ignores the drag for any non-Sidebar drop target (system files,
+  // text fields, etc.) — no accidental no-op drops onto random UI.
+  function onMailDragStart(e: DragEvent, env: EmailEnvelope) {
+    if (!e.dataTransfer) return
+    const srcAccountId = unified && env.account_id ? env.account_id : accountId
+    const payload = JSON.stringify({
+      accountId: srcAccountId,
+      folder,
+      uid: env.uid,
+    })
+    e.dataTransfer.setData('application/x-nimbus-mail', payload)
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
   // Re-fetch whenever the account, folder, unified flag, or
   // refreshToken changes.
   $effect(() => {
@@ -261,6 +279,8 @@
               : !env.is_read
                 ? 'bg-primary-500/[0.04] dark:bg-primary-500/[0.07] hover:bg-primary-500/10'
                 : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+          draggable="true"
+          ondragstart={(e) => onMailDragStart(e, env)}
           onclick={() => onselect(env.uid, unified ? env.account_id : undefined)}
           ondblclick={() =>
             openMailInStandaloneWindow(

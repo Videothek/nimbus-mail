@@ -770,13 +770,66 @@
   }
 
   // ---------------------------------------------------------------------
-  // Archive / Delete — top-bar actions that remove the current message
-  // from the visible folder. Both follow the same optimistic shape:
-  // disable the buttons, run the Tauri command, and notify the parent
-  // so it can deselect + refresh the mail list. Errors bubble back into
-  // the same `error` banner the load path uses.
+  // Archive / Delete / Move-to-folder — top-bar actions that remove the
+  // current message from the visible folder. All three follow the same
+  // optimistic shape: disable the buttons, run the Tauri command, and
+  // notify the parent so it can deselect + refresh the mail list. Errors
+  // bubble back into the same `error` banner the load path uses.
   // ---------------------------------------------------------------------
   let removing = $state(false)
+
+  // Move-to-folder picker state.  Folders are fetched lazily when the
+  // dropdown opens — no need to keep them in sync the rest of the time.
+  interface MoveFolder {
+    name: string
+    delimiter: string | null
+    attributes: string[]
+    unread_count: number | null
+  }
+  let moveMenuOpen = $state(false)
+  let moveFolders = $state<MoveFolder[]>([])
+  let moveFoldersLoading = $state(false)
+
+  async function openMoveMenu() {
+    if (!email) return
+    moveMenuOpen = true
+    moveFoldersLoading = true
+    try {
+      moveFolders = await invoke<MoveFolder[]>('get_cached_folders', {
+        accountId: email.account_id,
+      })
+    } catch (e) {
+      console.warn('get_cached_folders failed', e)
+      moveFolders = []
+    } finally {
+      moveFoldersLoading = false
+    }
+  }
+
+  function closeMoveMenu() {
+    moveMenuOpen = false
+  }
+
+  async function moveToFolder(destFolder: string) {
+    if (!email || uid == null) return
+    closeMoveMenu()
+    if (destFolder === email.folder) return // move-to-self is a noop
+    const removedUid = uid
+    removing = true
+    try {
+      await invoke('move_message', {
+        accountId: email.account_id,
+        folder: email.folder,
+        uid: removedUid,
+        destFolder,
+      })
+      onmessageremoved?.(removedUid)
+    } catch (e) {
+      error = formatError(e) || 'Failed to move'
+    } finally {
+      removing = false
+    }
+  }
 
   async function archiveMessage() {
     if (!email || uid == null) return
@@ -904,6 +957,50 @@
             : 'Switch this mail to a white background'}
         >{effectiveWhiteBackground ? '🎨 Use mail theme' : '📄 White background'}</button>
       {/if}
+      <!-- Move to folder (#89) — opens a small folder-picker menu
+           anchored to the button.  Folders are fetched lazily when
+           the menu opens.  We use a click-outside backdrop instead
+           of a global listener so the popup dismisses cleanly when
+           the user clicks anywhere off the menu. -->
+      <div class="relative">
+        <button
+          class="btn btn-sm preset-outlined-surface-500"
+          disabled={removing}
+          onclick={() => (moveMenuOpen ? closeMoveMenu() : void openMoveMenu())}
+          title="Move this message to a different folder"
+          aria-haspopup="menu"
+          aria-expanded={moveMenuOpen}
+        >Move ▾</button>
+        {#if moveMenuOpen}
+          <button
+            type="button"
+            class="fixed inset-0 z-40 cursor-default"
+            aria-label="Close menu"
+            onclick={closeMoveMenu}
+          ></button>
+          <div
+            role="menu"
+            class="absolute right-0 top-full mt-1 z-50 min-w-56 max-h-80 overflow-y-auto rounded-md shadow-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 py-1 text-sm"
+          >
+            {#if moveFoldersLoading}
+              <div class="px-3 py-2 text-surface-500 text-xs">Loading folders…</div>
+            {:else if moveFolders.length === 0}
+              <div class="px-3 py-2 text-surface-500 text-xs">No folders available</div>
+            {:else}
+              {#each moveFolders as f (f.name)}
+                {@const isCurrent = email && f.name === email.folder}
+                <button
+                  role="menuitem"
+                  class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 disabled:text-surface-400 disabled:cursor-not-allowed"
+                  disabled={!!isCurrent}
+                  onclick={() => void moveToFolder(f.name)}
+                  title={isCurrent ? 'This is the current folder' : `Move to ${f.name}`}
+                >{f.name}{isCurrent ? '  (current)' : ''}</button>
+              {/each}
+            {/if}
+          </div>
+        {/if}
+      </div>
       <button
         class="btn btn-sm preset-outlined-surface-500"
         disabled={removing}

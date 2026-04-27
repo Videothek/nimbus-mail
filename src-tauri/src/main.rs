@@ -3051,6 +3051,60 @@ async fn archive_message(
     result
 }
 
+/// Move a message to an arbitrary user-picked folder (#89).
+///
+/// Same shape as `archive_message`, but the destination comes
+/// straight from the caller — the picker UI in `MailView` and the
+/// drag-and-drop handler in the sidebar both feed through here.
+/// Move-to-self is a noop because some IMAP servers reject it and
+/// others treat it as a UID-changing roundtrip.  JMAP accounts
+/// return an error until JMAP MOVE lands.
+#[tauri::command]
+async fn move_message(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    dest_folder: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let account = load_account(&cache, &account_id)?;
+
+    if uses_jmap(&account) {
+        return Err(NimbusError::Other(
+            "Move via JMAP is not yet implemented — this account uses JMAP".into(),
+        ));
+    }
+
+    if dest_folder.eq_ignore_ascii_case(&folder) {
+        // Move-to-self is a noop.  Don't trip the IMAP server with a
+        // request it might reject, and don't bump the UID.
+        return Ok(());
+    }
+
+    let password = credentials::get_imap_password(&account.id)?;
+    let mut client = ImapClient::connect(
+        &account.imap_host,
+        account.imap_port,
+        &account.email,
+        &password,
+        &account.trusted_certs,
+    )
+    .await?;
+    let result = client.move_message(&folder, uid, &dest_folder).await;
+    let _ = client.logout().await;
+
+    if result.is_ok() {
+        // Drop the source-folder envelope row so the next incremental
+        // `fetch_envelopes` doesn't have to.  The destination folder
+        // will pick up the new envelope on its next sync tick.
+        if let Err(e) = cache.remove_envelope(&account_id, &folder, uid) {
+            tracing::warn!("remove_envelope after move_message failed: {e}");
+        }
+    }
+
+    result
+}
+
 /// Locate the account's Archive folder via the IMAP `\Archive`
 /// special-use attribute or a name-based fallback. Same strategy as
 /// `pick_sent_folder` / `pick_drafts_folder`.
@@ -4241,6 +4295,7 @@ fn main() {
             save_draft,
             delete_message,
             archive_message,
+            move_message,
             get_cached_envelopes,
             get_unified_cached_envelopes,
             get_cached_message,
