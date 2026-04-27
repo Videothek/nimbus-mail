@@ -198,6 +198,12 @@
       icon: '📎',
       content: attachTabContent,
     },
+    {
+      id: 'meetings',
+      label: 'Meetings',
+      icon: '💬',
+      content: meetingsTabContent,
+    },
   ])
 
   /** Shares minted from this Compose during the current draft.
@@ -1362,9 +1368,9 @@
   primary actions in the ribbon header").
 -->
 
-<!-- Attach tab panel — same `.rt-btn` styling the editor's panels
-     use so the Attach tab is visually indistinguishable from a
-     built-in tab. -->
+<!-- Attach tab panel — local + Nextcloud file pickers.  Same
+     `.rt-btn` styling the editor's panels use so each Compose tab
+     reads as visually indistinguishable from a built-in. -->
 {#snippet attachTabContent()}
   <label class="rt-btn cursor-pointer" title="Attach a file from your computer">
     <span class="rt-btn-icon">📎</span>
@@ -1378,8 +1384,14 @@
     onclick={() => (showNcPicker = true)}
   >
     <span class="rt-btn-icon">☁️</span>
-    <span class="rt-btn-label">Files</span>
+    <span class="rt-btn-label">NC Files</span>
   </button>
+{/snippet}
+
+<!-- Meetings tab panel — Nextcloud Talk + calendar-event creation.
+     Split out from Attach so picking a meeting feature isn't
+     buried in a "files" context. -->
+{#snippet meetingsTabContent()}
   <button
     type="button"
     class="rt-btn"
