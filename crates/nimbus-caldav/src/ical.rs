@@ -537,6 +537,27 @@ pub fn build_ics(
     organizer_email: Option<&str>,
     organizer_name: Option<&str>,
 ) -> String {
+    build_ics_with_method(event, organizer_email, organizer_name, None)
+}
+
+/// Render `event` as a VCALENDAR/VEVENT, optionally tagged with an
+/// iTIP `METHOD` line (RFC 5546 §3.2).  `None` produces the
+/// CalDAV-compliant body `build_ics` returns; `Some("REQUEST")` is
+/// what an outbound iMIP invite needs as its `text/calendar`
+/// attachment payload, `Some("REPLY")` is what an attendee's
+/// Accept / Decline / Tentative response carries.
+///
+/// CalDAV PUT bodies must NOT carry a METHOD line — Sabre/DAV
+/// rejects them — so the `None` codepath is the one
+/// `create_calendar_event` / `update_calendar_event` use.  The
+/// new iMIP path in `main.rs::build_event_invite_ics` opts into
+/// the `Some(...)` codepath.
+pub fn build_ics_with_method(
+    event: &CalendarEvent,
+    organizer_email: Option<&str>,
+    organizer_name: Option<&str>,
+    method: Option<&str>,
+) -> String {
     let mut lines: Vec<String> = Vec::new();
     lines.push("BEGIN:VCALENDAR".into());
     lines.push("VERSION:2.0".into());
@@ -544,6 +565,9 @@ pub fn build_ics(
         "PRODID:-//Nimbus Mail//CalDAV {}//EN",
         env!("CARGO_PKG_VERSION")
     ));
+    if let Some(m) = method {
+        lines.push(format!("METHOD:{m}"));
+    }
     lines.push("BEGIN:VEVENT".into());
     lines.push(format!("UID:{}", event.id));
     lines.push(format!("DTSTAMP:{}", format_utc_dt(&Utc::now())));

@@ -2326,6 +2326,234 @@ async fn delete_calendar_event(
     Ok(())
 }
 
+// ── iTIP / iMIP (#58) ─────────────────────────────────────────────
+//
+// Outbound: when Compose's "Add Event" flow saves an event, we hand
+// the recipient mail clients a `text/calendar; method=REQUEST`
+// attachment so any RFC-compliant client can save the invite
+// natively (Outlook, Apple Mail, Gmail, Thunderbird).
+//
+// Inbound: when a received message carries a `text/calendar` part,
+// we parse the iCalendar and surface an "invite card" with
+// Accept / Decline / Tentative buttons.  Each click silently
+// emits a `text/calendar; method=REPLY` email back to the
+// organiser — that's the iMIP RSVP loop (RFC 6047).
+
+/// Lightweight iCalendar summary the JS layer renders for an
+/// inbound invite (Accept / Decline / Tentative card).  Picks
+/// the smallest set of fields the card needs; the full ICS bytes
+/// stay on the Rust side and ride through `send_event_rsvp` so
+/// the REPLY can carry the same UID and DTSTAMP without the
+/// frontend having to round-trip the full event.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InviteSummary {
+    /// VEVENT UID — the join key between REQUEST + REPLY.
+    uid: String,
+    /// SUMMARY (title) of the event.
+    summary: String,
+    /// DTSTART, normalised to UTC (RFC 3339).
+    start: chrono::DateTime<chrono::Utc>,
+    /// DTEND, normalised to UTC.
+    end: chrono::DateTime<chrono::Utc>,
+    /// Optional venue / room.
+    location: Option<String>,
+    /// Optional URL — Talk join links, video conferencing, etc.
+    url: Option<String>,
+    /// ORGANIZER's email (mailto: URI stripped).  Required by RFC
+    /// 5546 whenever any ATTENDEE is present, so we expect it on
+    /// real-world invites — but a missing one isn't fatal, the
+    /// RSVP just falls back to the message's From: address.
+    organizer_email: Option<String>,
+    organizer_name: Option<String>,
+    /// All ATTENDEEs from the VEVENT.  The card highlights the
+    /// row matching the current user's address so they can see
+    /// their own NEEDS-ACTION status before clicking.
+    attendees: Vec<nimbus_core::models::EventAttendee>,
+    /// The full ICS body, used to preserve UID + DTSTAMP +
+    /// SEQUENCE on the REPLY without re-fetching.
+    raw_ics: String,
+}
+
+/// Render an event input as a `METHOD:REQUEST` iCalendar payload
+/// suitable for attaching to an outbound invite mail.  Same
+/// renderer the CalDAV PUT path uses, just with the calendar-
+/// level METHOD line set so RFC 5546 / iTIP-aware mail clients
+/// recognise it as an invite (instead of a passive PUBLISH).
+///
+/// `uid` MUST match the UID of the event the organiser just
+/// PUT to their CalDAV server — that's the join key any inbound
+/// REPLY uses to pair the response with the original event in
+/// the organiser's calendar.  Compose passes the UID it got
+/// back from `create_calendar_event`.
+#[tauri::command]
+fn build_event_invite_ics(
+    uid: String,
+    event: CalendarEventInput,
+    organizer_email: String,
+    organizer_name: Option<String>,
+    method: Option<String>,
+) -> Result<String, NimbusError> {
+    let cal_event = input_to_calendar_event(&uid, &event);
+    Ok(nimbus_caldav::ical::build_ics_with_method(
+        &cal_event,
+        Some(&organizer_email),
+        organizer_name.as_deref(),
+        Some(method.as_deref().unwrap_or("REQUEST")),
+    ))
+}
+
+/// Parse a raw `text/calendar` byte slice into the slim
+/// `InviteSummary` the inbound RSVP card consumes.  Looks at the
+/// FIRST VEVENT in the file — recurring series and overrides are
+/// out of scope for the invite card MVP (the user can still
+/// manage them in the Calendar view after accepting).
+///
+/// `parse_ics` doesn't surface ORGANIZER as a typed field today,
+/// so the JS caller is expected to fall back to the message's
+/// `From:` header for the recipient of the RSVP REPLY — which is
+/// what RFC 5546 says the organiser address tracks anyway.
+#[tauri::command]
+fn parse_event_invite(bytes: Vec<u8>) -> Result<InviteSummary, NimbusError> {
+    let body = String::from_utf8(bytes)
+        .map_err(|e| NimbusError::Protocol(format!("invite is not UTF-8: {e}")))?;
+    let events = nimbus_caldav::ical::parse_ics(&body)
+        .map_err(|e| NimbusError::Protocol(format!("could not parse calendar invite: {e}")))?;
+    let event = events
+        .into_iter()
+        .next()
+        .ok_or_else(|| NimbusError::Protocol("invite contains no VEVENT".into()))?;
+
+    Ok(InviteSummary {
+        uid: event.id.clone(),
+        summary: event.summary.clone(),
+        start: event.start,
+        end: event.end,
+        location: event.location.clone(),
+        url: event.url.clone(),
+        organizer_email: None,
+        organizer_name: None,
+        attendees: event.attendees.clone(),
+        raw_ics: body,
+    })
+}
+
+/// Generate a `METHOD:REPLY` iCalendar body for the user's RSVP
+/// response.  Re-renders the original event with PARTSTAT updated
+/// for the current user's ATTENDEE row only — every other
+/// ATTENDEE keeps whatever the inbound message had so the
+/// organiser's mail client doesn't see spurious "everyone
+/// changed" diffs.
+///
+/// `organizer_email` is the address we put on the REPLY's
+/// `ORGANIZER` line — caller derives it from the inbound mail's
+/// `From:` header (or the original invite's parsed organiser
+/// when surfaced).  RFC 5546 says REPLY messages MUST carry the
+/// organiser's address.
+fn build_rsvp_reply_ics(
+    raw_ics: &str,
+    attendee_email: &str,
+    partstat: &str,
+    organizer_email: &str,
+) -> Result<String, NimbusError> {
+    let events = nimbus_caldav::ical::parse_ics(raw_ics)
+        .map_err(|e| NimbusError::Protocol(format!("could not parse original invite: {e}")))?;
+    let mut event = events
+        .into_iter()
+        .next()
+        .ok_or_else(|| NimbusError::Protocol("original invite has no VEVENT".into()))?;
+
+    // Flip just the matching attendee's PARTSTAT.  RFC 5546
+    // strictly says a REPLY only carries the responding
+    // attendee's row, but most clients tolerate the "full
+    // attendee list with one updated" shape, and surfacing
+    // everyone's existing status is useful when the organiser's
+    // client renders the response.
+    for att in event.attendees.iter_mut() {
+        if att.email.eq_ignore_ascii_case(attendee_email) {
+            att.status = Some(partstat.to_string());
+        }
+    }
+
+    Ok(nimbus_caldav::ical::build_ics_with_method(
+        &event,
+        Some(organizer_email),
+        None,
+        Some("REPLY"),
+    ))
+}
+
+/// Send an RSVP reply (Accept / Decline / Tentative) for an
+/// inbound invite.  Builds a `text/calendar; method=REPLY`
+/// attachment from the original ICS, composes a small notice
+/// email to the organiser, and ships it through the same
+/// `send_email` SMTP path the regular Compose flow uses.
+///
+/// Silent UX: this is the only step the user sees once they
+/// click Accept — no Compose modal, no confirmation dialog.
+/// Failures bubble back through the normal error toast.
+#[tauri::command]
+async fn send_event_rsvp(
+    account_id: String,
+    organizer_email: String,
+    attendee_email: String,
+    summary: String,
+    raw_ics: String,
+    partstat: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let account = load_account(&cache, &account_id)?;
+    let password = credentials::get_imap_password(&account.id)?;
+
+    let reply_ics = build_rsvp_reply_ics(&raw_ics, &attendee_email, &partstat, &organizer_email)?;
+
+    let verb_subject = match partstat.as_str() {
+        "ACCEPTED" => "Accepted",
+        "DECLINED" => "Declined",
+        "TENTATIVE" => "Tentative",
+        _ => "Updated",
+    };
+    let subject = format!("{verb_subject}: {summary}");
+    let verb_body = match partstat.as_str() {
+        "ACCEPTED" => "accepted",
+        "DECLINED" => "declined",
+        "TENTATIVE" => "tentatively accepted",
+        _ => "updated their response for",
+    };
+    let body_text = format!(
+        "{} has {verb_body} the invitation to \"{summary}\".\n",
+        account.email
+    );
+
+    let outgoing = nimbus_core::models::OutgoingEmail {
+        from: account.email.clone(),
+        to: vec![organizer_email],
+        cc: vec![],
+        bcc: vec![],
+        reply_to: None,
+        subject,
+        body_text: Some(body_text),
+        body_html: None,
+        attachments: vec![nimbus_core::models::Attachment {
+            filename: "invite-reply.ics".to_string(),
+            content_type: "text/calendar; method=REPLY; charset=utf-8".to_string(),
+            data: reply_ics.into_bytes(),
+            content_id: None,
+        }],
+    };
+
+    let client = nimbus_smtp::SmtpClient::connect(
+        &account.smtp_host,
+        account.smtp_port,
+        &account.email,
+        &password,
+        &account.trusted_certs,
+    )
+    .await?;
+    client.send(&outgoing).await?;
+    Ok(())
+}
+
 fn load_event_handle(
     cache: &Cache,
     event_id: &str,
@@ -4509,6 +4737,9 @@ fn main() {
             set_nextcloud_calendar_muted,
             get_cached_events,
             create_calendar_event,
+            build_event_invite_ics,
+            parse_event_invite,
+            send_event_rsvp,
             update_calendar_event,
             delete_calendar_event,
             // Issue #16: tray + notifications + preferences

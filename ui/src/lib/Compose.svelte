@@ -688,6 +688,48 @@
     if (!saved) return
     mergeIntoRecipients(saved.attendees)
     if (createdTalkLink) injectTalkBlock(createdTalkLink)
+
+    // Attach the event as a `text/calendar; method=REQUEST` part
+    // (#58 / iMIP).  Recipients on any RFC-compliant mail client
+    // (Outlook / Apple Mail / Gmail / Thunderbird) will see the
+    // mail as a real meeting invite they can Accept / Decline /
+    // Tentative on, and Nimbus's own MailView surfaces an
+    // RSVP card for inbound mails carrying the same shape.
+    //
+    // The UID matches what the organiser just PUT to their
+    // CalDAV server, so when an attendee's REPLY comes back the
+    // organiser's calendar can pair it to the right event (the
+    // REPLY-tracking work itself lives in #121).
+    try {
+      const ics = await invoke<string>('build_event_invite_ics', {
+        uid: saved.uid,
+        event: {
+          summary: saved.summary,
+          description: null,
+          location: null,
+          start: saved.start,
+          end: saved.end,
+          allDay: false,
+          url: saved.url,
+          transparency: null,
+          attendees: saved.attendees.map((email) => ({ email })),
+          reminders: [],
+        },
+        organizerEmail: fromAddress,
+        organizerName: fromAccount?.display_name ?? null,
+        method: 'REQUEST',
+      })
+      attachments = [
+        ...attachments,
+        {
+          filename: 'invite.ics',
+          content_type: 'text/calendar; method=REQUEST; charset=utf-8',
+          data: Array.from(new TextEncoder().encode(ics)),
+        },
+      ]
+    } catch (e) {
+      console.warn('Failed to build iMIP invite attachment', e)
+    }
     const esc = (s: string) =>
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     const start = new Date(saved.start)
