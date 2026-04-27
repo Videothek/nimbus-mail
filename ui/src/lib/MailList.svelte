@@ -126,7 +126,17 @@
   function onRowClick(e: MouseEvent, env: EmailEnvelope) {
     if (e.ctrlKey || e.metaKey) {
       // Ctrl/Cmd+click → toggle in multi-select; never opens the row.
+      // First ctrl-click on a fresh state promotes the currently-
+      // open row into the set so the user's "selection" mental
+      // model matches Outlook / Apple Mail: plain-click A, ctrl-
+      // click B, drag → both A and B move.  Without this promotion
+      // A wasn't in the multi-set and got left behind on every
+      // batch operation, which is what looked like "the last
+      // selected mail won't move".
       const next = new Set(multiSelectedUids)
+      if (next.size === 0 && selectedUid != null && selectedUid !== env.uid) {
+        next.add(selectedUid)
+      }
       if (next.has(env.uid)) next.delete(env.uid)
       else next.add(env.uid)
       multiSelectedUids = next
