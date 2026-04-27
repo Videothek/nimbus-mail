@@ -497,7 +497,7 @@
                keeps the layer click-through so the row's drag /
                click still work in the gap. -->
           <div
-            class="absolute right-1 bottom-1 flex items-center gap-0.5 opacity-0 pointer-events-none transition-opacity
+            class="absolute right-1 bottom-3 flex items-center gap-0.5 opacity-0 pointer-events-none transition-opacity
                    group-hover:opacity-100 group-hover:pointer-events-auto
                    focus-within:opacity-100 focus-within:pointer-events-auto"
           >
