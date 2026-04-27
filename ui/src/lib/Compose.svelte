@@ -169,6 +169,17 @@
   // svelte-ignore state_referenced_locally
   let attachments = $state<Attachment[]>(initial?.attachments ?? [])
 
+  /** iMIP calendar payload set by `onEventSaved` when the user
+   *  attaches an event via "Add Event".  Threaded into
+   *  `send_email` so the SMTP layer emits the canonical iMIP
+   *  MIME tree (text/calendar inside the body's
+   *  multipart/alternative + a downloadable invite.ics) — that
+   *  shape is what Outlook / Apple Mail / Gmail / Thunderbird
+   *  recognise as a real invite, surfacing their native
+   *  Accept/Decline/Tentative buttons.  Plain `null` for ordinary
+   *  mails. */
+  let pendingCalendarPart = $state<{ method: string; ics: string } | null>(null)
+
   /** Human-readable label attached to every Nextcloud share minted
    *  from this Compose instance (#91).  Used to give each share an
    *  audit trail in the Nextcloud "Shared with others" view —
@@ -710,7 +721,7 @@
         // typed by hand stays labelled "Meeting link".
         isTalkLink: !!saved.url && createdTalkLink?.url === saved.url,
       })
-      attachments = [...attachments, built.attachment]
+      pendingCalendarPart = built.calendarPart
       editorApi?.appendHtml(built.html)
     } catch (e) {
       console.warn('Failed to build invite email', e)
@@ -1044,6 +1055,7 @@
           body_text: htmlToText(bodyHtml),
           body_html: bodyHtml || null,
           attachments,
+          calendar_part: pendingCalendarPart,
         },
       })
       // Flush deferred Talk-room invites (#86).  The room was minted

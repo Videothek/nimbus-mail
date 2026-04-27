@@ -242,7 +242,14 @@ pub fn build_outgoing_message(email: &OutgoingEmail) -> Result<Message, NimbusEr
         builder = builder.envelope(envelope);
     }
 
-    if email.attachments.is_empty() {
+    // The presence of a `calendar_part` forces the iMIP-flavoured
+    // tree (text/plain + text/html + text/calendar inside the
+    // alternative; the `.ics` also added as a separate attachment
+    // for download).  Otherwise the plain attach-or-not split
+    // applies as before.
+    if email.calendar_part.is_some() {
+        build_with_calendar(builder, email)
+    } else if email.attachments.is_empty() {
         build_body_only(builder, email)
     } else {
         build_with_attachments(builder, email)
@@ -385,4 +392,109 @@ fn build_with_attachments(
     builder
         .multipart(multipart)
         .map_err(|e| NimbusError::Protocol(format!("Failed to build email with attachments: {e}")))
+}
+
+/// Build an iMIP-flavoured invite email (#58).
+///
+/// Structure (matches what Google Calendar / Outlook generate):
+/// ```text
+/// multipart/mixed
+/// ├── multipart/alternative
+/// │   ├── text/plain                    ← fallback body
+/// │   ├── text/html                     ← rich body
+/// │   └── text/calendar; method=…       ← iTIP detection trigger
+/// ├── (regular user attachments, if any)
+/// └── application/ics; name="invite.ics"  ← downloadable .ics
+/// ```
+///
+/// The third `multipart/alternative` part is what makes
+/// Outlook / Apple Mail / Gmail / Thunderbird recognise the
+/// message as an iTIP invite and surface their native
+/// Accept / Decline / Tentative buttons.  Without it, those
+/// clients just see a regular email with a calendar attachment
+/// and don't render the RSVP UI.
+///
+/// Keeping the `.ics` as a downloadable attachment too is
+/// belt-and-braces: clients that don't surface RSVP buttons
+/// (older Outlook web access, basic webmail) can still import
+/// the event manually by clicking the file.
+fn build_with_calendar(
+    builder: MessageBuilder,
+    email: &OutgoingEmail,
+) -> Result<Message, NimbusError> {
+    let cal = email
+        .calendar_part
+        .as_ref()
+        .expect("build_with_calendar called without calendar_part");
+
+    let calendar_content_type: ContentType = format!(
+        "text/calendar; method={}; charset=utf-8",
+        cal.method
+    )
+    .parse()
+    .map_err(|e| NimbusError::Protocol(format!("Bad calendar content-type: {e}")))?;
+
+    // Body alternative — text/plain (always), text/html (if
+    // present), text/calendar (always).  Order matters: clients
+    // pick the LAST alternative they understand, so iTIP-aware
+    // clients land on text/calendar (and show RSVP UI) while
+    // text-only clients fall back to text/html → text/plain.
+    //
+    // `MultiPart::alternative()` returns a builder that becomes a
+    // MultiPart only after the first `.singlepart()`; we always
+    // seed with text/plain (possibly empty) so the chain is sane.
+    let plain_body = email.body_text.clone().unwrap_or_default();
+    let mut alternative = MultiPart::alternative().singlepart(
+        SinglePart::builder()
+            .header(ContentType::TEXT_PLAIN)
+            .body(plain_body),
+    );
+    if let Some(html) = &email.body_html {
+        alternative = alternative.singlepart(
+            SinglePart::builder()
+                .header(ContentType::TEXT_HTML)
+                .body(html.clone()),
+        );
+    }
+    alternative = alternative.singlepart(
+        SinglePart::builder()
+            .header(calendar_content_type.clone())
+            .body(cal.ics.clone()),
+    );
+
+    // Outer multipart/mixed: body alternative + user attachments
+    // + the downloadable .ics file copy.
+    let mut mixed = MultiPart::mixed().multipart(alternative);
+    for attachment in &email.attachments {
+        let content_type = attachment
+            .content_type
+            .parse::<ContentType>()
+            .unwrap_or_else(|_| ContentType::parse("application/octet-stream").unwrap());
+        let part = match &attachment.content_id {
+            None => LettreAttachment::new(attachment.filename.clone())
+                .body(attachment.data.clone(), content_type),
+            Some(cid) => SinglePart::builder()
+                .header(ContentDisposition::attachment(&attachment.filename))
+                .header(ContentId::from(format!("<{cid}>")))
+                .header(content_type)
+                .body(attachment.data.clone()),
+        };
+        mixed = mixed.singlepart(part);
+    }
+    // Downloadable `.ics` for clients that can't import via the
+    // alternative.  `application/ics` (vs `text/calendar`) is the
+    // common pattern for the *attachment* form — Apple Mail and
+    // Outlook both recognise it as a calendar file with the
+    // standard "Add to Calendar" affordance.
+    let ics_attachment_type: ContentType = "application/ics; name=\"invite.ics\""
+        .parse()
+        .map_err(|e| NimbusError::Protocol(format!("Bad ics attach content-type: {e}")))?;
+    mixed = mixed.singlepart(
+        LettreAttachment::new("invite.ics".to_string())
+            .body(cal.ics.clone().into_bytes(), ics_attachment_type),
+    );
+
+    builder
+        .multipart(mixed)
+        .map_err(|e| NimbusError::Protocol(format!("Failed to build invite email: {e}")))
 }

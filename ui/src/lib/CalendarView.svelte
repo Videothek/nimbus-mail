@@ -899,7 +899,8 @@
           subject: built.subject,
           body_text: built.text,
           body_html: built.html,
-          attachments: [built.attachment],
+          attachments: [],
+          calendar_part: built.calendarPart,
         },
       })
     } catch (e) {

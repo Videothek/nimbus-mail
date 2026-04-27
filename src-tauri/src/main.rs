@@ -2601,12 +2601,17 @@ async fn send_event_rsvp(
         subject,
         body_text: Some(body_text),
         body_html: Some(body_html),
-        attachments: vec![nimbus_core::models::Attachment {
-            filename: "invite-reply.ics".to_string(),
-            content_type: "text/calendar; method=REPLY; charset=utf-8".to_string(),
-            data: reply_ics.into_bytes(),
-            content_id: None,
-        }],
+        attachments: vec![],
+        // Use the iMIP MIME structure (text/calendar inside the
+        // multipart/alternative + downloadable invite-reply.ics)
+        // so the organiser's mail client recognises this as an
+        // RSVP and pairs it back to the original invite — same
+        // shape an Outlook / Apple Mail / Google Calendar REPLY
+        // uses on the wire.
+        calendar_part: Some(nimbus_core::models::CalendarPart {
+            method: "REPLY".to_string(),
+            ics: reply_ics,
+        }),
     };
 
     let client = nimbus_smtp::SmtpClient::connect(
