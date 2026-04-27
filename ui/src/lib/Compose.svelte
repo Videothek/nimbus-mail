@@ -26,6 +26,7 @@
   import NextcloudFilePicker from './NextcloudFilePicker.svelte'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
   import EventEditor, { type SavedEvent } from './EventEditor.svelte'
+  import { openComposeInStandaloneWindow } from './standaloneComposeWindow'
 
   /** Slim Nextcloud account row — same shape `TalkView` / `Sidebar` use.
       We only need the id to pass to the Talk + Calendar commands. */
@@ -113,8 +114,19 @@
     accountId: string
     initial?: ComposeInitial
     onclose: () => void
+    /** True when Compose is the root of a popped-out standalone
+        window (#110).  Hides the "Pop out" button (would just spawn
+        another duplicate) and removes the modal overlay so the
+        component fills the whole window. */
+    inStandaloneWindow?: boolean
   }
-  let { accounts, accountId, initial, onclose }: Props = $props()
+  let {
+    accounts,
+    accountId,
+    initial,
+    onclose,
+    inStandaloneWindow = false,
+  }: Props = $props()
 
   // ── From: picker state ──────────────────────────────────────
   // The id is the canonical handle (used for `send_email`); the rest
@@ -932,6 +944,42 @@
     }
   }
 
+  /** Snapshot the current Compose state into a popout payload, open
+   *  a standalone Compose window with it, and dismiss this modal.
+   *  The popped-out window's `Compose` mounts with the same fields
+   *  the user has typed so far — so this is "move my draft into a
+   *  separate window" rather than "open a fresh blank Compose".
+   *  Hidden when we're already inside the standalone window. */
+  async function popoutCompose() {
+    try {
+      await openComposeInStandaloneWindow({
+        accountId: fromAccountId,
+        initial: {
+          to,
+          cc,
+          bcc,
+          subject,
+          body,
+          attachments,
+          // Preserve the reply / draft / external-share context the
+          // current modal was opened with so the popped-out window
+          // continues to behave as a reply / draft edit / etc.
+          in_reply_to: initial?.in_reply_to ?? null,
+          nextcloudLinks: initial?.nextcloudLinks,
+          talkLink: initial?.talkLink,
+          draftSource: initial?.draftSource,
+        },
+      })
+    } catch (e) {
+      console.warn('openComposeInStandaloneWindow failed', e)
+      return
+    }
+    // Close the modal silently — the popped-out window owns the
+    // state now.  `onclose` triggers the parent's refresh bump
+    // which is harmless here.
+    onclose()
+  }
+
   function cancel() {
     // No local persistence — if the user wants to resume later they
     // need to click "Save draft" first (which APPENDs to IMAP Drafts).
@@ -962,23 +1010,51 @@
   }
 </script>
 
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" role="dialog" aria-modal="true">
-  <!-- Resizable via native CSS `resize: both`. We seed a comfortable
-       720 × 80vh default and then constrain:
-         min-w/h — keep the form usable once labels and toolbar fit;
-         max-w/h — always leave 5vw of breathing room around the edges
-                   so the dialog doesn't clip under the title bar.
-       `overflow: hidden` is required for the resize handle to appear
-       (browsers only show it on overflow-managed elements); the inner
-       flex-column already scrolls the body region, so the modal
-       itself never needs to scroll. -->
-  <div
-    class="compose-modal bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col"
-    style="resize: both; overflow: hidden; width: 720px; height: 80vh; min-width: 480px; min-height: 420px; max-width: 95vw; max-height: 95vh;"
-  >
-    <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
+<!-- In standalone-window mode we drop the modal overlay + the fixed
+     resizable card and let Compose fill the whole window.  The OS
+     window itself is the resizable container.  The body of the form
+     is shared via the `composeBody` snippet so we don't duplicate
+     several hundred lines of template across the two branches. -->
+{#if inStandaloneWindow}
+  <div class="h-full w-full flex flex-col bg-surface-50 dark:bg-surface-900" role="dialog" aria-modal="false">
+    {@render composeBody()}
+  </div>
+{:else}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" role="dialog" aria-modal="true">
+    <!-- Resizable via native CSS `resize: both`. We seed a comfortable
+         720 × 80vh default and then constrain:
+           min-w/h — keep the form usable once labels and toolbar fit;
+           max-w/h — always leave 5vw of breathing room around the edges
+                     so the dialog doesn't clip under the title bar.
+         `overflow: hidden` is required for the resize handle to appear
+         (browsers only show it on overflow-managed elements); the inner
+         flex-column already scrolls the body region, so the modal
+         itself never needs to scroll. -->
+    <div
+      class="compose-modal bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col"
+      style="resize: both; overflow: hidden; width: 720px; height: 80vh; min-width: 480px; min-height: 420px; max-width: 95vw; max-height: 95vh;"
+    >
+      {@render composeBody()}
+    </div>
+  </div>
+{/if}
+
+{#snippet composeBody()}
+    <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between gap-2">
       <h2 class="text-base font-semibold">New message</h2>
-      <button class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100" onclick={cancel} aria-label="Close">✕</button>
+      <div class="flex items-center gap-2">
+        {#if !inStandaloneWindow}
+          <!-- Pop the modal out into its own resizable window (#110).
+               Hidden inside the standalone window itself — there's
+               nothing to pop out of when you're already a window. -->
+          <button
+            class="btn btn-sm preset-outlined-surface-500 text-xs"
+            onclick={() => void popoutCompose()}
+            title="Open this draft in a separate window"
+          >↗ Pop out</button>
+        {/if}
+        <button class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100" onclick={cancel} aria-label="Close">✕</button>
+      </div>
     </header>
 
     <!-- Body is a flex column so the RichTextEditor slot can claim
@@ -1112,8 +1188,7 @@
       <button class="btn preset-outlined-surface-500" disabled={sending} onclick={saveDraft}>Save draft</button>
       <button class="btn preset-outlined-surface-500 ml-auto" onclick={cancel}>Cancel</button>
     </footer>
-  </div>
-</div>
+{/snippet}
 
 {#if showNcPicker}
   <NextcloudFilePicker
