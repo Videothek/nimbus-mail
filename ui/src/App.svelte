@@ -516,27 +516,37 @@
    *  rendered list, or when the user has explicitly opted out via
    *  `appPrefs.auto_advance_after_remove`. */
   function onMessageRemoved(removedUid: number) {
-    let nextUid: number | null = null
-    let nextAccountId: string | null = null
+    // Auto-advance only fires when the removed message is the one
+    // currently open in the reading pane.  For drag-and-drop moves
+    // (#89) the user typically drags a non-selected row to a folder
+    // — yanking the pane to that row's neighbour would be
+    // disorienting, so we leave the current selection alone.
+    const wasSelected = selectedUid === removedUid
 
-    if (appPrefs?.auto_advance_after_remove ?? true) {
-      const idx = mailListEnvelopes.findIndex((e) => e.uid === removedUid)
-      if (idx >= 0) {
-        // Visually the list is sorted newest-first, so the row
-        // "below" the current one is `idx + 1` (older message).
-        // When the removed row was at the bottom, we step up to
-        // `idx - 1` instead, matching what every mainstream client
-        // does after deleting the oldest visible mail.
-        const next = mailListEnvelopes[idx + 1] ?? mailListEnvelopes[idx - 1]
-        if (next) {
-          nextUid = next.uid
-          nextAccountId = next.account_id || null
+    if (wasSelected) {
+      let nextUid: number | null = null
+      let nextAccountId: string | null = null
+
+      if (appPrefs?.auto_advance_after_remove ?? true) {
+        const idx = mailListEnvelopes.findIndex((e) => e.uid === removedUid)
+        if (idx >= 0) {
+          // Visually the list is sorted newest-first, so the row
+          // "below" the current one is `idx + 1` (older message).
+          // When the removed row was at the bottom, we step up to
+          // `idx - 1` instead, matching what every mainstream
+          // client does after deleting the oldest visible mail.
+          const next = mailListEnvelopes[idx + 1] ?? mailListEnvelopes[idx - 1]
+          if (next) {
+            nextUid = next.uid
+            nextAccountId = next.account_id || null
+          }
         }
       }
+
+      selectedUid = nextUid
+      selectedMessageAccountId = nextAccountId
     }
 
-    selectedUid = nextUid
-    selectedMessageAccountId = nextAccountId
     refreshToken++
   }
 
@@ -884,6 +894,7 @@
         onselectfolder={selectFolder}
         oncompose={() => openCompose()}
         onaccountschanged={checkAccounts}
+        onmessagemoved={onMessageRemoved}
       />
       <!-- Mail-list column: SearchBar on top, then either MailList
            or SearchResults depending on whether the user is

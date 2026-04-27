@@ -68,6 +68,11 @@
      *  map flows back into the Sidebar's `accounts` prop on the
      *  next render. */
     onaccountschanged?: () => void
+    /** Fires after a drag-and-drop move (#89) succeeds.  Parent
+     *  uses it to drop the source-folder envelope from `MailList`
+     *  and trigger the auto-advance flow (#99) — the moved UID
+     *  flows in here so it can pick the next neighbour. */
+    onmessagemoved?: (removedUid: number) => void
   }
   let {
     accounts = [],
@@ -78,11 +83,62 @@
     onselectfolder,
     oncompose,
     onaccountschanged,
+    onmessagemoved,
   }: Props = $props()
 
   let folders = $state<Folder[]>([])
   let loading = $state(true)
   let error = $state('')
+
+  // ── Drag-and-drop drop targets (#89) ───────────────────────────
+  // Folder rows accept drags from `MailList` carrying our private
+  // `application/x-nimbus-mail` payload.  `dragOverFolder` drives a
+  // subtle highlight on the hovered row.  We swallow drops onto the
+  // current source folder (`folder === payload.folder`) so a misfire
+  // doesn't trip the IMAP server with a move-to-self request.
+  let dragOverFolder = $state<string | null>(null)
+
+  function isMailDrag(e: DragEvent): boolean {
+    return !!e.dataTransfer?.types.includes('application/x-nimbus-mail')
+  }
+
+  function onFolderDragOver(e: DragEvent, target: Folder) {
+    if (!isMailDrag(e)) return
+    e.preventDefault() // allow drop
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    dragOverFolder = target.name
+  }
+
+  function onFolderDragLeave(target: Folder) {
+    if (dragOverFolder === target.name) dragOverFolder = null
+  }
+
+  async function onFolderDrop(e: DragEvent, target: Folder) {
+    dragOverFolder = null
+    if (!isMailDrag(e)) return
+    e.preventDefault()
+    const raw = e.dataTransfer?.getData('application/x-nimbus-mail')
+    if (!raw) return
+    let payload: { accountId: string; folder: string; uid: number }
+    try {
+      payload = JSON.parse(raw)
+    } catch {
+      return
+    }
+    if (target.name === payload.folder) return // move-to-self
+    try {
+      await invoke('move_message', {
+        accountId: payload.accountId,
+        folder: payload.folder,
+        uid: payload.uid,
+        destFolder: target.name,
+      })
+      onmessagemoved?.(payload.uid)
+    } catch (err) {
+      console.warn('move_message via drag-and-drop failed', err)
+      error = formatError(err) || 'Failed to move message'
+    }
+  }
 
   // ── Folder-management state ─────────────────────────────────
   // Each of the three actions (new, rename, delete) owns a single
@@ -638,9 +694,14 @@
         class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors
           {selectedFolder === folder.name
             ? 'bg-primary-500/10 text-primary-500 font-medium'
-            : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            : dragOverFolder === folder.name
+              ? 'bg-primary-500/20 ring-2 ring-primary-500'
+              : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
         onclick={() => onselectfolder(folder.name)}
         oncontextmenu={(e) => openContextMenu(e, folder)}
+        ondragover={(e) => onFolderDragOver(e, folder)}
+        ondragleave={() => onFolderDragLeave(folder)}
+        ondrop={(e) => void onFolderDrop(e, folder)}
       >
         <span>{folderIcon(folder)}</span>
         <span class="flex-1 text-left truncate">{displayName(folder)}</span>
