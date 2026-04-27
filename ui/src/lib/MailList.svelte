@@ -597,6 +597,34 @@
         Move to folder…
       {/if}
     </button>
+    <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
+    <button
+      type="button"
+      class="w-full text-left px-3 py-1.5 hover:bg-red-500/10 hover:text-red-500"
+      onclick={() => {
+        if (!contextMenu) return
+        // Single-row delete reuses the row-level `quickDelete` (which
+        // already feeds through `onmessagemoved` for auto-advance).
+        // Multi-row batches iterate the group sequentially —
+        // `delete_message` opens its own short-lived IMAP session per
+        // call, but unlike MOVE we don't have a batched server-side
+        // command yet.  N is small in practice (the user just
+        // hand-picked the rows) so the overhead is acceptable.
+        if (groupSize > 1) {
+          for (const env of ctxGroup) void quickDelete(env)
+          multiSelectedUids = new Set()
+        } else {
+          void quickDelete(contextMenu.env)
+        }
+        closeContextMenu()
+      }}
+    >
+      {#if groupSize > 1}
+        Delete {groupSize} messages
+      {:else}
+        Delete
+      {/if}
+    </button>
   </div>
 {/if}
 
