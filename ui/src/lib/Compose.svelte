@@ -496,6 +496,17 @@
   function onTalkRoomCreated(room: TalkRoom, participants: string[]) {
     createdTalkLink = { name: room.display_name, url: room.web_url }
     talkRoomToken = room.token
+    // Subject ↔ Talk-room name sync.  The modal pre-fills its
+    // "Room name" field from `subject` already, so the
+    // subject-filled-first case lands correctly server-side.  When
+    // the user opened the modal with an empty subject and typed a
+    // room name there, copy it back into the subject so the
+    // outgoing mail isn't subject-less.  We only auto-fill — we
+    // never overwrite a subject the user already typed (that would
+    // clobber a deliberate "subject != room name" choice).
+    if (!subject.trim() && room.display_name.trim()) {
+      subject = room.display_name
+    }
     // The modal is mounted with `deferParticipants={true}`, so the
     // Talk room itself was minted empty.  Stash the entered list
     // here; `send()` POSTs them to Talk once the mail actually goes
