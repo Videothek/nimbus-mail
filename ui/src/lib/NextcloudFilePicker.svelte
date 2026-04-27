@@ -51,9 +51,24 @@
      * are hidden, and a "Save here" button appears in the footer).
      */
     onpickfolder?: (accountId: string, folderPath: string) => void
+    /**
+     * Optional human-readable label that gets attached to every
+     * share created from this picker (#91).  Compose passes the
+     * mail's recipient string so each share lands in Nextcloud's
+     * "Shared with others" list under "who got this link" rather
+     * than the default auto-generated name.  Empty / undefined
+     * leaves Nextcloud's auto-naming intact.
+     */
+    shareLabel?: string
     onclose: () => void
   }
-  let { onpicked, onlinks, onpickfolder, onclose }: Props = $props()
+  let {
+    onpicked,
+    onlinks,
+    onpickfolder,
+    shareLabel,
+    onclose,
+  }: Props = $props()
 
   let pickFolderMode = $derived(onpickfolder != null)
 
@@ -158,6 +173,7 @@
             ncId: accountId,
             path: p,
             password: pw,
+            label: shareLabel?.trim() || null,
           })
           return { filename: basename(p), url } satisfies ShareLink
         }),

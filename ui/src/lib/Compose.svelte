@@ -166,6 +166,26 @@
   let body = $state(initial?.body ?? '')
   // svelte-ignore state_referenced_locally
   let attachments = $state<Attachment[]>(initial?.attachments ?? [])
+
+  /** Human-readable label attached to every Nextcloud share minted
+   *  from this Compose instance (#91).  Used to give each share an
+   *  audit trail in the Nextcloud "Shared with others" view —
+   *  "shared with bob@…, alice@…" rather than the default
+   *  auto-generated name.  Empty when the user hasn't typed any
+   *  recipients yet; we hand that through as `null` so Nextcloud's
+   *  default naming kicks in.  Truncated at 96 chars because the
+   *  OCS label field has a length limit and most share-list UIs
+   *  ellipsize anything longer anyway. */
+  let shareLabel = $derived.by(() => {
+    const recipients = [to, cc, bcc].map((v) => v.trim()).filter(Boolean).join(', ')
+    if (!recipients) return ''
+    const prefix = 'For: '
+    const max = 96
+    return recipients.length + prefix.length <= max
+      ? `${prefix}${recipients}`
+      : `${prefix}${recipients.slice(0, max - prefix.length - 1)}…`
+  })
+
   // Whether the Nextcloud file picker modal is mounted. Picker is lazy
   // so we don't hit `get_nextcloud_accounts` / PROPFIND until the user
   // actually clicks "Attach from Nextcloud".
@@ -1192,6 +1212,7 @@
 
 {#if showNcPicker}
   <NextcloudFilePicker
+    {shareLabel}
     onpicked={(picked) => {
       // Stamp a content_id on each newly-arrived attachment so the
       // `/` editor shortcut can reference it — the Nextcloud picker

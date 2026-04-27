@@ -135,21 +135,24 @@ pub async fn create_public_share(
     app_password: &str,
     path: &str,
     password: Option<&str>,
+    label: Option<&str>,
 ) -> Result<PublicShare, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let url = format!("{server}/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json");
 
     tracing::debug!(
-        "POST {url} for path {path} (password: {})",
-        if password.is_some() { "yes" } else { "no" }
+        "POST {url} for path {path} (password: {}, label: {})",
+        if password.is_some() { "yes" } else { "no" },
+        if label.is_some() { "yes" } else { "no" }
     );
 
     let http = client::build()?;
-    // Build the form pairs dynamically — `password` is only added when
-    // the caller actually supplied one. Passing an empty `password=`
-    // makes Nextcloud reject the request with "Password too short" on
-    // some configurations, so omitting the field entirely is safer
-    // than sending an empty value.
+    // Build the form pairs dynamically — `password` and `label` are
+    // only added when the caller actually supplied them.  Passing an
+    // empty `password=` makes Nextcloud reject the request with
+    // "Password too short" on some configurations; an empty `label=`
+    // overwrites Nextcloud's auto-derived name with an empty string.
+    // Omitting either field entirely is safer than sending empty.
     let share_type = SHARE_TYPE_PUBLIC_LINK.to_string();
     let permissions = PERM_READ_ONLY.to_string();
     let mut form: Vec<(&str, &str)> = vec![
@@ -160,6 +163,10 @@ pub async fn create_public_share(
     if let Some(pw) = password
         && !pw.is_empty() {
             form.push(("password", pw));
+        }
+    if let Some(lbl) = label
+        && !lbl.is_empty() {
+            form.push(("label", lbl));
         }
 
     let resp = http

@@ -549,11 +549,18 @@ async fn download_nextcloud_file(
 /// configured password policy (length, complexity), so a too-weak
 /// password surfaces as a `NimbusError::Nextcloud` from the server
 /// rather than a local validation rule we have to maintain.
+///
+/// `label` is optional and surfaces in Nextcloud's "Shared with
+/// others" list (#91).  Compose passes the recipient string so each
+/// share gets an audit trail of "who got this link" instead of the
+/// default auto-generated name.  Passing `None` (or an empty string)
+/// leaves Nextcloud's auto-naming intact.
 #[tauri::command]
 async fn create_nextcloud_share(
     nc_id: String,
     path: String,
     password: Option<String>,
+    label: Option<String>,
 ) -> Result<String, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
@@ -563,6 +570,7 @@ async fn create_nextcloud_share(
         &app_password,
         &path,
         password.as_deref(),
+        label.as_deref(),
     )
     .await?;
     Ok(share.url)
