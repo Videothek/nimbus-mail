@@ -21,6 +21,7 @@
   import RichTextEditor, {
     type EditorApi,
     type ContactSuggestion,
+    type ExtraTab,
   } from './RichTextEditor.svelte'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
   import NextcloudFilePicker, { type ShareLink } from './NextcloudFilePicker.svelte'
@@ -185,6 +186,19 @@
       ? `${prefix}${recipients}`
       : `${prefix}${recipients.slice(0, max - prefix.length - 1)}…`
   })
+
+  /** Extra tabs we contribute to the editor's ribbon (#103
+   *  follow-up).  Wrapped in a `$derived` because the snippet
+   *  symbols aren't bound until after the template has parsed —
+   *  declaring this as a plain `let` would capture `undefined`. */
+  let composeExtraTabs = $derived<ExtraTab[]>([
+    {
+      id: 'attach',
+      label: 'Attach',
+      icon: '📎',
+      content: attachTabContent,
+    },
+  ])
 
   /** Shares minted from this Compose during the current draft.
    *  We hold onto each one's `id` + `ncId` so when the recipient
@@ -1315,7 +1329,8 @@
           attachmentsForRef={attachments
             .filter((a): a is Attachment & { content_id: string } => !!a.content_id)
             .map((a) => ({ content_id: a.content_id, filename: a.filename }))}
-          actionsTrailing={composeActions}
+          actionsTrailing={sendActions}
+          extraTabs={composeExtraTabs}
         />
       </div>
 
@@ -1338,46 +1353,45 @@
 {/snippet}
 
 <!--
-  Compose's contribution to the unified toolbar (#103).  Lives at
-  the right edge of `RichTextEditor`'s toolbar row via the
-  `actionsTrailing` snippet prop.  Two visual groups:
-
-    - **Attach & share** — paperclip / Nextcloud / Talk / Event.
-    - **Send actions** — Save draft, Send (primary), Discard.
-
-  Buttons are icon + tiny stacked label so the row stays compact
-  while still being scannable.  Send is the primary-filled button
-  and lives last in the row so it has the same visual weight as
-  every other "primary action top-right" the rest of the app uses.
+  Compose's contribution to the editor's tab strip + tab-content
+  area (#103).  We register an "Attach" tab so Attach / Files /
+  Talk / Event live alongside the editor's Format / Insert /
+  Layout tabs in the same ribbon, AND a tab-strip-trailing snippet
+  for the Save / Discard / Send actions which stay visible
+  regardless of which tab is open (matching Outlook's "always-on
+  primary actions in the ribbon header").
 -->
-{#snippet composeActions()}
-  <!-- Attach & share group -->
-  <label class="ctb" title="Attach a file from your computer">
-    <span class="ctb-icon">📎</span>
-    <span class="ctb-label">Attach</span>
+
+<!-- Attach tab panel — same `.rt-btn` styling the editor's panels
+     use so the Attach tab is visually indistinguishable from a
+     built-in tab. -->
+{#snippet attachTabContent()}
+  <label class="rt-btn cursor-pointer" title="Attach a file from your computer">
+    <span class="rt-btn-icon">📎</span>
+    <span class="rt-btn-label">Attach</span>
     <input type="file" multiple class="hidden" onchange={onPickFiles} />
   </label>
   <button
     type="button"
-    class="ctb"
+    class="rt-btn"
     title="Attach a file or link from Nextcloud"
     onclick={() => (showNcPicker = true)}
   >
-    <span class="ctb-icon">☁️</span>
-    <span class="ctb-label">Files</span>
+    <span class="rt-btn-icon">☁️</span>
+    <span class="rt-btn-label">Files</span>
   </button>
   <button
     type="button"
-    class="ctb"
+    class="rt-btn"
     title="Create a Nextcloud Talk room with the current recipients"
     onclick={openTalkModal}
   >
-    <span class="ctb-icon">💬</span>
-    <span class="ctb-label">Talk</span>
+    <span class="rt-btn-icon">💬</span>
+    <span class="rt-btn-label">Talk</span>
   </button>
   <button
     type="button"
-    class="ctb"
+    class="rt-btn"
     disabled={openingEvent}
     title={
       createdTalkLink
@@ -1386,13 +1400,15 @@
     }
     onclick={openEventEditor}
   >
-    <span class="ctb-icon">{openingEvent ? '⏳' : '📅'}</span>
-    <span class="ctb-label">{openingEvent ? 'Creating…' : 'Event'}</span>
+    <span class="rt-btn-icon">{openingEvent ? '⏳' : '📅'}</span>
+    <span class="rt-btn-label">{openingEvent ? 'Creating…' : 'Event'}</span>
   </button>
+{/snippet}
 
-  <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
-
-  <!-- Send actions group -->
+<!-- Always-visible Save / Discard / Send actions in the tab-strip
+     trailing slot.  Compact (`.ctb`) so they fit alongside the tab
+     buttons.  Send is primary-filled and rightmost. -->
+{#snippet sendActions()}
   <button
     type="button"
     class="ctb"
@@ -1401,7 +1417,7 @@
     onclick={saveDraft}
   >
     <span class="ctb-icon">💾</span>
-    <span class="ctb-label">Save draft</span>
+    <span class="ctb-label">Save</span>
   </button>
   <button
     type="button"

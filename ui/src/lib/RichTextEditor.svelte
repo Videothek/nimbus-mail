@@ -89,13 +89,39 @@
      *  change. */
     attachmentsForRef?: AttachmentRef[]
     /** Caller-provided actions appended to the right side of the
-     *  toolbar (#103).  Compose uses this to colocate the
-     *  Attach / Talk / Files / Send / Save Draft / Discard buttons
-     *  with the rich-text controls so the user has one toolbar
-     *  instead of a top-row + bottom-footer split.  When omitted
-     *  the toolbar ends at the rich-text group, which is what
-     *  every other future embedder gets by default. */
+     *  toolbar (#103).  Compose uses this to colocate the Save /
+     *  Discard / Send buttons with the rich-text controls so the
+     *  user has one toolbar instead of a top-row + bottom-footer
+     *  split.  When omitted the tab strip ends at the trailing
+     *  divider, which is what every future embedder without send-
+     *  style actions gets by default. */
     actionsTrailing?: import('svelte').Snippet
+    /** Extra tabs the embedder wants to add to the toolbar (#103
+     *  follow-up).  Compose contributes a single "Attach" tab so
+     *  Attach / NC Files / Talk / Event live in the same ribbon as
+     *  the rich-text controls.  Each entry is `{ id, label, icon,
+     *  content }` — `content` is rendered as the panel below the
+     *  tab strip when the tab is active.  Empty / omitted → no
+     *  extra tabs. */
+    extraTabs?: ExtraTab[]
+  }
+
+  /** Embedder-provided tab spec.  Mirrors the ribbon tabs the
+   *  editor renders by default but lets a parent like Compose add
+   *  Compose-only actions (Attach / Files / Talk / Event) into the
+   *  same tab strip as Format / Insert / Layout. */
+  export interface ExtraTab {
+    /** Stable id used as the `activeTab` value when this tab is
+     *  selected.  Avoid collisions with the built-in tab ids
+     *  (`'format' | 'insert' | 'layout'`). */
+    id: string
+    /** Tab strip label, e.g. "Attach". */
+    label: string
+    /** Optional emoji / icon shown left of the label in the strip. */
+    icon?: string
+    /** Panel contents — rendered below the tab strip when this tab
+     *  is the active one. */
+    content: import('svelte').Snippet
   }
 
   /** A row in the `@` contact picker. */
@@ -130,6 +156,7 @@
     oncontactpicked,
     attachmentsForRef = [],
     actionsTrailing,
+    extraTabs = [],
   }: Props = $props()
 
   // \u2500\u2500 Inline `@` and `/` picker state \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -791,6 +818,46 @@
     showTablePicker = false
   }
 
+  // ── Ribbon tab + emoji-picker state (#103 follow-up) ──────────
+  // The toolbar is split into Outlook-style tabs.  `activeTab`
+  // drives which panel is rendered below the tab strip; values
+  // beyond the built-in three come from the embedder's
+  // `extraTabs` prop (Compose contributes "attach").
+  type BuiltinTab = 'format' | 'insert' | 'layout'
+  let activeTab = $state<BuiltinTab | string>('format')
+
+  let showEmojiPicker = $state(false)
+
+  /** Curated set the emoji popup shows.  Keeping this small and
+   *  hand-picked beats a full-Unicode picker for the email-compose
+   *  use case — most users want a familiar handful, and the popup
+   *  fits in one screen of grid without paging. */
+  const EMOJI_SET = [
+    '😀','😃','😄','😁','😆','😅','😂','🤣',
+    '😊','😇','🙂','🙃','😉','😌','😍','🥰',
+    '😘','😋','😛','😝','😜','🤪','😎','🤓',
+    '🥳','😏','😒','😔','😢','😭','😤','😡',
+    '😱','😳','🥵','🥶','😴','🤔','🤨','🙄',
+    '👍','👎','👌','✌️','🤞','🤟','🤘','👏',
+    '🙌','🤝','🙏','💪','✍️','👈','👉','👆',
+    '❤️','🧡','💛','💚','💙','💜','🤎','🖤',
+    '💔','❣️','💕','💖','💯','✅','❌','⚠️',
+    '❓','❗','💡','🎉','🎊','⭐','🌟','✨',
+    '🔥','💥','📌','📎','📋','📝','📅','🕐',
+    '🔔','📞','📧','📤','📥','💾','🗑','📁',
+  ]
+
+  function insertEmoji(e: string) {
+    cmd().insertContent(e).run()
+    showEmojiPicker = false
+  }
+
+  /** Strip every mark + collapse the current block down to the
+   *  default paragraph node.  Outlook's "Clear formatting" button. */
+  function clearFormatting() {
+    cmd().unsetAllMarks().clearNodes().run()
+  }
+
   function setColor(e: Event) {
     const color = (e.target as HTMLInputElement).value
     cmd().setColor(color).run()
@@ -802,7 +869,9 @@
   }
 
   // Reactive "is active" helpers for styling toolbar buttons.
-  const ACTIVE_CLS = 'bg-surface-300 dark:bg-surface-600'
+  // Returns the `is-active` class which `.rt-btn` (panel buttons)
+  // and `.tb` (compact buttons) both pick up via `:global` rules.
+  const ACTIVE_CLS = 'is-active'
 
   function active(name: string, attrs?: Record<string, unknown>): string {
     return $editor?.isActive(name, attrs) ? ACTIVE_CLS : ''
@@ -814,7 +883,10 @@
 </script>
 
 <style>
-  /* Toolbar buttons — small, consistent touch targets. */
+  /* Compact toolbar buttons — used by the tab strip's undo/redo +
+     embedder-supplied trailing actions where vertical space is
+     scarce.  Same idiom as before; the ribbon's panel buttons get
+     `.rt-btn` styling instead. */
   .tb {
     display: inline-flex;
     align-items: center;
@@ -835,6 +907,99 @@
   }
   :global(.dark) .tb:hover {
     background: var(--color-surface-700);
+  }
+  .tb.is-active {
+    background: var(--color-surface-300);
+  }
+  :global(.dark) .tb.is-active {
+    background: var(--color-surface-600);
+  }
+
+  /* ── Ribbon-style tab strip (#103 follow-up) ─────────────────── */
+
+  /* Tab buttons.  Rounded-top chip with a primary-colour underline
+     when active, matching Outlook Web's ribbon tabs. */
+  :global(.rt-tab) {
+    padding: 0.45rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    background: transparent;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    border-top-left-radius: 0.25rem;
+    border-top-right-radius: 0.25rem;
+    line-height: 1;
+    transition: background 0.1s, border-color 0.1s, color 0.1s;
+  }
+  :global(.rt-tab:hover) {
+    background: var(--color-surface-200);
+  }
+  :global([data-mode='dark'] .rt-tab:hover) {
+    background: var(--color-surface-700);
+  }
+  :global(.rt-tab-active) {
+    color: var(--color-primary-500);
+    border-bottom-color: var(--color-primary-500);
+  }
+
+  /* Panel buttons — large stacked icon-above-label.  Outlook-Web
+     ribbon proportions: ~50px tall, 24px icon, 11px label. */
+  :global(.rt-btn) {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.125rem;
+    min-width: 3.25rem;
+    padding: 0.375rem 0.5rem;
+    border-radius: 0.375rem;
+    background: transparent;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+    position: relative;
+  }
+  :global(.rt-btn:hover) {
+    background: var(--color-surface-200);
+  }
+  :global([data-mode='dark'] .rt-btn:hover) {
+    background: var(--color-surface-700);
+  }
+  :global(.rt-btn-icon) {
+    font-size: 1.125rem;
+    line-height: 1;
+    height: 1.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  :global(.rt-btn-label) {
+    font-size: 0.6875rem;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  :global(.rt-btn-wide) {
+    min-width: 6rem;
+  }
+  :global(.rt-btn.is-active) {
+    background: rgb(from var(--color-primary-500) r g b / 0.15);
+    color: var(--color-primary-500);
+  }
+
+  /* Vertical rule between sub-groups inside a panel. */
+  :global(.rt-divider) {
+    display: inline-block;
+    width: 1px;
+    height: 2.25rem;
+    background: var(--color-surface-300);
+    margin: 0 0.375rem;
+    align-self: center;
+  }
+  :global([data-mode='dark'] .rt-divider) {
+    background: var(--color-surface-600);
   }
   /* Tiptap editor chrome — keep the editing area clean and consistent
      with the rest of the app. */
@@ -942,199 +1107,297 @@
      block parent too — `h-full` is simply ignored and the editor falls
      back to its intrinsic 200 px minimum. -->
 <div class="h-full flex flex-col min-h-0">
-  <!-- Toolbar -->
-  <div class="flex flex-wrap items-center gap-0.5 px-2 py-1.5 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 text-sm">
-    <!-- Font family picker — dropdown because 6 named families
-         wouldn't fit as individual toolbar buttons. The trigger
-         label tracks the font at the cursor: `currentFontLabel`
-         reads Tiptap's active textStyle attrs via `$editor`, which
-         re-emits on every transaction, so the button reflects
-         moves through text of different faces in real time.
-         Clicking outside closes the menu (see global listener
-         inside the `$effect` below). -->
-    <div class="relative inline-block">
+  <!-- ── Ribbon: tab strip + active panel (#103) ───────────────────
+       Outlook-style two-row toolbar.  Top row holds the tab labels
+       on the left, undo/redo + the embedder's send actions on the
+       right.  Bottom row renders the active tab's panel — bigger
+       icon-above-label buttons for a less flat, more discoverable
+       look than the previous single-row layout. -->
+  <div class="border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800">
+    <!-- Tab strip -->
+    <div class="flex items-stretch gap-0 px-2 pt-0.5" role="tablist">
       <button
         type="button"
-        class="tb"
-        title="Font family"
-        onclick={() => (showFontPicker = !showFontPicker)}
-      >
-        {currentFontLabel()} ▾
-      </button>
-      {#if showFontPicker}
-        <div
-          class="absolute z-20 mt-1 min-w-40 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md py-1"
-          role="menu"
-          tabindex="-1"
-          onclick={(e) => e.stopPropagation()}
-          onkeydown={(e) => e.key === 'Escape' && (showFontPicker = false)}
-        >
-          {#each FONT_FAMILIES as f (f.label)}
-            <button
-              type="button"
-              class="w-full text-left px-3 py-1 text-sm hover:bg-surface-200 dark:hover:bg-surface-800"
-              style={f.css ? `font-family: ${f.css};` : ''}
-              onclick={() => setFont(f.css)}
-            >{f.label}</button>
-          {/each}
-        </div>
-      {/if}
-    </div>
-
-    <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
-
-    <!-- Text style group -->
-    <button class="tb {active('bold')}" title="Bold" onclick={() => $editor?.chain().focus().toggleBold().run()}>
-      <strong>B</strong>
-    </button>
-    <button class="tb {active('italic')}" title="Italic" onclick={() => $editor?.chain().focus().toggleItalic().run()}>
-      <em>I</em>
-    </button>
-    <button class="tb {active('underline')}" title="Underline" onclick={() => $editor?.chain().focus().toggleUnderline().run()}>
-      <u>U</u>
-    </button>
-    <button class="tb {active('strike')}" title="Strikethrough" onclick={() => $editor?.chain().focus().toggleStrike().run()}>
-      <s>S</s>
-    </button>
-
-    <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
-
-    <!-- Headings -->
-    <button class="tb {active('heading', { level: 1 })}" title="Heading 1" onclick={() => toggleHeading(1)}>
-      H1
-    </button>
-    <button class="tb {active('heading', { level: 2 })}" title="Heading 2" onclick={() => toggleHeading(2)}>
-      H2
-    </button>
-    <button class="tb {active('heading', { level: 3 })}" title="Heading 3" onclick={() => toggleHeading(3)}>
-      H3
-    </button>
-
-    <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
-
-    <!-- Lists -->
-    <button class="tb {active('bulletList')}" title="Bullet list" onclick={() => $editor?.chain().focus().toggleBulletList().run()}>
-      &#8226; List
-    </button>
-    <button class="tb {active('orderedList')}" title="Numbered list" onclick={() => $editor?.chain().focus().toggleOrderedList().run()}>
-      1. List
-    </button>
-
-    <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
-
-    <!-- Alignment -->
-    <button class="tb {activeAttrs({ textAlign: 'left' })}" title="Align left" onclick={() => $editor?.chain().focus().setTextAlign('left').run()}>
-      &#x2261;L
-    </button>
-    <button class="tb {activeAttrs({ textAlign: 'center' })}" title="Align center" onclick={() => $editor?.chain().focus().setTextAlign('center').run()}>
-      &#x2261;C
-    </button>
-    <button class="tb {activeAttrs({ textAlign: 'right' })}" title="Align right" onclick={() => $editor?.chain().focus().setTextAlign('right').run()}>
-      &#x2261;R
-    </button>
-
-    <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
-
-    <!-- Colors -->
-    <label class="tb cursor-pointer" title="Text color">
-      A
-      <input type="color" class="w-0 h-0 opacity-0 absolute" onchange={setColor} />
-    </label>
-    <label class="tb cursor-pointer" title="Highlight color">
-      <span class="bg-yellow-200 px-0.5 rounded-sm">H</span>
-      <input type="color" value="#fde68a" class="w-0 h-0 opacity-0 absolute" onchange={setHighlight} />
-    </label>
-
-    <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
-
-    <!-- Insert group -->
-    <button class="tb {active('link')}" title="Insert link" onclick={setLink}>
-      Link
-    </button>
-
-    <!-- Image: two entry points. "Image" picks a local file and
-         embeds it as a data URL. "NC" opens the parent's Nextcloud
-         file picker (via `onrequestncimage`) so the user can drop
-         in a file they already have on their Nextcloud without
-         saving it locally first — consistent with how attachments
-         work in the Compose toolbar. Falls back to a URL prompt if
-         the embedder didn't wire up the Nextcloud callback. -->
-    <div class="relative inline-block">
-      <button class="tb" title="Insert image from local file" onclick={() => addImageFromFile()}>
-        Image
-      </button>
+        role="tab"
+        aria-selected={activeTab === 'format'}
+        class="rt-tab"
+        class:rt-tab-active={activeTab === 'format'}
+        onclick={() => (activeTab = 'format')}
+      >Format</button>
       <button
-        class="tb text-[10px]"
-        title={onrequestncimage ? 'Insert image from Nextcloud' : 'Insert image from URL'}
-        onclick={() => addImageFromNcOrUrl()}
-      >
-        {onrequestncimage ? 'NC' : 'URL'}
-      </button>
+        type="button"
+        role="tab"
+        aria-selected={activeTab === 'insert'}
+        class="rt-tab"
+        class:rt-tab-active={activeTab === 'insert'}
+        onclick={() => (activeTab = 'insert')}
+      >Insert</button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={activeTab === 'layout'}
+        class="rt-tab"
+        class:rt-tab-active={activeTab === 'layout'}
+        onclick={() => (activeTab = 'layout')}
+      >Layout</button>
+      {#each extraTabs as t (t.id)}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === t.id}
+          class="rt-tab"
+          class:rt-tab-active={activeTab === t.id}
+          onclick={() => (activeTab = t.id)}
+        >
+          {#if t.icon}<span class="mr-1">{t.icon}</span>{/if}{t.label}
+        </button>
+      {/each}
+
+      <!-- Top-right: undo/redo + caller's send-side actions.  Lives
+           in the tab strip rather than inside any panel because the
+           user expects Send + Save + Undo to be reachable
+           regardless of which tab is open. -->
+      <div class="ml-auto flex items-center gap-1 px-1">
+        <button class="tb" title="Undo (Ctrl+Z)" onclick={() => doUndo()}>↩</button>
+        <button class="tb" title="Redo (Ctrl+Y)" onclick={() => doRedo()}>↪</button>
+        {#if actionsTrailing}
+          <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
+          {@render actionsTrailing()}
+        {/if}
+      </div>
     </div>
 
-    <!-- Table: Outlook-style grid picker -->
-    <div class="relative inline-block">
-      <button class="tb" title="Insert table" onclick={() => (showTablePicker = !showTablePicker)}>
-        Table
-      </button>
-      {#if showTablePicker}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          class="absolute left-0 top-full mt-1 z-50 p-2 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-md shadow-lg"
-          onmouseleave={() => { tableHoverRows = 0; tableHoverCols = 0 }}
-        >
-          <div class="text-xs text-surface-500 mb-1 text-center">
-            {tableHoverRows > 0 ? `${tableHoverRows} × ${tableHoverCols}` : 'Pick size'}
-          </div>
-          <div class="grid gap-0.5" style="grid-template-columns: repeat({TABLE_GRID}, 1fr)">
-            {#each { length: TABLE_GRID } as _, r}
-              {#each { length: TABLE_GRID } as _, c}
+    <!-- Tab panel — flex row of large stacked-icon buttons.  Each
+         tab's content lives behind its own `{#if}` so swapping tabs
+         doesn't carry hidden DOM.  Dividers split logical sub-
+         groups within a panel for scannability. -->
+    <div class="flex flex-wrap items-center gap-0.5 px-2 py-1.5 min-h-[3rem]">
+      {#if activeTab === 'format'}
+        <!-- Font family — wider trigger, dropdown menu. -->
+        <div class="relative inline-block">
+          <button
+            type="button"
+            class="rt-btn rt-btn-wide"
+            title="Font family"
+            onclick={() => (showFontPicker = !showFontPicker)}
+          >
+            <span class="rt-btn-icon" aria-hidden="true">𝐀</span>
+            <span class="rt-btn-label">{currentFontLabel()} ▾</span>
+          </button>
+          {#if showFontPicker}
+            <div
+              class="absolute z-20 mt-1 min-w-44 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md py-1"
+              role="menu"
+              tabindex="-1"
+              onclick={(e) => e.stopPropagation()}
+              onkeydown={(e) => e.key === 'Escape' && (showFontPicker = false)}
+            >
+              {#each FONT_FAMILIES as f (f.label)}
                 <button
                   type="button"
-                  aria-label="{r + 1} × {c + 1} table"
-                  class="w-4 h-4 border rounded-sm cursor-pointer transition-colors
-                    {r < tableHoverRows && c < tableHoverCols
-                      ? 'bg-primary-500/40 border-primary-500'
-                      : 'bg-surface-100 dark:bg-surface-700 border-surface-300 dark:border-surface-600'}"
-                  onmouseenter={() => { tableHoverRows = r + 1; tableHoverCols = c + 1 }}
-                  onclick={() => insertTable(r + 1, c + 1)}
-                  tabindex="-1"
-                ></button>
+                  class="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-200 dark:hover:bg-surface-800"
+                  style={f.css ? `font-family: ${f.css};` : ''}
+                  onclick={() => setFont(f.css)}
+                >{f.label}</button>
               {/each}
-            {/each}
-          </div>
+            </div>
+          {/if}
         </div>
+
+        <span class="rt-divider"></span>
+
+        <!-- Text style -->
+        <button class="rt-btn {active('bold')}" title="Bold (Ctrl+B)" onclick={() => $editor?.chain().focus().toggleBold().run()}>
+          <span class="rt-btn-icon"><strong>B</strong></span>
+          <span class="rt-btn-label">Bold</span>
+        </button>
+        <button class="rt-btn {active('italic')}" title="Italic (Ctrl+I)" onclick={() => $editor?.chain().focus().toggleItalic().run()}>
+          <span class="rt-btn-icon"><em>I</em></span>
+          <span class="rt-btn-label">Italic</span>
+        </button>
+        <button class="rt-btn {active('underline')}" title="Underline (Ctrl+U)" onclick={() => $editor?.chain().focus().toggleUnderline().run()}>
+          <span class="rt-btn-icon"><u>U</u></span>
+          <span class="rt-btn-label">Underline</span>
+        </button>
+        <button class="rt-btn {active('strike')}" title="Strikethrough" onclick={() => $editor?.chain().focus().toggleStrike().run()}>
+          <span class="rt-btn-icon"><s>S</s></span>
+          <span class="rt-btn-label">Strike</span>
+        </button>
+
+        <span class="rt-divider"></span>
+
+        <!-- Colors -->
+        <label class="rt-btn cursor-pointer" title="Text color">
+          <span class="rt-btn-icon" style="border-bottom: 3px solid currentColor;">A</span>
+          <span class="rt-btn-label">Color</span>
+          <input type="color" class="w-0 h-0 opacity-0 absolute" onchange={setColor} />
+        </label>
+        <label class="rt-btn cursor-pointer" title="Highlight color">
+          <span class="rt-btn-icon"><span class="bg-yellow-200 dark:bg-yellow-300 px-0.5 rounded-sm text-surface-900">H</span></span>
+          <span class="rt-btn-label">Highlight</span>
+          <input type="color" value="#fde68a" class="w-0 h-0 opacity-0 absolute" onchange={setHighlight} />
+        </label>
+
+        <span class="rt-divider"></span>
+
+        <!-- Clear formatting — strips marks AND collapses to plain
+             paragraph (matches Outlook's "Clear all formatting"). -->
+        <button class="rt-btn" title="Clear all formatting" onclick={clearFormatting}>
+          <span class="rt-btn-icon">🧹</span>
+          <span class="rt-btn-label">Clear</span>
+        </button>
+      {:else if activeTab === 'insert'}
+        <button class="rt-btn {active('link')}" title="Insert link" onclick={setLink}>
+          <span class="rt-btn-icon">🔗</span>
+          <span class="rt-btn-label">Link</span>
+        </button>
+        <button class="rt-btn" title="Insert image from local file" onclick={() => addImageFromFile()}>
+          <span class="rt-btn-icon">🖼️</span>
+          <span class="rt-btn-label">Image</span>
+        </button>
+        <button
+          class="rt-btn"
+          title={onrequestncimage ? 'Insert image from Nextcloud' : 'Insert image from URL'}
+          onclick={() => addImageFromNcOrUrl()}
+        >
+          <span class="rt-btn-icon">{onrequestncimage ? '☁️' : '🌐'}</span>
+          <span class="rt-btn-label">{onrequestncimage ? 'NC image' : 'From URL'}</span>
+        </button>
+
+        <span class="rt-divider"></span>
+
+        <!-- Table picker -->
+        <div class="relative inline-block">
+          <button class="rt-btn" title="Insert table" onclick={() => (showTablePicker = !showTablePicker)}>
+            <span class="rt-btn-icon">▦</span>
+            <span class="rt-btn-label">Table</span>
+          </button>
+          {#if showTablePicker}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="absolute left-0 top-full mt-1 z-50 p-2 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-md shadow-lg"
+              onmouseleave={() => { tableHoverRows = 0; tableHoverCols = 0 }}
+            >
+              <div class="text-xs text-surface-500 mb-1 text-center">
+                {tableHoverRows > 0 ? `${tableHoverRows} × ${tableHoverCols}` : 'Pick size'}
+              </div>
+              <div class="grid gap-0.5" style="grid-template-columns: repeat({TABLE_GRID}, 1fr)">
+                {#each { length: TABLE_GRID } as _, r}
+                  {#each { length: TABLE_GRID } as _, c}
+                    <button
+                      type="button"
+                      aria-label="{r + 1} × {c + 1} table"
+                      class="w-4 h-4 border rounded-sm cursor-pointer transition-colors
+                        {r < tableHoverRows && c < tableHoverCols
+                          ? 'bg-primary-500/40 border-primary-500'
+                          : 'bg-surface-100 dark:bg-surface-700 border-surface-300 dark:border-surface-600'}"
+                      onmouseenter={() => { tableHoverRows = r + 1; tableHoverCols = c + 1 }}
+                      onclick={() => insertTable(r + 1, c + 1)}
+                      tabindex="-1"
+                    ></button>
+                  {/each}
+                {/each}
+              </div>
+            </div>
+          {/if}
+        </div>
+
+        <button class="rt-btn" title="Horizontal rule" onclick={() => cmd().setHorizontalRule().run()}>
+          <span class="rt-btn-icon">―</span>
+          <span class="rt-btn-label">HR</span>
+        </button>
+
+        <span class="rt-divider"></span>
+
+        <!-- Emoji picker — popup grid of curated emojis (#103
+             follow-up).  Click outside or pick an emoji to dismiss. -->
+        <div class="relative inline-block">
+          <button class="rt-btn" title="Insert emoji" onclick={() => (showEmojiPicker = !showEmojiPicker)}>
+            <span class="rt-btn-icon">😀</span>
+            <span class="rt-btn-label">Emoji</span>
+          </button>
+          {#if showEmojiPicker}
+            <div
+              class="absolute left-0 top-full mt-1 z-50 p-2 bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-md shadow-lg w-72"
+              role="menu"
+              tabindex="-1"
+              onclick={(e) => e.stopPropagation()}
+              onkeydown={(e) => e.key === 'Escape' && (showEmojiPicker = false)}
+            >
+              <div class="grid grid-cols-8 gap-0.5 max-h-72 overflow-y-auto">
+                {#each EMOJI_SET as e}
+                  <button
+                    type="button"
+                    class="w-8 h-8 flex items-center justify-center text-lg rounded-md hover:bg-surface-200 dark:hover:bg-surface-800"
+                    title={e}
+                    onclick={() => insertEmoji(e)}
+                  >{e}</button>
+                {/each}
+              </div>
+            </div>
+          {/if}
+        </div>
+      {:else if activeTab === 'layout'}
+        <!-- Headings -->
+        <button class="rt-btn {active('heading', { level: 1 })}" title="Heading 1" onclick={() => toggleHeading(1)}>
+          <span class="rt-btn-icon">H₁</span>
+          <span class="rt-btn-label">Heading 1</span>
+        </button>
+        <button class="rt-btn {active('heading', { level: 2 })}" title="Heading 2" onclick={() => toggleHeading(2)}>
+          <span class="rt-btn-icon">H₂</span>
+          <span class="rt-btn-label">Heading 2</span>
+        </button>
+        <button class="rt-btn {active('heading', { level: 3 })}" title="Heading 3" onclick={() => toggleHeading(3)}>
+          <span class="rt-btn-icon">H₃</span>
+          <span class="rt-btn-label">Heading 3</span>
+        </button>
+
+        <span class="rt-divider"></span>
+
+        <!-- Lists -->
+        <button class="rt-btn {active('bulletList')}" title="Bullet list" onclick={() => $editor?.chain().focus().toggleBulletList().run()}>
+          <span class="rt-btn-icon">•</span>
+          <span class="rt-btn-label">Bullets</span>
+        </button>
+        <button class="rt-btn {active('orderedList')}" title="Numbered list" onclick={() => $editor?.chain().focus().toggleOrderedList().run()}>
+          <span class="rt-btn-icon">1.</span>
+          <span class="rt-btn-label">Numbered</span>
+        </button>
+
+        <span class="rt-divider"></span>
+
+        <!-- Alignment -->
+        <button class="rt-btn {activeAttrs({ textAlign: 'left' })}" title="Align left" onclick={() => $editor?.chain().focus().setTextAlign('left').run()}>
+          <span class="rt-btn-icon">⇤</span>
+          <span class="rt-btn-label">Left</span>
+        </button>
+        <button class="rt-btn {activeAttrs({ textAlign: 'center' })}" title="Align center" onclick={() => $editor?.chain().focus().setTextAlign('center').run()}>
+          <span class="rt-btn-icon">≡</span>
+          <span class="rt-btn-label">Center</span>
+        </button>
+        <button class="rt-btn {activeAttrs({ textAlign: 'right' })}" title="Align right" onclick={() => $editor?.chain().focus().setTextAlign('right').run()}>
+          <span class="rt-btn-icon">⇥</span>
+          <span class="rt-btn-label">Right</span>
+        </button>
+        <button class="rt-btn {activeAttrs({ textAlign: 'justify' })}" title="Justify" onclick={() => $editor?.chain().focus().setTextAlign('justify').run()}>
+          <span class="rt-btn-icon">☰</span>
+          <span class="rt-btn-label">Justify</span>
+        </button>
+
+        <span class="rt-divider"></span>
+
+        <button class="rt-btn {active('blockquote')}" title="Blockquote" onclick={() => cmd().toggleBlockquote().run()}>
+          <span class="rt-btn-icon">❝</span>
+          <span class="rt-btn-label">Quote</span>
+        </button>
+      {:else}
+        {#each extraTabs as t (t.id)}
+          {#if activeTab === t.id}
+            {@render t.content()}
+          {/if}
+        {/each}
       {/if}
     </div>
-
-    <button class="tb" title="Horizontal rule" onclick={() => cmd().setHorizontalRule().run()}>
-      &#x2015;
-    </button>
-    <button class="tb {active('blockquote')}" title="Blockquote" onclick={() => cmd().toggleBlockquote().run()}>
-      &#x201C;
-    </button>
-
-    <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
-
-    <!-- Undo / Redo -->
-    <button class="tb" title="Undo (Ctrl+Z)" onclick={() => doUndo()}>
-      &#x21A9;
-    </button>
-    <button class="tb" title="Redo (Ctrl+Y)" onclick={() => doRedo()}>
-      &#x21AA;
-    </button>
-
-    <!-- Trailing actions slot — Compose injects Attach / Talk /
-         Files + Send / Save Draft / Discard here so they share
-         the toolbar row with the rich-text controls (#103).  The
-         leading `ml-auto` separator pushes the snippet against
-         the right edge of the toolbar so editor controls and
-         caller actions visibly read as left-half / right-half. -->
-    {#if actionsTrailing}
-      <span class="ml-auto"></span>
-      <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
-      {@render actionsTrailing()}
-    {/if}
   </div>
 
   <!-- Editor area. `flex-1 min-h-0` lets it shrink/grow with the
