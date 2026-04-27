@@ -2326,6 +2326,17 @@ async fn delete_calendar_event(
     Ok(())
 }
 
+/// Minimal HTML escaper for plain-string fields the inline RSVP /
+/// invite mail bodies splice into their inline-styled card.  We
+/// only need to neuter the four characters that change HTML
+/// parsing — quote escaping isn't needed because we only inject
+/// into element text, never into attribute values.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 // ── iTIP / iMIP (#58) ─────────────────────────────────────────────
 //
 // Outbound: when Compose's "Add Event" flow saves an event, we hand
@@ -2554,6 +2565,32 @@ async fn send_event_rsvp(
         "{} has {verb_body} the invitation to \"{summary}\".\n",
         account.email
     );
+    // Inline-styled HTML body matching the outbound invite card's
+    // visual language so the organiser's mail client renders the
+    // RSVP nicely rather than a plain "Bob accepted" line.  The
+    // accent colour flips per response — green for accept, amber
+    // for tentative, red for decline — so an inbox glance reads
+    // the verdict immediately.  Same table-based layout for
+    // Outlook-for-Windows compatibility.
+    let (accent, badge_text, headline) = match partstat.as_str() {
+        "ACCEPTED" => ("#16a34a", "ACCEPTED", "is going"),
+        "DECLINED" => ("#dc2626", "DECLINED", "won't make it"),
+        "TENTATIVE" => ("#ca8a04", "TENTATIVE", "might attend"),
+        _ => ("#3b82f6", "RESPONSE", "responded"),
+    };
+    let attendee_label = if account.display_name.trim().is_empty() {
+        account.email.as_str()
+    } else {
+        account.display_name.as_str()
+    };
+    let body_html = format!(
+        r#"<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate; border:1px solid #d1d5db; border-radius:10px; padding:18px 20px; max-width:560px; margin-top:14px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f9fafb;"><tr><td style="padding-bottom:8px; font-size:12px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:{accent};">📅 Meeting RSVP</td></tr><tr><td style="font-size:18px; font-weight:600; color:#111827; padding-bottom:8px;">{summary_html}</td></tr><tr><td style="padding-bottom:6px;"><span style="display:inline-block; padding:4px 10px; border-radius:999px; background:{accent}; color:#ffffff; font-size:12px; font-weight:600; letter-spacing:0.05em;">{badge_text}</span></td></tr><tr><td style="font-size:14px; color:#374151; padding-top:6px;"><strong style="color:#111827;">{attendee_html}</strong> {headline}.</td></tr></table>"#,
+        accent = accent,
+        badge_text = badge_text,
+        headline = headline,
+        summary_html = html_escape(&summary),
+        attendee_html = html_escape(attendee_label),
+    );
 
     let outgoing = nimbus_core::models::OutgoingEmail {
         from: account.email.clone(),
@@ -2563,7 +2600,7 @@ async fn send_event_rsvp(
         reply_to: None,
         subject,
         body_text: Some(body_text),
-        body_html: None,
+        body_html: Some(body_html),
         attachments: vec![nimbus_core::models::Attachment {
             filename: "invite-reply.ics".to_string(),
             content_type: "text/calendar; method=REPLY; charset=utf-8".to_string(),

@@ -77,12 +77,20 @@
   let respondedAs = $state<Partstat | null>(null)
   let error = $state('')
 
-  /** Human-readable verb for the "You replied: …" callout.
-   *  Lower-case so the line reads as a sentence. */
+  /** Human-readable past-tense verb for the chosen response.
+   *  Used both in the "You replied: …" callout and as the label
+   *  on the highlighted button after the user has answered. */
   function verbFor(p: Partstat): string {
     if (p === 'ACCEPTED') return 'Accepted'
     if (p === 'DECLINED') return 'Declined'
-    return 'Tentatively accepted'
+    return 'Tentative'
+  }
+
+  /** Pre-reply (or "change to") imperative label for each option. */
+  function actionLabel(p: Partstat): string {
+    if (p === 'ACCEPTED') return '✓ Accept'
+    if (p === 'DECLINED') return '✗ Decline'
+    return '? Tentative'
   }
 
   /** Pull the bare email out of an RFC 5322 address string ("Name
@@ -197,27 +205,31 @@
   {/if}
 
   {#if respondedAs}
-    <!-- Post-reply state.  The chosen response is highlighted as
-         primary-filled; the alternatives become outlined buttons
-         labelled "Change to …" so the user can flip their mind
-         without losing the visual confirmation of "what did I
-         answer?". -->
+    <!-- Post-reply state.  Chosen option = past-tense label
+         ("Accepted") with a primary-coloured *border* (no fill)
+         to distinguish it from the unanswered "click to commit"
+         pre-reply state.  Alternatives become outlined "Change
+         to …" so the user can flip their mind without losing
+         the visual confirmation of "what did I answer?". -->
     <p class="text-sm text-surface-700 dark:text-surface-300 mt-3">
       <span class="font-medium">You replied:</span> {verbFor(respondedAs)}
     </p>
     <div class="flex flex-wrap items-center gap-2 mt-2">
       {#each (['ACCEPTED', 'TENTATIVE', 'DECLINED'] as Partstat[]) as p}
         {@const isCurrent = respondedAs === p}
-        {@const label = p === 'ACCEPTED' ? '✓ Accept' : p === 'TENTATIVE' ? '? Tentative' : '✗ Decline'}
         <button
           class="btn btn-sm disabled:opacity-50 {isCurrent
-            ? 'preset-filled-primary-500'
+            ? 'border-2 border-primary-500 text-primary-500 bg-transparent hover:bg-primary-500/5 font-semibold'
             : 'preset-outlined-surface-500'}"
           disabled={busy !== null}
           onclick={() => void rsvp(p)}
           title={isCurrent ? 'Your current response' : `Change response to ${verbFor(p)}`}
         >
-          {busy === p ? 'Sending…' : isCurrent ? label : `Change to ${label}`}
+          {busy === p
+            ? 'Sending…'
+            : isCurrent
+              ? verbFor(p)
+              : `Change to ${actionLabel(p)}`}
         </button>
       {/each}
     </div>
