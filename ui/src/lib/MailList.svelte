@@ -371,6 +371,42 @@
       updates without a round-trip, then call the backend. The
       backend in turn fires `unread-count-updated`, which the Sidebar
       listener uses to refresh the per-folder badge. */
+  // ── Quick-action handlers (#98) ───────────────────────────────
+  // Inline icon buttons on each mail-list row — Delete + Mark
+  // read/unread + Move to folder — so the user can triage a stack
+  // of mail without ever opening it.  All three follow the same
+  // optimistic shape: the row visibly disappears / changes state
+  // instantly, the backend call follows, errors get surfaced into
+  // the existing error banner.
+  //
+  // Click handlers MUST `stopPropagation` so the row-level click /
+  // dblclick / dragstart never fires alongside the action.
+
+  async function quickDelete(env: EmailEnvelope) {
+    const srcAccountId = env.account_id || accountId
+    const srcFolder = env.folder || folder
+    try {
+      await invoke('delete_message', {
+        accountId: srcAccountId,
+        folder: srcFolder,
+        uid: env.uid,
+      })
+      onmessagemoved?.(env.uid)
+    } catch (err) {
+      console.warn('quickDelete failed', err)
+      error = formatError(err) || 'Failed to delete'
+    }
+  }
+
+  function quickMove(env: EmailEnvelope) {
+    // Re-uses the multi-select "group" picker plumbing — a single-row
+    // quick-action move is just a 1-element group from its
+    // perspective.  affectedEnvelopes does the right thing here:
+    // when this row is part of a multi-select group, the picker
+    // moves the whole group; otherwise just the one row.
+    movingGroup = affectedEnvelopes(env)
+  }
+
   async function toggleEnvelopeRead(env: EmailEnvelope) {
     const next = !env.is_read
     env.is_read = next
@@ -413,43 +449,89 @@
              border is always present (transparent when read) so rows
              never reflow between states.  Selection > multi-select >
              unread tint for the background colour; the accent strip
-             stays orthogonal so an unread+selected row keeps both. -->
-        <button
-          class="w-full text-left pl-3 pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors
-            {!env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
-            {selected
-              ? 'bg-primary-500/10'
-              : multi
-                ? 'bg-primary-500/15 hover:bg-primary-500/20'
-                : !env.is_read
-                  ? 'bg-primary-500/[0.04] dark:bg-primary-500/[0.07] hover:bg-primary-500/10'
-                  : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
-          draggable="true"
-          ondragstart={(e) => onMailDragStart(e, env)}
-          onclick={(e) => onRowClick(e, env)}
-          ondblclick={() =>
-            openMailInStandaloneWindow(
-              unified && env.account_id ? env.account_id : accountId,
-              folder,
-              env.uid,
-            )}
-          oncontextmenu={(e) => openContextMenu(e, env)}
-        >
-          <div class="flex items-center justify-between mb-1">
-            <span class="text-sm {!env.is_read ? 'font-semibold' : 'font-normal'} truncate pr-2">
-              {env.from || '(unknown sender)'}
-            </span>
-            <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'} shrink-0">{formatDate(env.date)}</span>
-          </div>
-          <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate">
-            {env.subject || '(no subject)'}
-          </p>
-          {#if unified && env.account_id}
-            <p class="text-[11px] text-surface-500 mt-1 truncate">
-              {accountLabel(env.account_id)}
+             stays orthogonal so an unread+selected row keeps both.
+             The row is wrapped in a `group` so the inline quick-
+             action icons (#98) reveal on row hover. -->
+        <div class="group relative">
+          <button
+            class="w-full text-left pl-3 pr-4 py-3 border-b border-l-[3px] border-surface-100 dark:border-surface-800 transition-colors
+              {!env.is_read ? 'border-l-primary-500' : 'border-l-transparent'}
+              {selected
+                ? 'bg-primary-500/10'
+                : multi
+                  ? 'bg-primary-500/15 hover:bg-primary-500/20'
+                  : !env.is_read
+                    ? 'bg-primary-500/[0.04] dark:bg-primary-500/[0.07] hover:bg-primary-500/10'
+                    : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+            draggable="true"
+            ondragstart={(e) => onMailDragStart(e, env)}
+            onclick={(e) => onRowClick(e, env)}
+            ondblclick={() =>
+              openMailInStandaloneWindow(
+                unified && env.account_id ? env.account_id : accountId,
+                folder,
+                env.uid,
+              )}
+            oncontextmenu={(e) => openContextMenu(e, env)}
+          >
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-sm {!env.is_read ? 'font-semibold' : 'font-normal'} truncate pr-2">
+                {env.from || '(unknown sender)'}
+              </span>
+              <span class="text-xs {!env.is_read ? 'text-primary-500 font-medium' : 'text-surface-500'} shrink-0">{formatDate(env.date)}</span>
+            </div>
+            <p class="text-sm {!env.is_read ? 'font-medium' : ''} truncate">
+              {env.subject || '(no subject)'}
             </p>
-          {/if}
-        </button>
+            {#if unified && env.account_id}
+              <p class="text-[11px] text-surface-500 mt-1 truncate">
+                {accountLabel(env.account_id)}
+              </p>
+            {/if}
+          </button>
+          <!-- Hover-revealed quick actions (#98).  Sits absolutely
+               over the right edge of the row so it doesn't bump
+               row layout, and is a sibling of the row button (HTML
+               forbids nested buttons).  `pointer-events-none` on
+               the wrapper while hidden keeps the layer click-through
+               so the row's drag / click still work in the gap. -->
+          <div
+            class="absolute inset-y-0 right-1 flex items-center gap-0.5 opacity-0 pointer-events-none transition-opacity
+                   group-hover:opacity-100 group-hover:pointer-events-auto
+                   focus-within:opacity-100 focus-within:pointer-events-auto"
+          >
+            <button
+              type="button"
+              class="w-7 h-7 rounded-md flex items-center justify-center text-sm bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm"
+              title={env.is_read ? 'Mark as unread' : 'Mark as read'}
+              aria-label={env.is_read ? 'Mark as unread' : 'Mark as read'}
+              onclick={(e) => {
+                e.stopPropagation()
+                void toggleEnvelopeRead(env)
+              }}
+            >{env.is_read ? '📭' : '📥'}</button>
+            <button
+              type="button"
+              class="w-7 h-7 rounded-md flex items-center justify-center text-sm bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm"
+              title="Move to folder"
+              aria-label="Move to folder"
+              onclick={(e) => {
+                e.stopPropagation()
+                quickMove(env)
+              }}
+            >📁</button>
+            <button
+              type="button"
+              class="w-7 h-7 rounded-md flex items-center justify-center text-sm bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
+              title="Delete"
+              aria-label="Delete"
+              onclick={(e) => {
+                e.stopPropagation()
+                void quickDelete(env)
+              }}
+            >🗑</button>
+          </div>
+        </div>
       {/each}
     {/if}
   </div>
