@@ -105,29 +105,52 @@
     paths: string[]
     password: string
     permissions: number
+    /** Whether any of the selected paths is a folder.  Drives which
+     *  permission options the dropdown shows — "Upload + edit" and
+     *  "File drop" only make sense for folder shares (file shares
+     *  can't have new files dropped into them by definition). */
+    hasFolders: boolean
   } | null>(null)
 
   /** Common public-link permission combinations Nextcloud's own
    *  share UI exposes.  The bitfield (1 read, 2 update, 4 create,
    *  8 delete, 16 share) gets sent to the OCS endpoint verbatim. */
+  /** Permission combinations Nextcloud's own share UI exposes.
+   *  `folderOnly` entries are filtered out when the selection is
+   *  pure files — "Upload + edit" and "File drop" semantically
+   *  only make sense for folder shares; offering them for a file
+   *  share would surface a Nextcloud-side rejection ("invalid
+   *  permissions"). */
   const PERMISSION_OPTIONS = [
-    { value: 1, label: 'View only', hint: 'Recipient can read / download.' },
+    {
+      value: 1,
+      label: 'View only',
+      hint: 'Recipient can read / download.',
+      folderOnly: false,
+    },
     {
       value: 3,
       label: 'View and edit',
       hint: 'Recipient can edit the file in Nextcloud.',
+      folderOnly: false,
     },
     {
       value: 15,
       label: 'View, edit, upload, delete',
       hint: 'Folder share with full read-write — recipient can drop files in and modify existing ones.',
+      folderOnly: true,
     },
     {
       value: 4,
       label: 'File drop (upload only)',
       hint: 'Folder share where recipients can upload but not see the contents.',
+      folderOnly: true,
     },
   ] as const
+
+  function visiblePermissionOptions(hasFolders: boolean) {
+    return PERMISSION_OPTIONS.filter((o) => !o.folderOnly || hasFolders)
+  }
 
   function permHint(value: number): string {
     return PERMISSION_OPTIONS.find((o) => o.value === value)?.hint ?? ''
@@ -190,10 +213,19 @@
       a share if the user changes their mind mid-click. */
   function shareSelected() {
     if (selected.size === 0 || !onlinks) return
+    // Snapshot whether any of the selected entries is a folder so
+    // the dropdown can hide the folder-only permission options for
+    // pure-file shares.  Looked up against the current `entries`
+    // listing — the user can only select within one folder at a
+    // time, so this is always the right source of truth.
+    const hasFolders = entries.some(
+      (e) => e.is_dir && selected.has(e.path),
+    )
     sharePrompt = {
       paths: Array.from(selected),
       password: '',
       permissions: 1, // View-only by default — matches Nextcloud's own picker.
+      hasFolders,
     }
     error = ''
   }
@@ -381,7 +413,7 @@
         bind:value={sharePrompt.permissions}
         disabled={sharing}
       >
-        {#each PERMISSION_OPTIONS as opt}
+        {#each visiblePermissionOptions(sharePrompt.hasFolders) as opt}
           <option value={opt.value}>{opt.label}</option>
         {/each}
       </select>
