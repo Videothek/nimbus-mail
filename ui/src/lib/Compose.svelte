@@ -28,6 +28,7 @@
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
   import EventEditor, { type SavedEvent } from './EventEditor.svelte'
   import { openComposeInStandaloneWindow } from './standaloneComposeWindow'
+  import { buildInviteEmail } from './inviteEmail'
 
   /** Slim Nextcloud account row — same shape `TalkView` / `Sidebar` use.
       We only need the id to pass to the Talk + Calendar commands. */
@@ -689,128 +690,31 @@
     mergeIntoRecipients(saved.attendees)
     if (createdTalkLink) injectTalkBlock(createdTalkLink)
 
-    // Attach the event as a `text/calendar; method=REQUEST` part
-    // (#58 / iMIP).  Recipients on any RFC-compliant mail client
-    // (Outlook / Apple Mail / Gmail / Thunderbird) will see the
-    // mail as a real meeting invite they can Accept / Decline /
-    // Tentative on, and Nimbus's own MailView surfaces an
-    // RSVP card for inbound mails carrying the same shape.
-    //
-    // The UID matches what the organiser just PUT to their
-    // CalDAV server, so when an attendee's REPLY comes back the
-    // organiser's calendar can pair it to the right event (the
-    // REPLY-tracking work itself lives in #121).
+    // Build the iMIP REQUEST attachment + the matching HTML body
+    // block via the shared helper so this surface stays in lockstep
+    // with the calendar-grid creation flow (`CalendarView`) — both
+    // emit the same look and the same `text/calendar` payload.
     try {
-      const ics = await invoke<string>('build_event_invite_ics', {
+      const built = await buildInviteEmail({
         uid: saved.uid,
-        event: {
-          summary: saved.summary,
-          description: null,
-          location: null,
-          start: saved.start,
-          end: saved.end,
-          allDay: false,
-          url: saved.url,
-          transparency: null,
-          attendees: saved.attendees.map((email) => ({ email })),
-          reminders: [],
-        },
-        organizerEmail: fromAddress,
-        organizerName: fromAccount?.display_name ?? null,
-        method: 'REQUEST',
+        summary: saved.summary,
+        start: saved.start,
+        end: saved.end,
+        url: saved.url,
+        attendees: saved.attendees,
+        fromAddress,
+        fromName: fromAccount?.display_name ?? null,
+        // True only when the URL was minted by Nimbus's Talk
+        // integration (the `createdTalkLink` we tracked through
+        // the silent-create flow).  A plain meeting URL the user
+        // typed by hand stays labelled "Meeting link".
+        isTalkLink: !!saved.url && createdTalkLink?.url === saved.url,
       })
-      attachments = [
-        ...attachments,
-        {
-          filename: 'invite.ics',
-          content_type: 'text/calendar; method=REQUEST; charset=utf-8',
-          data: Array.from(new TextEncoder().encode(ics)),
-        },
-      ]
+      attachments = [...attachments, built.attachment]
+      editorApi?.appendHtml(built.html)
     } catch (e) {
-      console.warn('Failed to build iMIP invite attachment', e)
+      console.warn('Failed to build invite email', e)
     }
-    const esc = (s: string) =>
-      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    const start = new Date(saved.start)
-    const end = new Date(saved.end)
-    const sameDay =
-      start.getFullYear() === end.getFullYear() &&
-      start.getMonth() === end.getMonth() &&
-      start.getDate() === end.getDate()
-    const dateStr = start.toLocaleDateString(undefined, {
-      weekday: 'short',
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    })
-    const timeFmt: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' }
-    const when = sameDay
-      ? `${dateStr}, ${start.toLocaleTimeString(undefined, timeFmt)} – ${end.toLocaleTimeString(undefined, timeFmt)}`
-      : `${start.toLocaleString(undefined, { ...timeFmt, dateStyle: 'medium' } as Intl.DateTimeFormatOptions)} – ${end.toLocaleString(undefined, { ...timeFmt, dateStyle: 'medium' } as Intl.DateTimeFormatOptions)}`
-    const durationMs = end.getTime() - start.getTime()
-    const durationLabel = (() => {
-      if (!isFinite(durationMs) || durationMs <= 0) return ''
-      const totalMin = Math.round(durationMs / 60_000)
-      const h = Math.floor(totalMin / 60)
-      const m = totalMin % 60
-      if (h === 0) return `${m}m`
-      if (m === 0) return `${h}h`
-      return `${h}h ${m}m`
-    })()
-    const title = esc(saved.summary || '(untitled)')
-    // Label the link as "Talk room" when the URL matches the one we
-    // just created from the Talk button, otherwise call it "Meeting
-    // link" so a user who just types a URL by hand doesn't get a
-    // misleading "Talk room" label.
-    const isTalkLink =
-      !!saved.url && createdTalkLink?.url === saved.url
-    const linkLabel = isTalkLink ? 'Join Talk room' : 'Meeting link'
-
-    // Render as an inline-styled card.  Email clients strip out
-    // stylesheet blocks entirely, so every visual rule lives on
-    // the element itself.  Table-based layout (vs flexbox) is the
-    // robust play: Outlook for Windows uses the Word renderer
-    // and ignores `display: flex` / `gap` outright, but renders
-    // tables flawlessly.  Colour palette deliberately matches the
-    // inbound `CalendarInviteCard` so a user who's seen the
-    // recipient surface recognises the sender surface immediately.
-    const linkBlock = saved.url
-      ? `<tr>
-            <td style="padding-top:14px;">
-              <a href="${saved.url}" style="display:inline-block; padding:9px 18px; background:#3b82f6; color:#ffffff; border-radius:6px; text-decoration:none; font-weight:600; font-size:14px;">
-                ${isTalkLink ? '💬 ' : '🔗 '}${esc(linkLabel)}
-              </a>
-              <div style="margin-top:6px; font-size:12px; color:#6b7280;">
-                ${esc(saved.url)}
-              </div>
-            </td>
-          </tr>`
-      : ''
-    const durationLine = durationLabel
-      ? `<span style="color:#9ca3af;"> · ${esc(durationLabel)}</span>`
-      : ''
-    const block = `
-      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate; border:1px solid #d1d5db; border-radius:10px; padding:18px 20px; max-width:560px; margin-top:14px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#f9fafb;">
-        <tr>
-          <td style="padding-bottom:8px; font-size:12px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:#3b82f6;">
-            📅 Meeting invitation
-          </td>
-        </tr>
-        <tr>
-          <td style="font-size:18px; font-weight:600; color:#111827; padding-bottom:8px;">
-            ${title}
-          </td>
-        </tr>
-        <tr>
-          <td style="font-size:14px; color:#374151; padding-bottom:4px;">
-            <strong style="color:#111827;">🕐 When:</strong> ${esc(when)}${durationLine}
-          </td>
-        </tr>
-        ${linkBlock}
-      </table>
-    `.replace(/\n\s*/g, '')
-    editorApi?.appendHtml(block)
 
     // Rename the auto-created Talk room to match the final event
     // title. The room was created up-front (see `createTalkRoomSilently`)
