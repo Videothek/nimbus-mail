@@ -1023,26 +1023,32 @@
         },
       })
       // Flush deferred Talk-room invites (#86).  The room was minted
-      // empty at compose-time; here we invite everyone who's *currently*
-      // on To / Cc / Bcc — derived from the live recipient fields
-      // rather than a modal-time snapshot, because the user can
-      // (a) leave the modal's participant box blank and add
+      // empty at compose-time; here we invite everyone who's
+      // *currently* on To / Cc — derived from the live recipient
+      // fields rather than a modal-time snapshot, because the user
+      // can (a) leave the modal's participant box blank and add
       // recipients afterward, or (b) edit the recipient list between
-      // creating the room and clicking Send.  Either way the rule
-      // "Talk participants = mail recipients at send time" is what
-      // matches the user's mental model.
+      // creating the room and clicking Send.
       //
-      // Failures here are non-fatal — recipients have the link in the
-      // body and can still join — but we surface the error so the
-      // user knows to add invites manually.  Clear `talkRoomToken`
-      // unconditionally so a follow-up discard doesn't try to delete
-      // a now-active room.
+      // **Bcc is deliberately excluded.**  A blind-carbon recipient
+      // exists precisely so other recipients don't see them; routing
+      // their address into a shared Talk room would unmask them to
+      // every other invitee, which would be a privacy regression.
+      // The Bcc'd person still gets the email with the join URL in
+      // the body, so they can join the room as a visitor if they
+      // want to — they just don't get explicitly invited.
+      //
+      // Failures here are non-fatal — invited recipients have the
+      // link in the body and can still join — but we surface the
+      // error so the user knows to add invites manually.  Clear
+      // `talkRoomToken` unconditionally so a follow-up discard
+      // doesn't try to delete a now-active room.
       if (talkRoomToken) {
         const ncId = ncAccountId
         const room = talkRoomToken
         const seen = new Set<string>()
         const participantsToAdd: { kind: 'email'; value: string }[] = []
-        for (const raw of [...splitAddrs(to), ...splitAddrs(cc), ...splitAddrs(bcc)]) {
+        for (const raw of [...splitAddrs(to), ...splitAddrs(cc)]) {
           const addr = bareAddr(raw)
           if (!addr) continue
           const key = addr.toLowerCase()
