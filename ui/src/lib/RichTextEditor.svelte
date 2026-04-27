@@ -88,6 +88,14 @@
      *  no separate event needed when the parent's attachments
      *  change. */
     attachmentsForRef?: AttachmentRef[]
+    /** Caller-provided actions appended to the right side of the
+     *  toolbar (#103).  Compose uses this to colocate the
+     *  Attach / Talk / Files / Send / Save Draft / Discard buttons
+     *  with the rich-text controls so the user has one toolbar
+     *  instead of a top-row + bottom-footer split.  When omitted
+     *  the toolbar ends at the rich-text group, which is what
+     *  every other future embedder gets by default. */
+    actionsTrailing?: import('svelte').Snippet
   }
 
   /** A row in the `@` contact picker. */
@@ -121,6 +129,7 @@
     oncontactquery,
     oncontactpicked,
     attachmentsForRef = [],
+    actionsTrailing,
   }: Props = $props()
 
   // \u2500\u2500 Inline `@` and `/` picker state \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -1114,6 +1123,18 @@
     <button class="tb" title="Redo (Ctrl+Y)" onclick={() => doRedo()}>
       &#x21AA;
     </button>
+
+    <!-- Trailing actions slot — Compose injects Attach / Talk /
+         Files + Send / Save Draft / Discard here so they share
+         the toolbar row with the rich-text controls (#103).  The
+         leading `ml-auto` separator pushes the snippet against
+         the right edge of the toolbar so editor controls and
+         caller actions visibly read as left-half / right-half. -->
+    {#if actionsTrailing}
+      <span class="ml-auto"></span>
+      <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
+      {@render actionsTrailing()}
+    {/if}
   </div>
 
   <!-- Editor area. `flex-1 min-h-0` lets it shrink/grow with the
