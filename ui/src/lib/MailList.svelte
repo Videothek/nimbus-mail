@@ -170,9 +170,13 @@
 
   async function moveGroupToFolder(group: EmailEnvelope[], dest: string) {
     movingGroup = null
-    // Sequential calls keep error reporting simple (first failure
-    // halts the batch).  N is small in practice and `move_message`
-    // already opens its own short-lived IMAP connection per call.
+    // Run all moves first, then fire `onmessagemoved` for the
+    // successes.  Calling the callback mid-loop bumps the App's
+    // refreshToken and triggers a MailList re-fetch that races the
+    // next iteration's invoke — the race was previously eating the
+    // last move in a multi-select batch.
+    const succeeded: number[] = []
+    const failures: unknown[] = []
     for (const env of group) {
       const { accountId: src, folder: srcFolder } = srcCoordinates(env)
       if (dest === srcFolder) continue
@@ -183,12 +187,20 @@
           uid: env.uid,
           destFolder: dest,
         })
-        onmessagemoved?.(env.uid)
+        succeeded.push(env.uid)
       } catch (err) {
         console.warn('move_message failed', err)
-        error = formatError(err) || 'Failed to move message'
-        return
+        failures.push(err)
       }
+    }
+    for (const uid of succeeded) {
+      onmessagemoved?.(uid)
+    }
+    if (failures.length > 0) {
+      error =
+        failures.length === group.length
+          ? formatError(failures[0]) || 'Failed to move message'
+          : `Moved ${succeeded.length} of ${group.length} messages — ${failures.length} failed.`
     }
     multiSelectedUids = new Set()
   }
