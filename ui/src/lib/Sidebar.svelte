@@ -120,11 +120,7 @@
     const raw = e.dataTransfer?.getData('application/x-nimbus-mail')
     if (!raw) return
     // Payload is always an array; multi-select drags carry several
-    // entries, single-row drags carry one.  Iterate sequentially —
-    // `move_message` opens a short-lived IMAP connection per call,
-    // and N is small in practice (the user just selected them by
-    // hand).  First failure halts the batch and surfaces in the
-    // sidebar's error banner.
+    // entries, single-row drags carry one.
     let payload: { accountId: string; folder: string; uid: number }[]
     try {
       const parsed = JSON.parse(raw)
@@ -132,6 +128,17 @@
     } catch {
       return
     }
+    // Run every move first, *then* fire `onmessagemoved` for the
+    // successes — emitting the callback per-iteration triggers the
+    // App-level refreshToken bump, which schedules a re-fetch in
+    // MailList that races the next iteration's `invoke`.  In the
+    // multi-select case the race was eating the last move's
+    // server-side write (the cache + IMAP ended up in disagreeing
+    // states).  Deferring the callbacks guarantees every move
+    // completes against a stable cache snapshot before the UI
+    // starts reacting.
+    const succeeded: number[] = []
+    const failures: unknown[] = []
     for (const item of payload) {
       if (target.name === item.folder) continue // move-to-self
       try {
@@ -141,12 +148,20 @@
           uid: item.uid,
           destFolder: target.name,
         })
-        onmessagemoved?.(item.uid)
+        succeeded.push(item.uid)
       } catch (err) {
         console.warn('move_message via drag-and-drop failed', err)
-        error = formatError(err) || 'Failed to move message'
-        return
+        failures.push(err)
       }
+    }
+    for (const uid of succeeded) {
+      onmessagemoved?.(uid)
+    }
+    if (failures.length > 0) {
+      error =
+        failures.length === payload.length
+          ? formatError(failures[0]) || 'Failed to move message'
+          : `Moved ${succeeded.length} of ${payload.length} messages — ${failures.length} failed.`
     }
   }
 
