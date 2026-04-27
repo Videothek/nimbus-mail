@@ -53,13 +53,16 @@ export interface BuiltInvite {
   html: string
   /** Plain-text fallback for clients that don't render HTML. */
   text: string
-  /** iMIP REQUEST `text/calendar` attachment — `data` is a JS
-   *  number array because that's what the SMTP layer expects on
-   *  the IPC boundary. */
-  attachment: {
-    filename: string
-    content_type: string
-    data: number[]
+  /** iMIP calendar payload.  Goes into the SMTP layer's
+   *  `calendar_part` field, which makes nimbus-smtp emit the
+   *  canonical iMIP MIME tree (text/calendar inside the body's
+   *  multipart/alternative, plus an `invite.ics` download).
+   *  That's what triggers Outlook / Apple Mail / Gmail /
+   *  Thunderbird to surface their native RSVP UI on the recipient
+   *  side. */
+  calendarPart: {
+    method: string
+    ics: string
   }
 }
 
@@ -188,10 +191,9 @@ export async function buildInviteEmail(opts: BuildInviteOpts): Promise<BuiltInvi
     subject: `Invitation: ${title}`,
     html,
     text,
-    attachment: {
-      filename: 'invite.ics',
-      content_type: 'text/calendar; method=REQUEST; charset=utf-8',
-      data: Array.from(new TextEncoder().encode(ics)),
+    calendarPart: {
+      method: 'REQUEST',
+      ics,
     },
   }
 }

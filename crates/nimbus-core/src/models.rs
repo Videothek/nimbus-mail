@@ -324,6 +324,28 @@ pub struct OutgoingEmail {
     /// File attachments
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    /// iTIP calendar part (#58).  When present, the SMTP layer
+    /// emits the canonical iMIP MIME structure: a
+    /// `text/calendar; method=…` alternative inside
+    /// `multipart/alternative` (so Outlook / Apple Mail / Gmail /
+    /// Thunderbird recognise the message as an invite and surface
+    /// native Accept/Decline/Tentative buttons), plus a
+    /// downloadable `.ics` attachment for clients that prefer to
+    /// import via the file.  `None` for ordinary mails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_part: Option<CalendarPart>,
+}
+
+/// Calendar payload emitted as the iMIP `text/calendar` body
+/// alternative.  `method` is the iTIP method (REQUEST / REPLY /
+/// CANCEL etc.); `ics` is the full VCALENDAR/VEVENT body
+/// `nimbus_caldav::ical::build_ics_with_method` produced.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalendarPart {
+    /// iTIP method (REQUEST, REPLY, CANCEL, …).
+    pub method: String,
+    /// Full ICS body — what `text/calendar` parts carry verbatim.
+    pub ics: String,
 }
 
 /// A file attachment for an outgoing email.
