@@ -489,14 +489,15 @@
               </p>
             {/if}
           </button>
-          <!-- Hover-revealed quick actions (#98).  Sits absolutely
-               over the right edge of the row so it doesn't bump
-               row layout, and is a sibling of the row button (HTML
-               forbids nested buttons).  `pointer-events-none` on
-               the wrapper while hidden keeps the layer click-through
-               so the row's drag / click still work in the gap. -->
+          <!-- Hover-revealed quick actions (#98).  Anchored to the
+               BOTTOM-right corner of the row so the cluster never
+               overlaps the date in the top-right.  Sibling of the
+               row button (HTML forbids nested buttons).
+               `pointer-events-none` on the wrapper while hidden
+               keeps the layer click-through so the row's drag /
+               click still work in the gap. -->
           <div
-            class="absolute inset-y-0 right-1 flex items-center gap-0.5 opacity-0 pointer-events-none transition-opacity
+            class="absolute right-1 bottom-1 flex items-center gap-0.5 opacity-0 pointer-events-none transition-opacity
                    group-hover:opacity-100 group-hover:pointer-events-auto
                    focus-within:opacity-100 focus-within:pointer-events-auto"
           >
