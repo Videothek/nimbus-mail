@@ -1129,6 +1129,32 @@ async fn create_talk_room(
     .await
 }
 
+/// Surgical PARTSTAT update for an event already in the user's
+/// cache — the EventEditor's RSVP dropdown lands here when an
+/// attendee changes their response on a meeting that's already
+/// on the calendar.
+///
+/// Why we don't just route this through `update_calendar_event`:
+/// regenerating the VEVENT body from form fields drops X-* lines
+/// and re-orders properties, which Sabre's iTIP broker reads as
+/// a "noisy" diff and silently suppresses the REPLY iMIP.  The
+/// inbox card's `respond_to_invite` already implements the
+/// byte-preserving surgical path; this command is a thin wrapper
+/// that pulls the cached `ics_raw` for an existing event id and
+/// hands it to `respond_to_invite` so the same flow applies.
+#[tauri::command]
+async fn rsvp_existing_event(
+    event_id: String,
+    partstat: String,
+    attendee_hint: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let handle = load_event_handle(&cache, &event_id)?;
+    let calendar_id = handle.calendar_id.clone();
+    let raw_ics = handle.ics_raw.clone();
+    respond_to_invite(calendar_id, raw_ics, partstat, attendee_hint, cache).await
+}
+
 /// Toggle a Talk room's public/private visibility.  Used by
 /// the EventEditor save flow to downgrade a room from public
 /// to private once we've confirmed every attendee is an
@@ -1187,9 +1213,62 @@ async fn find_nextcloud_user_by_email(
     }))
 }
 
+/// Promote an `Email`-source participant to a `User`-source one
+/// whenever the address belongs to a real Nextcloud account on
+/// this server (issue #124).  The internal user lands in the
+/// room as themselves with an in-NC notification instead of
+/// receiving a guest invite link via email — better UX, native
+/// rights, and no second mail in the recipient's inbox.
+///
+/// Lookup is fail-soft: a network blip or an admin-restricted
+/// sharees endpoint falls through to the original `Email`
+/// source so the invite still gets out, just as a guest.  An
+/// in-batch cache (`HashMap<lowercased-addr, ParticipantSource>`)
+/// keeps duplicate addresses across the To/Cc list to a single
+/// OCS round-trip.
+async fn promote_email_to_user_if_internal(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    src: &nimbus_nextcloud::ParticipantSource,
+    cache: &mut std::collections::HashMap<String, nimbus_nextcloud::ParticipantSource>,
+) -> nimbus_nextcloud::ParticipantSource {
+    use nimbus_nextcloud::ParticipantSource;
+    let addr = match src {
+        ParticipantSource::User(_) => return src.clone(),
+        ParticipantSource::Email(a) => a,
+    };
+    let key = addr.to_lowercase();
+    if let Some(hit) = cache.get(&key) {
+        return hit.clone();
+    }
+    let resolved = match nimbus_nextcloud::find_user_by_email(
+        server_url,
+        username,
+        app_password,
+        addr,
+    )
+    .await
+    {
+        Ok(Some(m)) => ParticipantSource::User(m.user_id),
+        Ok(None) => src.clone(),
+        Err(e) => {
+            tracing::warn!(
+                "talk-invite: NC user lookup failed for {addr}: {e}; \
+                 falling back to email guest"
+            );
+            src.clone()
+        }
+    };
+    cache.insert(key, resolved.clone());
+    resolved
+}
+
 /// Add a single participant to an existing Talk room. Exposed so the
 /// UI can grow an "Add participant" affordance later without a
-/// backend round-trip.
+/// backend round-trip.  Email-source participants whose address
+/// matches a Nextcloud user on this server are silently promoted
+/// to `User` source (issue #124).
 #[tauri::command]
 async fn add_talk_participant(
     nc_id: String,
@@ -1198,12 +1277,21 @@ async fn add_talk_participant(
 ) -> Result<(), NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let mut cache = std::collections::HashMap::new();
+    let resolved = promote_email_to_user_if_internal(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &participant,
+        &mut cache,
+    )
+    .await;
     nimbus_nextcloud::add_participant(
         &account.server_url,
         &account.username,
         &app_password,
         &room_token,
-        &participant,
+        &resolved,
     )
     .await
 }
@@ -1214,7 +1302,10 @@ async fn add_talk_participant(
 /// the recipients once `Send` actually goes out, so a discarded
 /// draft doesn't leave a room full of strangers in the recipient's
 /// Talk list.  Sequential (not parallel) so the first failure halts
-/// the batch and surfaces as a single error.
+/// the batch and surfaces as a single error.  Email-source entries
+/// whose address matches a Nextcloud user on this server are
+/// promoted to `User` source per issue #124 — internal recipients
+/// join natively, externals still get the email-guest flow.
 #[tauri::command]
 async fn add_talk_participants(
     nc_id: String,
@@ -1223,13 +1314,22 @@ async fn add_talk_participants(
 ) -> Result<(), NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let mut cache = std::collections::HashMap::new();
     for p in &participants {
+        let resolved = promote_email_to_user_if_internal(
+            &account.server_url,
+            &account.username,
+            &app_password,
+            p,
+            &mut cache,
+        )
+        .await;
         nimbus_nextcloud::add_participant(
             &account.server_url,
             &account.username,
             &app_password,
             &room_token,
-            p,
+            &resolved,
         )
         .await?;
     }
@@ -5750,6 +5850,7 @@ fn main() {
             create_calendar_event,
             parse_event_invite,
             respond_to_invite,
+            rsvp_existing_event,
             get_rsvp_response,
             get_event_partstat_for_user,
             update_calendar_event,

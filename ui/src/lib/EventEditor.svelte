@@ -328,10 +328,8 @@
   })
   /** The user's own ATTENDEE row in this event (if any).  When
    *  set, the RSVP dropdown surfaces and is bound to its
-   *  PARTSTAT; on save, `update_calendar_event` rewrites the
-   *  body with whatever the user picked.  Searches all three
-   *  buckets so it works for users who were typed as Hosts /
-   *  Required / Optional. */
+   *  PARTSTAT.  Searches all three buckets so it works for
+   *  users who were typed as Hosts / Required / Optional. */
   let myAttendee = $derived.by(() => {
     if (mode !== 'edit') return null
     if (userIdentities.size === 0) return null
@@ -340,6 +338,33 @@
       if (userIdentities.has(a.email.toLowerCase())) return a
     }
     return null
+  })
+
+  /** PARTSTAT the user's own ATTENDEE row carried when the
+   *  editor opened — captured once from the original `event`
+   *  prop so the save flow can detect "did the user change
+   *  their RSVP?" without depending on `myAttendee`'s mutable
+   *  bucket-array reactivity.  Stays `null` for create mode and
+   *  for edit-mode events where the user isn't an attendee. */
+  // svelte-ignore state_referenced_locally
+  let originalUserPartstat = $state<string | null>(deriveOriginalUserPartstat())
+  function deriveOriginalUserPartstat(): string | null {
+    if (mode !== 'edit' || !event) return null
+    for (const a of event.attendees ?? []) {
+      // userIdentities may not be populated yet on first paint;
+      // we re-resolve once it lands via the effect below.
+      if (userIdentities.has(a.email.toLowerCase())) {
+        return (a.status ?? 'NEEDS-ACTION').toUpperCase()
+      }
+    }
+    return null
+  }
+  // userIdentities loads async — re-derive once it's known so the
+  // change detection has the right baseline.
+  $effect(() => {
+    if (originalUserPartstat !== null) return
+    if (userIdentities.size === 0) return
+    originalUserPartstat = deriveOriginalUserPartstat()
   })
 
   // One pending input per role.  Each commits to its bucket on
@@ -620,9 +645,14 @@
     }
   }
 
-  /** Render an attendee for the chip label — prefers display
-   *  name when present, otherwise the email. */
+  /** Render an attendee for the chip label.  When the row's
+   *  email matches one of the user's configured mail-account
+   *  identities, render "You" — that's the address the invite
+   *  landed on, and the user reads "You" much faster than their
+   *  own email at a glance.  Otherwise prefer the CN, falling
+   *  back to the bare email. */
   function chipLabel(a: EventAttendee): string {
+    if (userIdentities.has(a.email.toLowerCase())) return 'You'
     if (a.common_name && a.common_name.trim() && a.common_name !== a.email) {
       return a.common_name
     }
@@ -788,6 +818,17 @@
     const cal = calendars.find((c) => c.id === calendarId)
     if (!cal) return
     const ncId = cal.nextcloud_account_id
+
+    // Drop the user's own ATTENDEE row before talking to Talk —
+    // they're already the room's auto-owner (NC adds the
+    // creator), and the EventEditor auto-seeds the user as a
+    // CHAIR (organiser) on every new event since #128.  Without
+    // this filter that CHAIR row would land in the room a second
+    // time as either a `users` participant or — if the lookup
+    // misses — a `Email` guest with the user's own address.
+    attendees = attendees.filter(
+      (a) => !userIdentities.has(a.email.toLowerCase()),
+    )
 
     // Fill any gaps in `internalLookup` synchronously here so
     // the room-type decision is based on the *full* answer set
@@ -993,10 +1034,37 @@
           attendees: input.attendees.map((a) => a.email),
         })
       } else if (event) {
-        await invoke('update_calendar_event', {
-          eventId: event.id,
-          input,
-        })
+        // RSVP-only fast path: when the user is themselves an
+        // attendee and changed their PARTSTAT, route the update
+        // through the dedicated surgical IPC.  That preserves
+        // the cached body byte-for-byte (just flipping the user's
+        // ATTENDEE PARTSTAT and stamping SCHEDULE-FORCE-SEND=
+        // REPLY) so Sabre's iTIP broker classifies the diff as a
+        // genuine RSVP and dispatches the REPLY iMIP.  Going
+        // through `update_calendar_event` would regenerate the
+        // body from form fields and the broker silently swallows
+        // the iMIP — issue #124 / regression from #128.
+        const newPartstat = (myAttendee?.status ?? 'NEEDS-ACTION').toUpperCase()
+        const partstatChanged =
+          myAttendee !== null &&
+          originalUserPartstat !== null &&
+          newPartstat !== originalUserPartstat
+        if (partstatChanged) {
+          await invoke('rsvp_existing_event', {
+            eventId: event.id,
+            partstat: newPartstat,
+            attendeeHint: myAttendee?.email ?? null,
+          })
+          // Pin the new baseline so a subsequent save in the same
+          // session doesn't try to fire another surgical RSVP for
+          // a PARTSTAT that already landed.
+          originalUserPartstat = newPartstat
+        } else {
+          await invoke('update_calendar_event', {
+            eventId: event.id,
+            input,
+          })
+        }
         onsaved()
       }
 
