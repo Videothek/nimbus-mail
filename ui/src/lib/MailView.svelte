@@ -63,6 +63,11 @@
         subject + thread participants. Wired from `App.svelte` so the
         resulting Compose window stacks on top of the inbox view. */
     oncreatetalk?: (mail: Email) => void
+    /** Save the email as a Nextcloud note. The handler in
+        `App.svelte` picks the NC account and POSTs to the Notes
+        API — we just hand over the email so the title/body are
+        sourced consistently with what's currently visible. */
+    onsavenote?: (mail: Email) => void
     /** True when the currently selected folder is the account's
         Drafts mailbox. Swaps the toolbar over from the reply/forward
         cluster to a single "Edit" action, because Reply-to-a-draft
@@ -104,6 +109,7 @@
     onreplyall,
     onforward,
     oncreatetalk,
+    onsavenote,
     isDraftsFolder = false,
     isSentFolder = false,
     oneditdraft,
@@ -1016,6 +1022,13 @@
             onclick={() => email && oncreatetalk?.(email)}
             title="Create a Nextcloud Talk room with the participants of this thread"
           >💬 Talk</button>
+        {/if}
+        {#if onsavenote}
+          <button
+            class="btn btn-sm preset-outlined-primary-500"
+            onclick={() => email && onsavenote?.(email)}
+            title="Save this email as a Nextcloud note"
+          >📝 Save as note</button>
         {/if}
         <button
           class="btn btn-sm preset-outlined-surface-500"

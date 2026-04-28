@@ -29,6 +29,7 @@
   import CalendarView from './lib/CalendarView.svelte'
   import FilesView from './lib/FilesView.svelte'
   import TalkView from './lib/TalkView.svelte'
+  import NotesView from './lib/NotesView.svelte'
   import CreateTalkRoomModal, { type TalkRoom } from './lib/CreateTalkRoomModal.svelte'
   import SearchBar, {
     type SearchScope,
@@ -49,6 +50,7 @@
     | 'calendar'
     | 'files'
     | 'talk'
+    | 'notes'
   let currentView = $state<View>('loading')
 
 
@@ -893,6 +895,67 @@
       talkLink: { name: room.display_name, url: room.web_url },
     })
   }
+
+  /** "Save as note" handler — issue #67's email→note bridge. Builds
+      a markdown body that preserves the headers the user actually
+      cares about (From / To / Date) so the note carries enough
+      context to be useful when read months later. Body source
+      preference: plain text first (already the right shape for
+      markdown), falling back to a stripped HTML body so users on
+      HTML-only senders still get readable note content. */
+  async function onSaveMailAsNote(mail: OpenMail & { body_html?: string | null }) {
+    let ncId = ''
+    try {
+      const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
+      if (list.length === 0) {
+        alert('Connect a Nextcloud account first (Settings → Nextcloud).')
+        return
+      }
+      ncId = list[0].id
+    } catch (e) {
+      alert(`Failed to load Nextcloud accounts: ${e}`)
+      return
+    }
+
+    const headerLines = [
+      `**From:** ${mail.from}`,
+      mail.to.length ? `**To:** ${mail.to.join(', ')}` : null,
+      mail.cc.length ? `**Cc:** ${mail.cc.join(', ')}` : null,
+      `**Date:** ${new Date(mail.date).toLocaleString()}`,
+    ].filter(Boolean)
+
+    let body = (mail.body_text ?? '').trim()
+    if (!body && mail.body_html) {
+      // Strip tags for the markdown note body — collapsing
+      // whitespace afterwards keeps the result readable when the
+      // sender's HTML had each block on its own line.
+      const tmp = document.createElement('div')
+      tmp.innerHTML = mail.body_html
+      body = (tmp.textContent ?? '').trim()
+    }
+
+    const content = `${headerLines.join('  \n')}\n\n---\n\n${body}`
+    const title = mail.subject || '(no subject)'
+
+    try {
+      await invoke('create_nextcloud_note', {
+        ncId,
+        title,
+        content,
+        category: 'Mail',
+      })
+      // Surface success via the same OS toast path new-mail uses,
+      // when permission's been granted; otherwise fall back to a
+      // plain alert so the user knows the save took.
+      if (notificationsGranted) {
+        fireToast('Saved to Notes', title)
+      } else {
+        alert(`Saved "${title}" to Nextcloud Notes.`)
+      }
+    } catch (e) {
+      alert(`Failed to save note: ${e}`)
+    }
+  }
 </script>
 
 <!-- Loading / Setup both run before the user has an account, so the
@@ -951,6 +1014,10 @@
     {:else if currentView === 'talk'}
       <div class="flex-1 min-w-0">
         <TalkView onclose={goToInbox} oncompose={openCompose} />
+      </div>
+    {:else if currentView === 'notes'}
+      <div class="flex-1 min-w-0">
+        <NotesView onclose={goToInbox} oncompose={openCompose} />
       </div>
     {:else}
       <!-- Mail view: Sidebar (folders) + mail-list column + MailView.
@@ -1015,6 +1082,7 @@
         onreplyall={onReplyAll}
         onforward={onForward}
         oncreatetalk={onCreateTalkFromMail}
+        onsavenote={onSaveMailAsNote}
         isDraftsFolder={isDraftsFolder}
         isSentFolder={isSentFolder}
         oneditdraft={onEditDraft}

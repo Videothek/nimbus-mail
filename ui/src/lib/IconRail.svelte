@@ -57,6 +57,7 @@
     | 'calendar'
     | 'files'
     | 'talk'
+    | 'notes'
     | 'settings'
 
   interface Props {
@@ -204,6 +205,7 @@
     { match: 'calendar', label: 'Calendar', icon: '\u{1F4C5}' }, // 📅
     { match: 'files', label: 'Files', icon: '\u{1F4C1}' },       // 📁
     { match: 'talk', label: 'Talk', icon: '\u{1F4AC}' },         // 💬
+    { match: 'notes', label: 'Notes', icon: '\u{1F4DD}' },       // 📝
   ]
 </script>
 
