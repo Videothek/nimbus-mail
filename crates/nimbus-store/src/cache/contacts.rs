@@ -589,8 +589,16 @@ impl Cache {
     }
 
     /// Return contacts that carry the given CATEGORY (case
-    /// sensitive — that's what NC's UI does).  Empty list when
-    /// the category isn't on any cached card.
+    /// sensitive — that's what NC's UI does).  Walks every
+    /// non-group contact row and matches against the parsed
+    /// `c.categories` list — no LIKE pre-filter, since the
+    /// JSON-substring approach was missing rows whose
+    /// `categories_json` column hadn't been backfilled yet
+    /// (the column LIKE-matched `'[]'` for those, even when
+    /// the underlying vCard's CATEGORIES line was non-empty).
+    /// Iterating every row is fine at typical addressbook
+    /// sizes — one cheap SELECT per Lists-tab open, not per
+    /// keystroke.
     pub fn list_contacts_with_category(
         &self,
         category: &str,
@@ -600,24 +608,12 @@ impl Cache {
             "SELECT id, nextcloud_account_id, display_name, emails_json,
                     phones_json, organization, photo_mime,
                     title, birthday, note, addresses_json, urls_json,
-                    categories_json
+                    categories_json, addressbook
              FROM contacts
              WHERE COALESCE(kind, '') != 'group'
-               AND categories_json LIKE ?1
              ORDER BY display_name COLLATE NOCASE",
         )?;
-        // LIKE pre-filter on the JSON-encoded category — cheap
-        // wide net.  We re-validate against the parsed list
-        // below so substring false-positives (e.g. category
-        // "Bookclub" matching "Bookclub Alumni") get pruned.
-        let needle = format!(
-            "%{}%",
-            serde_json::to_string(category)
-                .unwrap_or_else(|_| format!("\"{category}\""))
-                .replace('%', r"\%")
-                .replace('_', r"\_"),
-        );
-        let rows = stmt.query_map(params![needle], row_to_contact_no_photo)?;
+        let rows = stmt.query_map([], row_to_contact_no_photo)?;
         let mut out = Vec::new();
         for r in rows {
             let c = r?;
