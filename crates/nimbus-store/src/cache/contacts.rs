@@ -690,6 +690,62 @@ impl Cache {
         Ok(())
     }
 
+    /// Local-only emoji avatar overlay for the unified mailing-list
+    /// view, keyed by `cat:<name>` / `list:<uid>` / `team:<id>` /
+    /// `group:<id>`.  Empty map when no overrides exist.
+    pub fn get_mailing_list_emojis(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>, CacheError> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, emoji FROM mailing_list_settings
+             WHERE emoji IS NOT NULL AND emoji != ''",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut out = std::collections::HashMap::new();
+        for r in rows {
+            let (k, v) = r?;
+            out.insert(k, v);
+        }
+        Ok(out)
+    }
+
+    pub fn set_mailing_list_emoji(
+        &self,
+        id: &str,
+        emoji: Option<&str>,
+    ) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "INSERT INTO mailing_list_settings (id, hidden_from_autocomplete, emoji)
+             VALUES (?1, 0, ?2)
+             ON CONFLICT (id) DO UPDATE SET emoji = excluded.emoji",
+            params![id, emoji.filter(|s| !s.is_empty())],
+        )?;
+        Ok(())
+    }
+
+    /// Rename one entry in `mailing_list_settings` so the local
+    /// hide / emoji overlay survives a category rename (the id
+    /// changes from `cat:<old>` to `cat:<new>`).
+    pub fn rename_mailing_list_setting(
+        &self,
+        old_id: &str,
+        new_id: &str,
+    ) -> Result<(), CacheError> {
+        if old_id == new_id {
+            return Ok(());
+        }
+        let conn = self.pool.get()?;
+        conn.execute(
+            "UPDATE mailing_list_settings SET id = ?2 WHERE id = ?1",
+            params![old_id, new_id],
+        )?;
+        Ok(())
+    }
+
     // ── Contact groups (#133, #113) ────────────────────────────
 
     /// List every cached contact group across the user's address

@@ -696,6 +696,15 @@ const MIGRATIONS: &[&str] = &[
         hidden_from_autocomplete INTEGER NOT NULL DEFAULT 0
     );
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v18 → v19: per-list emoji overlay (#133 follow-up).  Local-
+    // only avatar override shown in place of the source icon
+    // (🏷️/📨/⚡) on the Mailing Lists tab.  NULL falls back to
+    // the source icon.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE mailing_list_settings ADD COLUMN emoji TEXT;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

@@ -2111,6 +2111,10 @@ async fn rename_contact_category(
             .set_mailing_list_suppressed(&format!("cat:{new}"), true)
             .map_err(NimbusError::from)?;
     }
+    // Carry the per-list emoji overlay across the rename too.
+    cache
+        .rename_mailing_list_setting(&format!("cat:{old}"), &format!("cat:{new}"))
+        .map_err(NimbusError::from)?;
     Ok(())
 }
 
@@ -2222,6 +2226,9 @@ struct MailingListView {
     /// AddressAutocomplete.  Categories use the same flag for
     /// the "Use as mailing list" toggle (off → suppressed).
     hidden_from_autocomplete: bool,
+    /// Local-only emoji avatar override; `None` falls back to
+    /// the source's default icon (🏷️/📨/⚡).
+    emoji: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2251,6 +2258,9 @@ async fn list_mailing_lists(
     });
     let suppressed = cache
         .get_mailing_list_suppressed()
+        .map_err(NimbusError::from)?;
+    let emojis = cache
+        .get_mailing_list_emojis()
         .map_err(NimbusError::from)?;
     let mut out: Vec<MailingListView> = Vec::new();
 
@@ -2293,12 +2303,14 @@ async fn list_mailing_lists(
                 }
             })
             .collect();
+        let emoji = emojis.get(&id).cloned();
         out.push(MailingListView {
             id,
             source: "category".to_string(),
             name,
             members,
             hidden_from_autocomplete,
+            emoji,
         });
     }
 
@@ -2319,12 +2331,14 @@ async fn list_mailing_lists(
                     email,
                 })
                 .collect();
+            let emoji = emojis.get(&id).cloned().or_else(|| g.emoji.clone());
             out.push(MailingListView {
                 id,
                 source: "manual".to_string(),
                 name: g.display_name,
                 members,
                 hidden_from_autocomplete: suppressed_row,
+                emoji,
             });
         }
     }
@@ -2346,12 +2360,14 @@ async fn list_mailing_lists(
                 email: m.email,
             })
             .collect();
+        let emoji = emojis.get(&id).cloned();
         out.push(MailingListView {
             id,
             source: "team".to_string(),
             name: g.display_name,
             members,
             hidden_from_autocomplete: suppressed_row,
+            emoji,
         });
     }
 
@@ -2372,6 +2388,48 @@ fn set_mailing_list_hidden(
     cache
         .set_mailing_list_suppressed(&id, hidden)
         .map_err(NimbusError::from)
+}
+
+/// Set (or clear) the per-list emoji avatar override.  An empty
+/// string clears the override so the row falls back to its
+/// source icon.  Works for category / manual / team rows alike,
+/// keyed by the unified id.
+#[tauri::command]
+fn set_mailing_list_emoji(
+    id: String,
+    emoji: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    cache
+        .set_mailing_list_emoji(&id, emoji.as_deref().filter(|s| !s.is_empty()))
+        .map_err(NimbusError::from)
+}
+
+/// Rename a mailing list, dispatched on the unified id prefix.
+/// `cat:<name>` rewrites the CATEGORIES tag on every member
+/// contact; `list:<uid>` updates the KIND:group vCard's
+/// `display_name`.  Teams are read-only and rejected.
+#[tauri::command]
+async fn rename_mailing_list(
+    id: String,
+    new_name: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let new_name = new_name.trim().to_string();
+    if new_name.is_empty() {
+        return Err(NimbusError::Other("new name is empty".into()));
+    }
+    if let Some(old) = id.strip_prefix("cat:") {
+        rename_contact_category(old.to_string(), new_name, cache).await
+    } else if let Some(group_id) = id.strip_prefix("list:") {
+        // Reuse update_contact_group with the existing member
+        // list — passing None for member_uids keeps them intact.
+        update_contact_group(group_id.to_string(), Some(new_name), None, cache)
+            .await
+            .map(|_| ())
+    } else {
+        Err(NimbusError::Other("teams cannot be renamed".into()))
+    }
 }
 
 // ── Contact groups / mailing lists (#133, #113) ───────────────
@@ -7096,6 +7154,8 @@ fn main() {
             delete_contact_category,
             list_mailing_lists,
             set_mailing_list_hidden,
+            set_mailing_list_emoji,
+            rename_mailing_list,
             list_nextcloud_addressbooks,
             list_nextcloud_calendars,
             sync_nextcloud_calendars,
