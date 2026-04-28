@@ -1039,7 +1039,28 @@
   }
 </script>
 
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" role="dialog" aria-modal="true">
+<!-- Backdrop click closes the editor — same UX pattern as the
+     new-calendar modal.  Skips when an inner popover (DateField,
+     TimeField, Select, attendee suggestions) is currently open
+     so the user's first outside-click closes just the popover,
+     not the whole editor.  `target === currentTarget` ensures
+     clicks on the modal panel itself don't trigger this. -->
+<div
+  class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+  role="dialog"
+  aria-modal="true"
+  onmousedown={(e) => {
+    if (e.target !== e.currentTarget) return
+    if (
+      document.querySelector(
+        '[role="listbox"], [role="dialog"][aria-label="Pick a date"]',
+      )
+    ) {
+      return
+    }
+    onclose()
+  }}
+>
   <div class="w-[640px] max-h-[90vh] bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col">
     <header class="px-5 py-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between gap-3">
       <h2 class="text-base font-semibold shrink-0">
