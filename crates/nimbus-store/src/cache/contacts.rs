@@ -507,6 +507,154 @@ impl Cache {
         Ok(())
     }
 
+    // ── Categories / Kontaktgruppen (#133 redesign) ─────────────
+
+    /// Distinct CATEGORIES across every cached contact.  Each
+    /// row carries the count of contacts tagged with the
+    /// category; the unified mailing-list view derives a
+    /// virtual mailing list per row.  Empty when no card has a
+    /// CATEGORIES tag.
+    pub fn list_contact_categories(
+        &self,
+    ) -> Result<Vec<(String, u32)>, CacheError> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT categories_json FROM contacts
+             WHERE COALESCE(kind, '') != 'group'
+               AND categories_json != '[]'",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let v: String = r.get(0)?;
+            Ok(v)
+        })?;
+        let mut counts: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
+        for r in rows {
+            let json = r?;
+            let cats: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+            for c in cats {
+                let trimmed = c.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                *counts.entry(trimmed.to_string()).or_insert(0) += 1;
+            }
+        }
+        let mut out: Vec<(String, u32)> = counts.into_iter().collect();
+        out.sort_by(|a, b| {
+            a.0.to_lowercase()
+                .cmp(&b.0.to_lowercase())
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        Ok(out)
+    }
+
+    /// Return contacts that carry the given CATEGORY (case
+    /// sensitive — that's what NC's UI does).  Empty list when
+    /// the category isn't on any cached card.
+    pub fn list_contacts_with_category(
+        &self,
+        category: &str,
+    ) -> Result<Vec<Contact>, CacheError> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, nextcloud_account_id, display_name, emails_json,
+                    phones_json, organization, photo_mime,
+                    title, birthday, note, addresses_json, urls_json,
+                    categories_json
+             FROM contacts
+             WHERE COALESCE(kind, '') != 'group'
+               AND categories_json LIKE ?1
+             ORDER BY display_name COLLATE NOCASE",
+        )?;
+        // LIKE pre-filter on the JSON-encoded category — cheap
+        // wide net.  We re-validate against the parsed list
+        // below so substring false-positives (e.g. category
+        // "Bookclub" matching "Bookclub Alumni") get pruned.
+        let needle = format!(
+            "%{}%",
+            serde_json::to_string(category)
+                .unwrap_or_else(|_| format!("\"{category}\""))
+                .replace('%', r"\%")
+                .replace('_', r"\_"),
+        );
+        let rows = stmt.query_map(params![needle], row_to_contact_no_photo)?;
+        let mut out = Vec::new();
+        for r in rows {
+            let c = r?;
+            if c.categories.iter().any(|cc| cc == category) {
+                out.push(c);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Look up one contact's server handle by bare vcard UID +
+    /// NC account.  Used by the category CRUD path so we can
+    /// PUT a rewritten vCard without round-tripping through
+    /// the composite app-side id.
+    pub fn get_contact_handle_by_uid(
+        &self,
+        nc_account_id: &str,
+        vcard_uid: &str,
+    ) -> Result<Option<ContactServerHandle>, CacheError> {
+        let conn = self.pool.get()?;
+        let row = conn
+            .query_row(
+                "SELECT nextcloud_account_id, addressbook, vcard_uid, href, etag, vcard_raw
+                 FROM contacts
+                 WHERE nextcloud_account_id = ?1 AND vcard_uid = ?2",
+                params![nc_account_id, vcard_uid],
+                |r| {
+                    Ok(ContactServerHandle {
+                        nextcloud_account_id: r.get(0)?,
+                        addressbook: r.get(1)?,
+                        vcard_uid: r.get(2)?,
+                        href: r.get(3)?,
+                        etag: r.get(4)?,
+                        vcard_raw: r.get(5)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Per-row local overlay for the mailing-list view: when
+    /// `suppressed = 1` the row is dropped from the autocomplete
+    /// AND from the Mailing Lists tab.  Keyed by the unified id
+    /// (`cat:<name>` / `group:<id>` / `team:<id>` / `list:<uid>`).
+    pub fn get_mailing_list_suppressed(
+        &self,
+    ) -> Result<std::collections::HashSet<String>, CacheError> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT id FROM mailing_list_settings
+             WHERE hidden_from_autocomplete = 1",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = std::collections::HashSet::new();
+        for r in rows {
+            out.insert(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn set_mailing_list_suppressed(
+        &self,
+        id: &str,
+        suppressed: bool,
+    ) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "INSERT INTO mailing_list_settings (id, hidden_from_autocomplete)
+             VALUES (?1, ?2)
+             ON CONFLICT (id) DO UPDATE SET hidden_from_autocomplete = excluded.hidden_from_autocomplete",
+            params![id, suppressed as i64],
+        )?;
+        Ok(())
+    }
+
     // ── Contact groups (#133, #113) ────────────────────────────
 
     /// List every cached contact group across the user's address
