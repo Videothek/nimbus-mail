@@ -30,6 +30,14 @@ tauri-plugin-notification = "2"
 # Download action so the user can pick where to save the file instead
 # of it landing in the default Downloads folder silently.
 tauri-plugin-dialog = "2"
+# "Launch on system startup" toggle (#131 follow-up).  Cross-
+# platform: registers an XDG autostart entry on Linux, a
+# LaunchAgent plist on macOS, and an HKCU\\…\\Run registry value
+# on Windows.  Toggled from Settings → General; the user's
+# `appSettings.autostart_enabled` choice is the source of truth
+# and we sync it to the OS via the plugin's enable() / disable()
+# IPCs.
+tauri-plugin-autostart = "2"
 # Opens a URL in the system default browser. Used by the Nextcloud
 # Login Flow v2 command to bounce the user out to their NC login page.
 open = { workspace = true }

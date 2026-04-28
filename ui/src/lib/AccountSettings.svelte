@@ -8,6 +8,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { enable as autostartEnable, disable as autostartDisable, isEnabled as autostartIsEnabled } from '@tauri-apps/plugin-autostart'
   import NextcloudSettings from './NextcloudSettings.svelte'
   import { THEMES, applyTheme, type ThemeMode } from './theme'
 
@@ -108,6 +109,7 @@
     auto_advance_after_remove: boolean
     default_calendar_id: string | null
     talk_reminder_enabled: boolean
+    autostart_enabled: boolean
   }
 
   let appSettings = $state<AppSettings>({
@@ -122,6 +124,7 @@
     auto_advance_after_remove: true,
     default_calendar_id: null,
     talk_reminder_enabled: true,
+    autostart_enabled: false,
   })
 
   // Calendar list for the "default calendar" picker.  Loaded
@@ -200,6 +203,42 @@
       }
     }, 400)
   }
+
+  /** Toggle "launch on login" via the autostart plugin and
+   *  persist the user's choice.  We talk to the OS first
+   *  because the plugin call is the cross-platform side-effect
+   *  (XDG entry / LaunchAgent / registry key); only on its
+   *  success do we commit the new bit to AppSettings.  That
+   *  way a misconfigured environment (e.g. read-only
+   *  ~/.config) can't leave us with a checked box that doesn't
+   *  actually autostart. */
+  async function onAutostartToggle(next: boolean) {
+    try {
+      if (next) await autostartEnable()
+      else await autostartDisable()
+      appSettings.autostart_enabled = next
+      scheduleSave()
+    } catch (e) {
+      console.warn('autostart toggle failed', e)
+      // Roll the checkbox state back so the UI matches reality.
+      appSettings.autostart_enabled = !next
+      prefsSaveStatus = 'error'
+    }
+  }
+
+  /** Reconcile the stored bit against the OS on mount — picks
+   *  up the case where the user removed the autostart entry
+   *  manually (e.g. via system settings) since the last
+   *  launch. */
+  $effect(() => {
+    void autostartIsEnabled()
+      .then((enabled) => {
+        if (enabled !== appSettings.autostart_enabled) {
+          appSettings.autostart_enabled = enabled
+        }
+      })
+      .catch((e) => console.warn('autostart isEnabled failed', e))
+  })
 
   /** Theme picker handler — apply the change to the DOM immediately
       so the user sees it before the debounced save fires. We still go
@@ -575,6 +614,21 @@
             onchange={scheduleSave}
           />
           <span>Start minimized to tray</span>
+        </label>
+
+        <label class="flex items-center gap-2">
+          <input
+            type="checkbox"
+            class="checkbox"
+            checked={appSettings.autostart_enabled}
+            onchange={(e) => void onAutostartToggle((e.currentTarget as HTMLInputElement).checked)}
+          />
+          <span>
+            Launch Nimbus when I sign in
+            <span class="block text-xs text-surface-500">
+              Adds an entry to your OS's autostart list. Combine with "Start minimized to tray" for a quiet boot.
+            </span>
+          </span>
         </label>
 
         <label class="flex items-center gap-2">

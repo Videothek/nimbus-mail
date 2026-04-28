@@ -66,6 +66,13 @@ pub struct AppSettings {
     /// so the user controls *when* by setting reminders on the
     /// event and *whether at all* with this opt-out.
     pub talk_reminder_enabled: bool,
+    /// Launch Nimbus automatically when the user logs in (#131
+    /// follow-up).  Backed by `tauri-plugin-autostart`, which
+    /// registers an XDG autostart entry on Linux, a LaunchAgent
+    /// on macOS, and an `HKCU…\Run` value on Windows.  The
+    /// settings UI keeps this in lockstep with the OS state via
+    /// the plugin's `enable` / `disable` IPCs.
+    pub autostart_enabled: bool,
 }
 
 /// Light/dark mode selection. `System` follows the OS preference
@@ -104,6 +111,7 @@ impl Default for AppSettings {
             auto_advance_after_remove: true,
             default_calendar_id: None,
             talk_reminder_enabled: true,
+            autostart_enabled: false,
         }
     }
 }
