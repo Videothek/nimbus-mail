@@ -18,6 +18,7 @@ pub mod auth;
 pub mod capabilities;
 pub mod client;
 pub mod files;
+pub mod notes;
 pub mod shares;
 pub mod talk;
 pub mod user;
@@ -27,6 +28,9 @@ pub use capabilities::fetch_capabilities;
 pub use files::{
     FileEntry, create_directory, delete_path, download_file, list_directory, propfind_fileid,
     upload_file,
+};
+pub use notes::{
+    NewNote, Note, NoteUpdate, create_note, delete_note, get_note, list_notes, update_note,
 };
 pub use shares::{PublicShare, create_public_share, update_share_label};
 pub use talk::{

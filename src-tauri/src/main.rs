@@ -1377,6 +1377,122 @@ async fn rename_talk_room(
     .await
 }
 
+// ── Nextcloud Notes (issue #67) ────────────────────────────────
+//
+// Five thin commands wrapping `nimbus_nextcloud::notes`. Same
+// shape as the Talk block above: each call loads the chosen NC
+// account + app password and forwards. The Notes API is plain
+// REST under `/index.php/apps/notes/api/v1/notes`, so there's no
+// envelope unpacking — the wire types come straight back.
+//
+// We deliberately don't cache notes locally: the Notes web UI is
+// the canonical editor and we want NotesView to reflect what the
+// user just typed there without a sync-roundtrip dance. Cost is
+// one HTTP call per list-refresh, which is cheap.
+
+/// List every note the connected Nextcloud user can see.
+#[tauri::command]
+async fn list_nextcloud_notes(
+    nc_id: String,
+) -> Result<Vec<nimbus_nextcloud::Note>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::list_notes(&account.server_url, &account.username, &app_password).await
+}
+
+/// Fetch a single note, primarily to refresh the etag right before
+/// an edit lands so we don't trip a 412 on a note the user looked
+/// at long ago.
+#[tauri::command]
+async fn get_nextcloud_note(
+    nc_id: String,
+    note_id: u64,
+) -> Result<nimbus_nextcloud::Note, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::get_note(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        note_id,
+    )
+    .await
+}
+
+/// Create a new note. Title can be empty — the server derives it
+/// from the first content line in that case, matching the behaviour
+/// of the Notes web UI.
+#[tauri::command]
+async fn create_nextcloud_note(
+    nc_id: String,
+    title: String,
+    content: String,
+    category: String,
+) -> Result<nimbus_nextcloud::Note, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::create_note(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &nimbus_nextcloud::NewNote {
+            title: &title,
+            content: &content,
+            category: &category,
+        },
+    )
+    .await
+}
+
+/// Apply a partial update. Each field is optional — the frontend
+/// sends only the ones the user touched so a category-only edit
+/// doesn't have to round-trip body bytes the user didn't change.
+#[tauri::command]
+async fn update_nextcloud_note(
+    nc_id: String,
+    note_id: u64,
+    etag: String,
+    title: Option<String>,
+    content: Option<String>,
+    category: Option<String>,
+    favorite: Option<bool>,
+) -> Result<nimbus_nextcloud::Note, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::update_note(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        note_id,
+        &etag,
+        &nimbus_nextcloud::NoteUpdate {
+            title: title.as_deref(),
+            content: content.as_deref(),
+            category: category.as_deref(),
+            favorite,
+        },
+    )
+    .await
+}
+
+/// Delete a note. Called by the trash button in NotesView; the
+/// frontend confirms in JS first so we don't need a confirm here.
+#[tauri::command]
+async fn delete_nextcloud_note(
+    nc_id: String,
+    note_id: u64,
+) -> Result<(), NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::delete_note(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        note_id,
+    )
+    .await
+}
+
 // ── CardDAV contacts ────────────────────────────────────────────
 //
 // Contact sync is driven from a single entry point: the UI calls
@@ -5844,6 +5960,11 @@ fn main() {
             delete_talk_room,
             add_talk_participant,
             rename_talk_room,
+            list_nextcloud_notes,
+            get_nextcloud_note,
+            create_nextcloud_note,
+            update_nextcloud_note,
+            delete_nextcloud_note,
             upload_to_nextcloud,
             office_open_attachment,
             office_close_attachment,
