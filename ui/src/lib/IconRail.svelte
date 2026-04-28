@@ -29,12 +29,18 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event'
   import { onDestroy } from 'svelte'
 
   interface Account {
     id: string
     display_name: string
     email: string
+    /** Optional emoji avatar (issue #115) — replaces the
+     *  initials bubble when set. */
+    emoji?: string | null
+    /** Display order for the rail; lower values render first. */
+    sort_order?: number
   }
 
   interface TalkRoomSummary {
@@ -88,6 +94,54 @@
     if (parts.length === 1) return parts[0][0].toUpperCase()
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
   }
+
+  /** Accounts sorted by `sort_order` (#115) so the rail honours
+   *  the user's chosen ordering — `id` ties keep the order
+   *  stable when two rows share the same sort_order. */
+  const sortedAccounts = $derived(
+    [...accounts].sort((a, b) => {
+      const ao = a.sort_order ?? 0
+      const bo = b.sort_order ?? 0
+      if (ao !== bo) return ao - bo
+      return a.id.localeCompare(b.id)
+    }),
+  )
+
+  // ── Per-account unread badges (#115) ────────────────────────
+  // The Rust side emits `unread-count-by-account-updated` after
+  // every poll, carrying a HashMap<accountId, count>.  We seed
+  // the state once on mount via `get_unread_counts_by_account`
+  // so the badge paints immediately, then keep it live with the
+  // event subscription.
+  let unreadByAccount = $state<Record<string, number>>({})
+  $effect(() => {
+    void invoke<Record<string, number>>('get_unread_counts_by_account')
+      .then((m) => (unreadByAccount = m))
+      .catch((e) => console.warn('get_unread_counts_by_account failed', e))
+    let unlisten: UnlistenFn | null = null
+    void listen<Record<string, number>>(
+      'unread-count-by-account-updated',
+      (e) => {
+        unreadByAccount = e.payload ?? {}
+      },
+    )
+      .then((fn) => (unlisten = fn))
+      .catch((e) =>
+        console.warn('listen unread-count-by-account-updated failed', e),
+      )
+    return () => {
+      if (unlisten) unlisten()
+    }
+  })
+  function unreadFor(id: string): number {
+    return unreadByAccount[id] ?? 0
+  }
+  /** Sum of every account's unread count — drives the "All
+   *  inboxes" bubble's badge so the unified view also shows a
+   *  single aggregate red dot when anything's pending. */
+  const totalUnread = $derived(
+    Object.values(unreadByAccount).reduce((a, b) => a + b, 0),
+  )
 
   // ── Talk unread badge ───────────────────────────────────────
   // Polls the first configured Nextcloud account every 30s and
@@ -162,7 +216,7 @@
        chrome with no distinct behaviour. -->
   {#if accounts.length > 1}
     <button
-      class="w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold
+      class="relative w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold
              transition-colors
              {unified
                ? 'bg-primary-500 text-white ring-2 ring-offset-2 ring-offset-surface-100 dark:ring-offset-surface-800 ring-primary-500'
@@ -188,21 +242,42 @@
         <span class="absolute inset-0 flex items-center justify-center text-lg leading-none -translate-y-[6px]">&#x1F4E5;</span>
         <span class="absolute bottom-0 right-0 text-[0.65rem] leading-none drop-shadow">&#x1F310;</span>
       </span>
+      {#if totalUnread > 0}
+        <span
+          class="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 text-[10px] rounded-full bg-red-500 text-white flex items-center justify-center font-semibold ring-2 ring-surface-100 dark:ring-surface-800"
+          title={`${totalUnread} unread across all inboxes`}
+        >{totalUnread > 99 ? '99+' : totalUnread}</span>
+      {/if}
     </button>
   {/if}
-  {#each accounts as a (a.id)}
+  {#each sortedAccounts as a (a.id)}
     {@const active = !unified && accountId === a.id}
+    {@const unread = unreadFor(a.id)}
     <button
-      class="w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold
+      class="relative w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold
              transition-colors
              {active
                ? 'bg-primary-500 text-white ring-2 ring-offset-2 ring-offset-surface-100 dark:ring-offset-surface-800 ring-primary-500'
                : 'bg-surface-300 dark:bg-surface-700 text-surface-700 dark:text-surface-300 hover:bg-surface-400 dark:hover:bg-surface-600'}"
-      title="{a.display_name || a.email}"
+      title={`${a.display_name || a.email}${unread > 0 ? ` — ${unread} unread` : ''}`}
       aria-label="Switch to {a.display_name || a.email}"
       onclick={() => onselectaccount(a.id)}
     >
-      {initials(a)}
+      {#if a.emoji && a.emoji.trim()}
+        <span class="text-lg leading-none">{a.emoji}</span>
+      {:else}
+        {initials(a)}
+      {/if}
+      {#if unread > 0}
+        <!-- Red unread badge (#115).  Pinned top-right and
+             ringed in the rail's surface colour so the badge
+             reads cleanly over both light and dark themes
+             without doubling as part of the avatar bubble's
+             outline. -->
+        <span
+          class="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 text-[10px] rounded-full bg-red-500 text-white flex items-center justify-center font-semibold ring-2 ring-surface-100 dark:ring-surface-800"
+        >{unread > 99 ? '99+' : unread}</span>
+      {/if}
     </button>
   {/each}
 

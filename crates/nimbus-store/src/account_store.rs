@@ -69,7 +69,8 @@ fn read_all(cache: &Cache) -> Result<Vec<Account>, NimbusError> {
             "SELECT id, display_name, email, imap_host, imap_port,
                     smtp_host, smtp_port, use_jmap, jmap_url, signature,
                     folder_icons_json, trusted_certs_json,
-                    folder_icon_overrides_json
+                    folder_icon_overrides_json,
+                    emoji, sort_order, person_name
              FROM accounts
              ORDER BY rowid",
         )
@@ -109,6 +110,9 @@ fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         folder_icons,
         trusted_certs,
         folder_icon_overrides,
+        emoji: r.get(13)?,
+        sort_order: r.get::<_, i64>(14)? as i32,
+        person_name: r.get(15)?,
     })
 }
 
@@ -143,8 +147,10 @@ fn insert_one(cache: &Cache, account: &Account) -> Result<(), NimbusError> {
             (id, display_name, email, imap_host, imap_port,
              smtp_host, smtp_port, use_jmap, jmap_url, signature,
              folder_icons_json, trusted_certs_json,
-             folder_icon_overrides_json, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+             folder_icon_overrides_json, created_at,
+             emoji, sort_order, person_name)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                 ?15, ?16, ?17)",
         params![
             account.id,
             account.display_name,
@@ -160,6 +166,9 @@ fn insert_one(cache: &Cache, account: &Account) -> Result<(), NimbusError> {
             trusted_certs_json,
             folder_icon_overrides_json,
             chrono::Utc::now().timestamp(),
+            account.emoji,
+            account.sort_order as i64,
+            account.person_name,
         ],
     )
     .map_err(|e| NimbusError::Storage(format!("insert account: {e}")))?;
@@ -206,7 +215,10 @@ pub fn update_account(cache: &Cache, updated: Account) -> Result<(), NimbusError
                  signature                  = ?10,
                  folder_icons_json          = ?11,
                  trusted_certs_json         = ?12,
-                 folder_icon_overrides_json = ?13
+                 folder_icon_overrides_json = ?13,
+                 emoji                      = ?14,
+                 sort_order                 = ?15,
+                 person_name                = ?16
              WHERE id = ?1",
             params![
                 updated.id,
@@ -222,6 +234,9 @@ pub fn update_account(cache: &Cache, updated: Account) -> Result<(), NimbusError
                 folder_icons_json,
                 trusted_certs_json,
                 folder_icon_overrides_json,
+                updated.emoji,
+                updated.sort_order as i64,
+                updated.person_name,
             ],
         )
         .map_err(|e| NimbusError::Storage(format!("update account: {e}")))?;
@@ -341,6 +356,9 @@ mod tests {
             folder_icons: Vec::new(),
             trusted_certs: Vec::new(),
             folder_icon_overrides: Default::default(),
+            emoji: None,
+            sort_order: 0,
+            person_name: None,
         }
     }
 

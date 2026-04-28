@@ -158,6 +158,29 @@ pub struct Account {
     /// silently apply to another.
     #[serde(default)]
     pub trusted_certs: Vec<TrustedCert>,
+    /// Optional emoji chosen by the user to render in the
+    /// IconRail's account avatar in place of the initials
+    /// bubble (issue #115).  Free-form string so a future
+    /// "use a contact photo" path can drop into the same slot
+    /// without a schema change; the UI treats anything
+    /// non-empty as the emoji and falls back to initials when
+    /// `None`.
+    #[serde(default)]
+    pub emoji: Option<String>,
+    /// Display order in the IconRail's account avatar list
+    /// (issue #115).  Lower values render first; ties break on
+    /// `id` so the order is stable across re-renders.  Defaults
+    /// to `0` for back-compat — new accounts inherit `0` and
+    /// new sort assignments run on top of that.
+    #[serde(default)]
+    pub sort_order: i32,
+    /// Human's full name for the From: header (issue #115),
+    /// e.g. `"Nick Schlecker"`.  Separate from `display_name`
+    /// (which is the account *label* — "Work", "Personal").
+    /// `None` falls back to `display_name`, preserving the
+    /// pre-115 behaviour for users who haven't set it.
+    #[serde(default)]
+    pub person_name: Option<String>,
 }
 
 /// One TLS leaf certificate the user has chosen to trust for an

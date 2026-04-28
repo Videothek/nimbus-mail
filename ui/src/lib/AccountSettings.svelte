@@ -36,6 +36,12 @@
      *  after a server cert renewal). */
     trusted_certs?: TrustedCert[]
     folder_icon_overrides?: Record<string, string>
+    /** Optional emoji avatar for the IconRail (#115). */
+    emoji?: string | null
+    /** Display order in the IconRail; lower = top. */
+    sort_order?: number
+    /** Human's full name for outbound From: header (#115). */
+    person_name?: string | null
   }
 
   interface TrustedCert {
@@ -370,6 +376,65 @@
     }
   })
 
+  /** Persist the emoji avatar (#115).  Empty string clears it
+   *  back to the initials fallback in the IconRail. */
+  async function onEmojiChange(account: Account, raw: string) {
+    const next = raw.trim() || null
+    account.emoji = next
+    try {
+      await invoke('update_account', { account: { ...account, emoji: next } })
+    } catch (e) {
+      console.warn('failed to save account emoji', e)
+    }
+  }
+
+  /** Persist the sender (person) name (#115). */
+  async function onPersonNameChange(account: Account, raw: string) {
+    const next = raw.trim() || null
+    account.person_name = next
+    try {
+      await invoke('update_account', {
+        account: { ...account, person_name: next },
+      })
+    } catch (e) {
+      console.warn('failed to save sender name', e)
+    }
+  }
+
+  /** Swap places with the next/previous account in the
+   *  display-order ranking.  Re-numbers the affected pair so
+   *  ties don't accumulate over time, and updates the local
+   *  state immediately so the UI reorders without waiting on
+   *  the round-trip. */
+  async function moveAccount(account: Account, delta: -1 | 1) {
+    const sorted = [...accounts].sort((a, b) => {
+      const ao = a.sort_order ?? 0
+      const bo = b.sort_order ?? 0
+      if (ao !== bo) return ao - bo
+      return a.id.localeCompare(b.id)
+    })
+    const idx = sorted.findIndex((a) => a.id === account.id)
+    const target = idx + delta
+    if (target < 0 || target >= sorted.length) return
+    const other = sorted[target]
+    // Re-rank from 0 so ties accumulated from older saves get
+    // cleaned up.  Cheap — typical user has 1-3 accounts.
+    sorted[idx] = other
+    sorted[target] = account
+    for (let i = 0; i < sorted.length; i++) {
+      const a = sorted[i]
+      if ((a.sort_order ?? 0) !== i) {
+        a.sort_order = i
+        try {
+          await invoke('update_account', { account: { ...a, sort_order: i } })
+        } catch (e) {
+          console.warn('failed to save account sort order', e)
+        }
+      }
+    }
+    accounts = [...sorted]
+  }
+
   async function persistIcons(account: Account, rules: FolderIconRule[]) {
     iconSaveStatus[account.id] = 'saving'
     account.folder_icons = rules
@@ -643,20 +708,51 @@
       </div>
 
     {:else}
-      <!-- Account list -->
+      <!-- Account list — sorted by `sort_order` (#115) so the
+           order in this panel matches the IconRail. -->
+      {@const sortedRows = [...accounts].sort((a, b) => {
+        const ao = a.sort_order ?? 0
+        const bo = b.sort_order ?? 0
+        if (ao !== bo) return ao - bo
+        return a.id.localeCompare(b.id)
+      })}
       <div class="space-y-4">
-        {#each accounts as account (account.id)}
+        {#each sortedRows as account, accountIdx (account.id)}
           <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg">
             <div class="flex items-start justify-between">
-              <div>
-                <p class="font-semibold">{account.display_name}</p>
-                <p class="text-sm text-surface-500">{account.email}</p>
-                <div class="text-xs text-surface-400 mt-2 space-y-0.5">
-                  <p>IMAP: {account.imap_host}:{account.imap_port}</p>
-                  <p>SMTP: {account.smtp_host}:{account.smtp_port}</p>
-                  {#if account.use_jmap}
-                    <p class="text-primary-500">JMAP enabled</p>
-                  {/if}
+              <div class="flex items-start gap-3">
+                <!-- Reorder handle: ▲ / ▼ swap places with the
+                     neighbouring row.  The sort_order field is
+                     persisted via update_account so the IconRail
+                     picks up the new order on its next render. -->
+                <div class="flex flex-col gap-1 mt-1">
+                  <button
+                    type="button"
+                    class="w-5 h-5 flex items-center justify-center rounded text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700 disabled:opacity-30"
+                    disabled={accountIdx === 0}
+                    title="Move up"
+                    aria-label="Move account up"
+                    onclick={() => void moveAccount(account, -1)}
+                  >▲</button>
+                  <button
+                    type="button"
+                    class="w-5 h-5 flex items-center justify-center rounded text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700 disabled:opacity-30"
+                    disabled={accountIdx === sortedRows.length - 1}
+                    title="Move down"
+                    aria-label="Move account down"
+                    onclick={() => void moveAccount(account, 1)}
+                  >▼</button>
+                </div>
+                <div>
+                  <p class="font-semibold">{account.display_name}</p>
+                  <p class="text-sm text-surface-500">{account.email}</p>
+                  <div class="text-xs text-surface-400 mt-2 space-y-0.5">
+                    <p>IMAP: {account.imap_host}:{account.imap_port}</p>
+                    <p>SMTP: {account.smtp_host}:{account.smtp_port}</p>
+                    {#if account.use_jmap}
+                      <p class="text-primary-500">JMAP enabled</p>
+                    {/if}
+                  </div>
                 </div>
               </div>
               <div class="flex flex-col items-end gap-1">
@@ -676,6 +772,34 @@
                 </button>
               </div>
             </div>
+
+            <!-- Identity fields: emoji avatar + person name (#115). -->
+            <div class="mt-4 pt-4 border-t border-surface-200 dark:border-surface-700 grid grid-cols-[auto_1fr] gap-3 items-center">
+              <label class="text-sm font-medium" for="emoji-{account.id}">Avatar emoji</label>
+              <input
+                id="emoji-{account.id}"
+                type="text"
+                maxlength="4"
+                placeholder="📨"
+                value={account.emoji ?? ''}
+                onchange={(e) => void onEmojiChange(account, (e.currentTarget as HTMLInputElement).value)}
+                class="input text-lg text-center w-16 px-2 py-1 rounded-md"
+                aria-label="Account emoji avatar"
+              />
+              <label class="text-sm font-medium" for="person-{account.id}">Sender name</label>
+              <input
+                id="person-{account.id}"
+                type="text"
+                placeholder={account.display_name}
+                value={account.person_name ?? ''}
+                onchange={(e) => void onPersonNameChange(account, (e.currentTarget as HTMLInputElement).value)}
+                class="input flex-1 text-sm px-3 py-1 rounded-md"
+                aria-label="Sender display name"
+              />
+            </div>
+            <p class="text-xs text-surface-400 mt-1 ml-1">
+              The sender name appears as <code>"Name" &lt;email&gt;</code> on outgoing mail. Defaults to the account name when empty.
+            </p>
 
             <div class="mt-4 pt-4 border-t border-surface-200 dark:border-surface-700">
               <div class="flex items-center justify-between mb-1">
