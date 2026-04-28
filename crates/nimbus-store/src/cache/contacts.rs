@@ -62,6 +62,10 @@ pub struct ContactRow {
     /// resolver can match members against other vCards.  Empty
     /// for non-group rows.
     pub member_uids: Vec<String>,
+    /// `CATEGORIES` tag list — drives the contacts sidebar's
+    /// Kontaktgruppen rows + the virtual mailing-list view
+    /// (#133 redesign).
+    pub categories: Vec<String>,
 }
 
 /// Sync bookmark for one addressbook.
@@ -136,9 +140,9 @@ impl Cache {
                      display_name, emails_json, phones_json, organization,
                      photo_mime, photo_data, vcard_raw, cached_at,
                      title, birthday, note, addresses_json, urls_json,
-                     kind, member_uids_json)
+                     kind, member_uids_json, categories_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                         ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+                         ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
                  ON CONFLICT (nextcloud_account_id, addressbook, vcard_uid) DO UPDATE SET
                     href             = excluded.href,
                     etag             = excluded.etag,
@@ -156,7 +160,8 @@ impl Cache {
                     addresses_json   = excluded.addresses_json,
                     urls_json        = excluded.urls_json,
                     kind             = excluded.kind,
-                    member_uids_json = excluded.member_uids_json",
+                    member_uids_json = excluded.member_uids_json,
+                    categories_json  = excluded.categories_json",
             )?;
             for c in upserts {
                 let id = format!("{nc_account_id}::{}", c.vcard_uid);
@@ -167,6 +172,8 @@ impl Cache {
                 let urls = serde_json::to_string(&c.urls).unwrap_or_else(|_| "[]".into());
                 let members =
                     serde_json::to_string(&c.member_uids).unwrap_or_else(|_| "[]".into());
+                let categories =
+                    serde_json::to_string(&c.categories).unwrap_or_else(|_| "[]".into());
                 stmt.execute(params![
                     id,
                     nc_account_id,
@@ -189,6 +196,7 @@ impl Cache {
                     urls,
                     c.kind,
                     members,
+                    categories,
                 ])?;
             }
         }
@@ -286,7 +294,8 @@ impl Cache {
                 stmt = conn.prepare(
                     "SELECT id, nextcloud_account_id, display_name, emails_json,
                             phones_json, organization, photo_mime,
-                            title, birthday, note, addresses_json, urls_json
+                            title, birthday, note, addresses_json, urls_json,
+                            categories_json
                      FROM contacts
                      WHERE nextcloud_account_id = ?1
                        AND COALESCE(kind, '') != 'group'
@@ -298,7 +307,8 @@ impl Cache {
                 stmt = conn.prepare(
                     "SELECT id, nextcloud_account_id, display_name, emails_json,
                             phones_json, organization, photo_mime,
-                            title, birthday, note, addresses_json, urls_json
+                            title, birthday, note, addresses_json, urls_json,
+                            categories_json
                      FROM contacts
                      WHERE COALESCE(kind, '') != 'group'
                      ORDER BY display_name COLLATE NOCASE",
@@ -355,7 +365,8 @@ impl Cache {
         let mut stmt = conn.prepare(
             "SELECT id, nextcloud_account_id, display_name, emails_json,
                     phones_json, organization, photo_mime,
-                    title, birthday, note, addresses_json, urls_json
+                    title, birthday, note, addresses_json, urls_json,
+                    categories_json
              FROM contacts
              WHERE emails_json != '[]'
                AND COALESCE(kind, '') != 'group'
@@ -439,15 +450,16 @@ impl Cache {
         let urls = serde_json::to_string(&row.urls).unwrap_or_else(|_| "[]".into());
         let now = Utc::now().timestamp();
         let members = serde_json::to_string(&row.member_uids).unwrap_or_else(|_| "[]".into());
+        let categories = serde_json::to_string(&row.categories).unwrap_or_else(|_| "[]".into());
         conn.execute(
             "INSERT INTO contacts
                 (id, nextcloud_account_id, addressbook, vcard_uid, href, etag,
                  display_name, emails_json, phones_json, organization,
                  photo_mime, photo_data, vcard_raw, cached_at,
                  title, birthday, note, addresses_json, urls_json,
-                 kind, member_uids_json)
+                 kind, member_uids_json, categories_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                     ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+                     ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
              ON CONFLICT (nextcloud_account_id, addressbook, vcard_uid) DO UPDATE SET
                 href             = excluded.href,
                 etag             = excluded.etag,
@@ -465,7 +477,8 @@ impl Cache {
                 addresses_json   = excluded.addresses_json,
                 urls_json        = excluded.urls_json,
                 kind             = excluded.kind,
-                member_uids_json = excluded.member_uids_json",
+                member_uids_json = excluded.member_uids_json,
+                categories_json  = excluded.categories_json",
             params![
                 id,
                 nc_account_id,
@@ -488,6 +501,7 @@ impl Cache {
                 urls,
                 row.kind,
                 members,
+                categories,
             ],
         )?;
         Ok(())
@@ -661,6 +675,7 @@ fn row_to_contact_no_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
     let phones_json: String = r.get(4)?;
     let addresses_json: String = r.get(10)?;
     let urls_json: String = r.get(11)?;
+    let categories_json: String = r.get(12)?;
     Ok(Contact {
         id: r.get(0)?,
         nextcloud_account_id: r.get(1)?,
@@ -676,6 +691,7 @@ fn row_to_contact_no_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
         addresses: serde_json::from_str(&addresses_json).unwrap_or_default(),
         urls: serde_json::from_str(&urls_json).unwrap_or_default(),
         kind: String::new(),
+        categories: serde_json::from_str(&categories_json).unwrap_or_default(),
     })
 }
 
@@ -755,6 +771,7 @@ mod tests {
             vcard_raw: format!("BEGIN:VCARD\r\nUID:{uid}\r\nEND:VCARD\r\n"),
             kind: String::new(),
             member_uids: Vec::new(),
+            categories: Vec::new(),
         }
     }
 

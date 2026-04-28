@@ -48,6 +48,12 @@ pub struct ParsedVcard {
     /// (`urn:uuid:<uid>` / `mailto:<addr>`) and let callers
     /// resolve them to other vCards.  Empty for non-group cards.
     pub members: Vec<String>,
+    /// `CATEGORIES` tag list (RFC 6350 §6.7.1) — what NC's
+    /// Contacts UI calls "Kontaktgruppen" and what iOS shows
+    /// as Groups.  Comma-separated on the wire; we keep them
+    /// as a Vec so callers can mutate individual tags without
+    /// re-parsing.  Empty when the vCard has no CATEGORIES.
+    pub categories: Vec<String>,
 }
 
 /// One vCard `ADR` property. Mirrors `nimbus_core::models::ContactAddress`
@@ -108,6 +114,7 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
     let mut photo_data: Option<Vec<u8>> = None;
     let mut kind: String = String::new();
     let mut members: Vec<String> = Vec::new();
+    let mut categories: Vec<String> = Vec::new();
 
     for prop in &card.properties {
         let name = prop.name.to_ascii_uppercase();
@@ -226,6 +233,19 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
                     members.push(v);
                 }
             }
+            "CATEGORIES" => {
+                // Comma-separated per RFC 6350; some old clients
+                // emit semicolons.  Accept both, dedupe within
+                // the same property, preserve cross-property
+                // accumulation in case a card has CATEGORIES
+                // listed twice.
+                for raw in value.split(|c| c == ',' || c == ';') {
+                    let t = raw.trim();
+                    if !t.is_empty() && !categories.iter().any(|c| c == t) {
+                        categories.push(t.to_string());
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -259,6 +279,7 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
         photo_data,
         kind,
         members,
+        categories,
     })
 }
 
@@ -456,6 +477,18 @@ pub fn build_vcard(card: &ParsedVcard) -> String {
     }
     if let Some(n) = &card.note {
         push_line(&mut out, &format!("NOTE:{}", escape_value(n)));
+    }
+    // CATEGORIES — single comma-separated property per RFC 6350.
+    // Empty list omits the line entirely so we don't emit a stray
+    // `CATEGORIES:` that some servers reject.
+    if !card.categories.is_empty() {
+        let joined = card
+            .categories
+            .iter()
+            .map(|c| escape_value(c))
+            .collect::<Vec<_>>()
+            .join(",");
+        push_line(&mut out, &format!("CATEGORIES:{joined}"));
     }
     if let (Some(mime), Some(bytes)) = (&card.photo_mime, &card.photo_data) {
         // vCard 4 PHOTO as data URI — single property, no params,
