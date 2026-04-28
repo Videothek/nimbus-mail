@@ -179,8 +179,10 @@
    *  named function fixes the binding and gives the menu
    *  cleanup a single place to live. */
   function selectTab(t: ContactsTab) {
+    console.log('[contacts] selectTab', t, 'previously', activeTab)
     openMenuFor = null
     activeTab = t
+    console.log('[contacts] selectTab → after assign', activeTab)
   }
   /** Selected mailing list on the Lists tab — the middle
    *  column shows its members. */
@@ -863,6 +865,9 @@
          set activeTab on a separate handler so any pending
          document-level click-outside listener can't race the
          state update on the first transition. -->
+    <div class="px-3 pt-1 text-[10px] text-error-500 font-mono">
+      tab={activeTab}
+    </div>
     <div class="px-3 pt-2 flex gap-1">
       <button
         type="button"
