@@ -143,7 +143,12 @@
   let previewError = $state('')
   /** Currently-displayed day in the preview.  Initialised to
    *  the invite's local day on first open; the prev/next day
-   *  arrows mutate this without changing the invite itself. */
+   *  arrows mutate this without changing the invite itself.
+   *  Reads `invite.start` via the locally-ignored hint so the
+   *  Svelte 5 compiler knows we deliberately seed once and
+   *  don't track invite updates here (the auto-scroll effect
+   *  re-targets the slot whenever the invite uid changes). */
+  // svelte-ignore state_referenced_locally
   let previewDate = $state<Date>(new Date(invite.start))
   /** Events keyed by `YYYY-MM-DD` so navigating back to a
    *  previously-loaded day is instant — IPC + expansion only
