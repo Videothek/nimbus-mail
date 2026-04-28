@@ -1746,6 +1746,8 @@ fn raw_contact_to_row(c: &RawContact) -> ContactRow {
             .collect(),
         urls: c.urls.clone(),
         vcard_raw: c.vcard_raw.clone(),
+        kind: c.kind.clone(),
+        member_uids: c.member_uids.clone(),
     }
 }
 
@@ -1947,6 +1949,259 @@ async fn delete_contact(contact_id: String, cache: State<'_, Cache>) -> Result<(
         .delete_contact_by_id(&contact_id)
         .map_err(NimbusError::from)?;
     Ok(())
+}
+
+// ── Contact groups / mailing lists (#133, #113) ───────────────
+//
+// Groups are stored on the server as plain `KIND:group` vCards.
+// The CardDAV layer doesn't care — they sync just like
+// individuals — so the IPCs here are thin wrappers that build the
+// right vCard shape, route writes through the same
+// create/update/delete CardDAV path the contacts use, and surface
+// the local-only `group_emoji` / `group_hidden` overlay from the
+// cache.
+
+/// Snapshot of a group, hydrated for the UI.  `members` is the
+/// expanded list of contact rows so the picker / chip strip can
+/// render names + first emails without a second round-trip.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContactGroupView {
+    id: String,
+    nextcloud_account_id: String,
+    display_name: String,
+    member_uids: Vec<String>,
+    members: Vec<GroupMemberView>,
+    emoji: Option<String>,
+    hidden: bool,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupMemberView {
+    /// Composite contact id (`{nc}::{uid}`) — matches what
+    /// `get_contacts` / `search_contacts` already expose.
+    id: String,
+    display_name: String,
+    /// First email address, or empty when the underlying vCard
+    /// has none — the UI shows "no email" in that case rather
+    /// than failing the expand.
+    email: String,
+}
+
+/// List every contact group across every connected NC account,
+/// each with its members already resolved to (id, name, email)
+/// triples so the UI doesn't have to chase referenced UIDs.
+#[tauri::command]
+fn list_contact_groups(
+    cache: State<'_, Cache>,
+) -> Result<Vec<ContactGroupView>, NimbusError> {
+    let groups = cache.list_contact_groups().map_err(NimbusError::from)?;
+    let mut out = Vec::with_capacity(groups.len());
+    for g in groups {
+        let resolved = cache
+            .resolve_group_members(&g.nextcloud_account_id, &g.member_uids)
+            .map_err(NimbusError::from)?;
+        let members = resolved
+            .into_iter()
+            .map(|(id, display_name, email)| GroupMemberView {
+                id,
+                display_name,
+                email,
+            })
+            .collect();
+        out.push(ContactGroupView {
+            id: g.id,
+            nextcloud_account_id: g.nextcloud_account_id,
+            display_name: g.display_name,
+            member_uids: g.member_uids,
+            members,
+            emoji: g.emoji,
+            hidden: g.hidden,
+        });
+    }
+    Ok(out)
+}
+
+/// Create a new `KIND:group` vCard on the server and cache it.
+/// `member_uids` is the bare-UID list (no `urn:uuid:` prefix);
+/// the writer wraps each in the canonical URI form.
+#[tauri::command]
+async fn create_contact_group(
+    nc_id: String,
+    addressbook_url: String,
+    addressbook_name: String,
+    display_name: String,
+    member_uids: Vec<String>,
+    cache: State<'_, Cache>,
+) -> Result<ContactGroupView, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+
+    let uid = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+    let parsed = ParsedVcard {
+        uid: uid.clone(),
+        display_name: display_name.clone(),
+        kind: "group".to_string(),
+        members: member_uids
+            .iter()
+            .map(|u| {
+                if u.starts_with("urn:uuid:") {
+                    u.clone()
+                } else {
+                    format!("urn:uuid:{u}")
+                }
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let vcard = build_vcard(&parsed);
+    let outcome = carddav_create_contact(
+        &account.server_url,
+        &addressbook_url,
+        &account.username,
+        &app_password,
+        &uid,
+        &vcard,
+    )
+    .await?;
+    let row = parsed_to_row(&outcome.href, &outcome.etag, &uid, &parsed, vcard);
+    cache
+        .upsert_single_contact(&nc_id, &addressbook_name, &row)
+        .map_err(NimbusError::from)?;
+    let id = format!("{nc_id}::{uid}");
+    Ok(ContactGroupView {
+        id,
+        nextcloud_account_id: nc_id,
+        display_name,
+        member_uids,
+        members: Vec::new(),
+        emoji: None,
+        hidden: false,
+    })
+}
+
+/// Edit an existing group — rename, swap members, both, neither.
+/// `display_name` and `member_uids` are optional to keep the IPC
+/// usable for partial updates from drag-and-drop (members only)
+/// versus the rename modal (name only).
+#[tauri::command]
+async fn update_contact_group(
+    group_id: String,
+    display_name: Option<String>,
+    member_uids: Option<Vec<String>>,
+    cache: State<'_, Cache>,
+) -> Result<ContactGroupView, NimbusError> {
+    let handle = load_contact_handle(&cache, &group_id)?;
+    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+
+    let mut parsed = match nimbus_carddav::parse_vcard(&handle.vcard_raw) {
+        Ok(p) => p,
+        Err(_) => ParsedVcard {
+            uid: handle.vcard_uid.clone(),
+            ..Default::default()
+        },
+    };
+    parsed.uid = handle.vcard_uid.clone();
+    parsed.kind = "group".to_string();
+    if let Some(n) = display_name {
+        parsed.display_name = n;
+    }
+    if let Some(uids) = member_uids {
+        parsed.members = uids
+            .iter()
+            .map(|u| {
+                if u.starts_with("urn:uuid:") {
+                    u.clone()
+                } else {
+                    format!("urn:uuid:{u}")
+                }
+            })
+            .collect();
+    }
+    let vcard = build_vcard(&parsed);
+    let outcome = carddav_update_contact(
+        &handle.href,
+        &account.username,
+        &app_password,
+        &handle.etag,
+        &vcard,
+    )
+    .await?;
+    let row = parsed_to_row(&outcome.href, &outcome.etag, &handle.vcard_uid, &parsed, vcard);
+    cache
+        .upsert_single_contact(&handle.nextcloud_account_id, &handle.addressbook, &row)
+        .map_err(NimbusError::from)?;
+    // Re-pull the group with members hydrated so callers can
+    // refresh their UI from a single response.
+    let groups = cache.list_contact_groups().map_err(NimbusError::from)?;
+    let g = groups
+        .into_iter()
+        .find(|g| g.id == group_id)
+        .ok_or_else(|| NimbusError::Other(format!("group '{group_id}' missing after update")))?;
+    let resolved = cache
+        .resolve_group_members(&g.nextcloud_account_id, &g.member_uids)
+        .map_err(NimbusError::from)?;
+    Ok(ContactGroupView {
+        id: g.id,
+        nextcloud_account_id: g.nextcloud_account_id,
+        display_name: g.display_name,
+        member_uids: g.member_uids,
+        members: resolved
+            .into_iter()
+            .map(|(id, display_name, email)| GroupMemberView {
+                id,
+                display_name,
+                email,
+            })
+            .collect(),
+        emoji: g.emoji,
+        hidden: g.hidden,
+    })
+}
+
+/// Delete a contact group from the server + local cache.
+#[tauri::command]
+async fn delete_contact_group(
+    group_id: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let handle = load_contact_handle(&cache, &group_id)?;
+    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+    carddav_delete_contact(&handle.href, &account.username, &app_password, &handle.etag).await?;
+    cache
+        .delete_contact_by_id(&group_id)
+        .map_err(NimbusError::from)?;
+    Ok(())
+}
+
+/// Local-only "hide this group" toggle — drives the contacts
+/// sidebar's hidden state and excludes the group from the
+/// AddressAutocomplete search.
+#[tauri::command]
+fn set_contact_group_hidden(
+    group_id: String,
+    hidden: bool,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    cache
+        .set_contact_group_hidden(&group_id, hidden)
+        .map_err(NimbusError::from)
+}
+
+/// Local-only emoji avatar overlay for a group.  `None` clears
+/// it back to the initials fallback.
+#[tauri::command]
+fn set_contact_group_emoji(
+    group_id: String,
+    emoji: Option<String>,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let val = emoji.as_deref().filter(|s| !s.is_empty());
+    cache
+        .set_contact_group_emoji(&group_id, val)
+        .map_err(NimbusError::from)
 }
 
 /// A trimmed-down addressbook record for the UI's "save new contact
@@ -3603,6 +3858,8 @@ fn parsed_to_row(
             .collect(),
         urls: parsed.urls.clone(),
         vcard_raw,
+        kind: parsed.kind.clone(),
+        member_uids: parsed.members.clone(),
     }
 }
 
@@ -3625,6 +3882,7 @@ fn row_to_contact(nc_account_id: &str, row: &ContactRow) -> Contact {
         note: row.note.clone(),
         addresses: row.addresses.clone(),
         urls: row.urls.clone(),
+        kind: String::new(),
     }
 }
 
@@ -6137,6 +6395,12 @@ fn main() {
             create_contact,
             update_contact,
             delete_contact,
+            list_contact_groups,
+            create_contact_group,
+            update_contact_group,
+            delete_contact_group,
+            set_contact_group_hidden,
+            set_contact_group_emoji,
             list_nextcloud_addressbooks,
             list_nextcloud_calendars,
             sync_nextcloud_calendars,

@@ -54,6 +54,14 @@ pub struct ContactRow {
     pub addresses: Vec<ContactAddress>,
     pub urls: Vec<String>,
     pub vcard_raw: String,
+    /// vCard `KIND` (RFC 6350 §6.1.4) — `"group"` flags this row
+    /// as a contact group / mailing list.  Empty for individuals.
+    pub kind: String,
+    /// `MEMBER` URI list pulled from a `KIND:group` vCard.  We
+    /// preserve the raw URI shape (`urn:uuid:<uid>`) so the
+    /// resolver can match members against other vCards.  Empty
+    /// for non-group rows.
+    pub member_uids: Vec<String>,
 }
 
 /// Sync bookmark for one addressbook.
@@ -127,25 +135,28 @@ impl Cache {
                     (id, nextcloud_account_id, addressbook, vcard_uid, href, etag,
                      display_name, emails_json, phones_json, organization,
                      photo_mime, photo_data, vcard_raw, cached_at,
-                     title, birthday, note, addresses_json, urls_json)
+                     title, birthday, note, addresses_json, urls_json,
+                     kind, member_uids_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                         ?15, ?16, ?17, ?18, ?19)
+                         ?15, ?16, ?17, ?18, ?19, ?20, ?21)
                  ON CONFLICT (nextcloud_account_id, addressbook, vcard_uid) DO UPDATE SET
-                    href           = excluded.href,
-                    etag           = excluded.etag,
-                    display_name   = excluded.display_name,
-                    emails_json    = excluded.emails_json,
-                    phones_json    = excluded.phones_json,
-                    organization   = excluded.organization,
-                    photo_mime     = excluded.photo_mime,
-                    photo_data     = excluded.photo_data,
-                    vcard_raw      = excluded.vcard_raw,
-                    cached_at      = excluded.cached_at,
-                    title          = excluded.title,
-                    birthday       = excluded.birthday,
-                    note           = excluded.note,
-                    addresses_json = excluded.addresses_json,
-                    urls_json      = excluded.urls_json",
+                    href             = excluded.href,
+                    etag             = excluded.etag,
+                    display_name     = excluded.display_name,
+                    emails_json      = excluded.emails_json,
+                    phones_json      = excluded.phones_json,
+                    organization     = excluded.organization,
+                    photo_mime       = excluded.photo_mime,
+                    photo_data       = excluded.photo_data,
+                    vcard_raw        = excluded.vcard_raw,
+                    cached_at        = excluded.cached_at,
+                    title            = excluded.title,
+                    birthday         = excluded.birthday,
+                    note             = excluded.note,
+                    addresses_json   = excluded.addresses_json,
+                    urls_json        = excluded.urls_json,
+                    kind             = excluded.kind,
+                    member_uids_json = excluded.member_uids_json",
             )?;
             for c in upserts {
                 let id = format!("{nc_account_id}::{}", c.vcard_uid);
@@ -154,6 +165,8 @@ impl Cache {
                 let addresses =
                     serde_json::to_string(&c.addresses).unwrap_or_else(|_| "[]".into());
                 let urls = serde_json::to_string(&c.urls).unwrap_or_else(|_| "[]".into());
+                let members =
+                    serde_json::to_string(&c.member_uids).unwrap_or_else(|_| "[]".into());
                 stmt.execute(params![
                     id,
                     nc_account_id,
@@ -174,6 +187,8 @@ impl Cache {
                     c.note,
                     addresses,
                     urls,
+                    c.kind,
+                    members,
                 ])?;
             }
         }
@@ -274,6 +289,7 @@ impl Cache {
                             title, birthday, note, addresses_json, urls_json
                      FROM contacts
                      WHERE nextcloud_account_id = ?1
+                       AND COALESCE(kind, '') != 'group'
                      ORDER BY display_name COLLATE NOCASE",
                 )?;
                 stmt.query_map(params![nc], row_to_contact_no_photo)?
@@ -284,6 +300,7 @@ impl Cache {
                             phones_json, organization, photo_mime,
                             title, birthday, note, addresses_json, urls_json
                      FROM contacts
+                     WHERE COALESCE(kind, '') != 'group'
                      ORDER BY display_name COLLATE NOCASE",
                 )?;
                 stmt.query_map([], row_to_contact_no_photo)?
@@ -341,6 +358,7 @@ impl Cache {
                     title, birthday, note, addresses_json, urls_json
              FROM contacts
              WHERE emails_json != '[]'
+               AND COALESCE(kind, '') != 'group'
                AND (display_name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
                     OR emails_json  LIKE ?1 ESCAPE '\\' COLLATE NOCASE)
              ORDER BY display_name COLLATE NOCASE
@@ -420,30 +438,34 @@ impl Cache {
         let addresses = serde_json::to_string(&row.addresses).unwrap_or_else(|_| "[]".into());
         let urls = serde_json::to_string(&row.urls).unwrap_or_else(|_| "[]".into());
         let now = Utc::now().timestamp();
+        let members = serde_json::to_string(&row.member_uids).unwrap_or_else(|_| "[]".into());
         conn.execute(
             "INSERT INTO contacts
                 (id, nextcloud_account_id, addressbook, vcard_uid, href, etag,
                  display_name, emails_json, phones_json, organization,
                  photo_mime, photo_data, vcard_raw, cached_at,
-                 title, birthday, note, addresses_json, urls_json)
+                 title, birthday, note, addresses_json, urls_json,
+                 kind, member_uids_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                     ?15, ?16, ?17, ?18, ?19)
+                     ?15, ?16, ?17, ?18, ?19, ?20, ?21)
              ON CONFLICT (nextcloud_account_id, addressbook, vcard_uid) DO UPDATE SET
-                href           = excluded.href,
-                etag           = excluded.etag,
-                display_name   = excluded.display_name,
-                emails_json    = excluded.emails_json,
-                phones_json    = excluded.phones_json,
-                organization   = excluded.organization,
-                photo_mime     = excluded.photo_mime,
-                photo_data     = excluded.photo_data,
-                vcard_raw      = excluded.vcard_raw,
-                cached_at      = excluded.cached_at,
-                title          = excluded.title,
-                birthday       = excluded.birthday,
-                note           = excluded.note,
-                addresses_json = excluded.addresses_json,
-                urls_json      = excluded.urls_json",
+                href             = excluded.href,
+                etag             = excluded.etag,
+                display_name     = excluded.display_name,
+                emails_json      = excluded.emails_json,
+                phones_json      = excluded.phones_json,
+                organization     = excluded.organization,
+                photo_mime       = excluded.photo_mime,
+                photo_data       = excluded.photo_data,
+                vcard_raw        = excluded.vcard_raw,
+                cached_at        = excluded.cached_at,
+                title            = excluded.title,
+                birthday         = excluded.birthday,
+                note             = excluded.note,
+                addresses_json   = excluded.addresses_json,
+                urls_json        = excluded.urls_json,
+                kind             = excluded.kind,
+                member_uids_json = excluded.member_uids_json",
             params![
                 id,
                 nc_account_id,
@@ -464,9 +486,146 @@ impl Cache {
                 row.note,
                 addresses,
                 urls,
+                row.kind,
+                members,
             ],
         )?;
         Ok(())
+    }
+
+    // ── Contact groups (#133, #113) ────────────────────────────
+
+    /// List every cached contact group across the user's address
+    /// books.  Returns one row per `KIND:group` vCard, with the
+    /// local-only `group_emoji` and `group_hidden` overlay applied
+    /// so the UI can render hidden state without a second query.
+    pub fn list_contact_groups(
+        &self,
+    ) -> Result<Vec<nimbus_core::models::ContactGroup>, CacheError> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, nextcloud_account_id, display_name,
+                    member_uids_json, group_emoji, group_hidden
+             FROM contacts
+             WHERE COALESCE(kind, '') = 'group'
+             ORDER BY display_name COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let id: String = r.get(0)?;
+            let nc: String = r.get(1)?;
+            let name: String = r.get(2)?;
+            let members_json: String = r.get(3)?;
+            let emoji: Option<String> = r.get(4)?;
+            let hidden: i64 = r.get(5)?;
+            let raw_uris: Vec<String> =
+                serde_json::from_str(&members_json).unwrap_or_default();
+            // Strip the `urn:uuid:` prefix that vCard 4 prescribes
+            // so the frontend gets bare UIDs ready to match against
+            // contact rows.  Anything that isn't a urn:uuid form
+            // (e.g. `mailto:` for guest members) is preserved
+            // verbatim — the caller can pattern-match.
+            let member_uids: Vec<String> = raw_uris
+                .into_iter()
+                .map(|u| {
+                    u.strip_prefix("urn:uuid:")
+                        .map(|s| s.to_string())
+                        .unwrap_or(u)
+                })
+                .collect();
+            Ok(nimbus_core::models::ContactGroup {
+                id,
+                nextcloud_account_id: nc,
+                display_name: name,
+                member_uids,
+                emoji: emoji.filter(|s| !s.is_empty()),
+                hidden: hidden != 0,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Toggle the local `group_hidden` flag for one group.
+    pub fn set_contact_group_hidden(
+        &self,
+        group_id: &str,
+        hidden: bool,
+    ) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "UPDATE contacts SET group_hidden = ?2 WHERE id = ?1",
+            params![group_id, hidden as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Set (or clear) the local `group_emoji` overlay for one group.
+    pub fn set_contact_group_emoji(
+        &self,
+        group_id: &str,
+        emoji: Option<&str>,
+    ) -> Result<(), CacheError> {
+        let conn = self.pool.get()?;
+        conn.execute(
+            "UPDATE contacts SET group_emoji = ?2 WHERE id = ?1",
+            params![group_id, emoji.filter(|s| !s.is_empty())],
+        )?;
+        Ok(())
+    }
+
+    /// Resolve a list of bare vCard UIDs to lightweight contact
+    /// rows (id + display name + first email) — used by the
+    /// AddressAutocomplete to expand a group selection into its
+    /// individual recipients without round-tripping through the
+    /// full `Contact` shape (the autocomplete only needs an
+    /// addressable email per member).  `nc_account_id` scopes
+    /// the lookup so a group on server A can't accidentally pull
+    /// in a same-UID member from server B.
+    pub fn resolve_group_members(
+        &self,
+        nc_account_id: &str,
+        member_uids: &[String],
+    ) -> Result<Vec<(String, String, String)>, CacheError> {
+        if member_uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.pool.get()?;
+        let placeholders = member_uids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT id, display_name, emails_json
+             FROM contacts
+             WHERE nextcloud_account_id = ?1
+               AND COALESCE(kind, '') != 'group'
+               AND vcard_uid IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(1 + member_uids.len());
+        params_vec.push(&nc_account_id);
+        for u in member_uids {
+            params_vec.push(u);
+        }
+        let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |r| {
+            let id: String = r.get(0)?;
+            let name: String = r.get(1)?;
+            let emails_json: String = r.get(2)?;
+            let emails: Vec<ContactEmail> =
+                serde_json::from_str(&emails_json).unwrap_or_default();
+            let first_email = emails.into_iter().next().map(|e| e.value).unwrap_or_default();
+            Ok((id, name, first_email))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     /// Remove one contact by its app-side id.
@@ -516,6 +675,7 @@ fn row_to_contact_no_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
         note: r.get(9)?,
         addresses: serde_json::from_str(&addresses_json).unwrap_or_default(),
         urls: serde_json::from_str(&urls_json).unwrap_or_default(),
+        kind: String::new(),
     })
 }
 
@@ -593,6 +753,8 @@ mod tests {
             addresses: Vec::new(),
             urls: Vec::new(),
             vcard_raw: format!("BEGIN:VCARD\r\nUID:{uid}\r\nEND:VCARD\r\n"),
+            kind: String::new(),
+            member_uids: Vec::new(),
         }
     }
 
