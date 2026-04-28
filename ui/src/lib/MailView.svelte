@@ -68,6 +68,12 @@
         cluster to a single "Edit" action, because Reply-to-a-draft
         doesn't model anything useful. */
     isDraftsFolder?: boolean
+    /** True when the currently selected folder is the account's
+        Sent mailbox.  Used to suppress the iMIP RSVP card for
+        invites the user themselves sent — you don't reply to your
+        own meeting requests, and showing Accept/Decline on a
+        message in Sent is misleading. */
+    isSentFolder?: boolean
     /** Open the shown draft back in Compose for editing. Fires only
         from the "Edit" button inside the drafts toolbar. */
     oneditdraft?: (mail: Email) => void
@@ -99,6 +105,7 @@
     onforward,
     oncreatetalk,
     isDraftsFolder = false,
+    isSentFolder = false,
     oneditdraft,
     onmessageremoved,
     inStandaloneWindow = false,
@@ -1067,7 +1074,7 @@
     <!-- Calendar invite (#58 / iMIP).  Mounted above the
          attachment list so the user reaches for Accept / Decline
          before scanning the rest of the message body. -->
-    {#if invite}
+    {#if invite && !isSentFolder}
       <div class="px-6 pt-3">
         <CalendarInviteCard
           invite={invite}

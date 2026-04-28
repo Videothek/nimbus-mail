@@ -34,6 +34,9 @@
 
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import DateField from './DateField.svelte'
+  import TimeField from './TimeField.svelte'
+  import Select from './Select.svelte'
 
   // ── Types (kept local; these mirror the Rust models) ──────────
   interface EventAttendee {
@@ -159,6 +162,31 @@
     return draft?.calendarId ?? calendars[0]?.id ?? ''
   }
 
+  // Close on Escape.  We attach to `document` so the key works
+  // regardless of where focus is — including inside DateField /
+  // TimeField / Select inputs.  Inner popovers (calendar grid,
+  // time slots, dropdown listbox, attendee suggestions) render a
+  // listbox or labelled dialog while open; if any of those exist,
+  // their own Escape handler should close just the popover, so
+  // we bail out and let them handle it instead of dismissing the
+  // whole editor.
+  $effect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      if (
+        document.querySelector(
+          '[role="listbox"], [role="dialog"][aria-label="Pick a date"]',
+        )
+      ) {
+        return
+      }
+      e.preventDefault()
+      onclose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  })
+
   // Async-load the default-calendar setting and switch to it if the
   // user hasn't manually changed the picker yet.  In create-mode
   // this is the single biggest UX nicety — Nick's "primary"
@@ -181,20 +209,22 @@
   // svelte-ignore state_referenced_locally
   let allDay = $state(initialAllDay)
 
-  // datetime-local inputs work in the user's local timezone — the
-  // value shape is `YYYY-MM-DDTHH:MM` with no offset. We seed from the
-  // event/draft (which carry UTC instants) and convert back to UTC at
-  // save time. For all-day events we keep the date-only state in
-  // `startDate` / `endDate` and let the save path fold them into
-  // 00:00:00Z / 23:59:59Z.
+  // Date and time are kept as separate strings (#126) — one
+  // `YYYY-MM-DD` and one `HH:MM` per endpoint — so we can render
+  // a proper split picker that matches the mockup (#128).  We
+  // seed from the event/draft (which carry UTC instants), but
+  // surface them in the user's *local* zone so the inputs read
+  // naturally; the save path combines + converts back to UTC.
+  // For all-day events the date-only state is what matters and
+  // the save path folds them into 00:00:00Z / 23:59:59Z.
   // svelte-ignore state_referenced_locally
-  let startLocal = $state(toLocalInput(initialStart()))
+  let startDate = $state(toLocalDateInput(initialStart()))
   // svelte-ignore state_referenced_locally
-  let endLocal = $state(toLocalInput(initialEnd()))
+  let startTime = $state(toLocalTimeInput(initialStart()))
   // svelte-ignore state_referenced_locally
-  let startDate = $state(toDateInput(initialStart()))
+  let endDate = $state(toLocalDateInput(initialEnd()))
   // svelte-ignore state_referenced_locally
-  let endDate = $state(toDateInput(initialEnd()))
+  let endTime = $state(toLocalTimeInput(initialEnd()))
 
   // ── Attendees ─────────────────────────────────────────────
   // Three role-bucketed lists drive the chip-row UI; the input
@@ -224,6 +254,93 @@
   let chairAttendees = $state<EventAttendee[]>(
     event ? (event.attendees ?? []).filter((a) => bucketFor(a) === 'CHAIR') : [],
   )
+
+  /** Lower-cased addresses we consider "the user" — the union
+   *  of every configured mail-account email.  Used by the RSVP
+   *  dropdown to find the user's own ATTENDEE row in edit
+   *  mode (when the user is invited to someone else's event)
+   *  so they can change their response inline.  Loaded once
+   *  on mount; an empty set just hides the RSVP dropdown
+   *  (no harm done — the inbox card remains the canonical
+   *  RSVP surface). */
+  let userIdentities = $state<Set<string>>(new Set())
+  $effect(() => {
+    void invoke<{ email: string }[]>('get_accounts')
+      .then((rows) => {
+        const set = new Set<string>()
+        for (const a of rows) if (a.email) set.add(a.email.toLowerCase())
+        userIdentities = set
+      })
+      .catch(() => {})
+  })
+
+  /** Email of the Nextcloud user that owns the *currently
+   *  selected* calendar.  This is the address NC's Mail Provider
+   *  uses for iMIP, so it's the correct ORGANIZER for events
+   *  saved into that calendar.  Refetched whenever the calendar
+   *  picker changes (the user may have multiple NC servers
+   *  configured with different emails). */
+  let organizerEmail = $state<string | null>(null)
+  // Cache by nc_id so swapping calendars doesn't re-hit OCS.
+  const organizerCache = new Map<string, string | null>()
+  $effect(() => {
+    const cal = calendars.find((c) => c.id === calendarId)
+    if (!cal) {
+      organizerEmail = null
+      return
+    }
+    const ncId = cal.nextcloud_account_id
+    if (organizerCache.has(ncId)) {
+      organizerEmail = organizerCache.get(ncId) ?? null
+      return
+    }
+    void invoke<string | null>('get_nextcloud_user_email', { ncId })
+      .then((email) => {
+        organizerCache.set(ncId, email ?? null)
+        // Only apply if the user hasn't switched calendars while
+        // the OCS round-trip was in flight.
+        const current = calendars.find((c) => c.id === calendarId)
+        if (current?.nextcloud_account_id === ncId) {
+          organizerEmail = email ?? null
+        }
+      })
+      .catch(() => {
+        organizerCache.set(ncId, null)
+      })
+  })
+
+  // In create mode, auto-add the NC user (calendar owner) as
+  // CHAIR (organizer) once their email is known.  Skip if
+  // they're already in any bucket — e.g. seeded from the
+  // originating email's To/Cc, or already added on a previous
+  // calendar switch.
+  $effect(() => {
+    if (mode !== 'create') return
+    if (!organizerEmail) return
+    const me = organizerEmail.toLowerCase()
+    const present = [...requiredAttendees, ...optionalAttendees, ...chairAttendees]
+      .some((a) => a.email.toLowerCase() === me)
+    if (present) return
+    chairAttendees = [
+      ...chairAttendees,
+      { email: organizerEmail, role: 'CHAIR', status: 'ACCEPTED' },
+    ]
+  })
+  /** The user's own ATTENDEE row in this event (if any).  When
+   *  set, the RSVP dropdown surfaces and is bound to its
+   *  PARTSTAT; on save, `update_calendar_event` rewrites the
+   *  body with whatever the user picked.  Searches all three
+   *  buckets so it works for users who were typed as Hosts /
+   *  Required / Optional. */
+  let myAttendee = $derived.by(() => {
+    if (mode !== 'edit') return null
+    if (userIdentities.size === 0) return null
+    const all = [...requiredAttendees, ...optionalAttendees, ...chairAttendees]
+    for (const a of all) {
+      if (userIdentities.has(a.email.toLowerCase())) return a
+    }
+    return null
+  })
 
   // One pending input per role.  Each commits to its bucket on
   // Enter / comma / blur.  Datalist suggestions come from the
@@ -565,24 +682,27 @@
   }
 
   // ── datetime / date helpers ─────────────────────────────────
-  /** `Date` → `YYYY-MM-DDTHH:MM` in the user's local zone. */
-  function toLocalInput(d: Date): string {
+  /** `Date` → `YYYY-MM-DD` in the user's *local* zone (split-
+   *  picker date half).  Note this is local-zone unlike the
+   *  earlier all-day-only `toDateInput` helper which was UTC-
+   *  based — both timed and all-day flows now go through the
+   *  same date string and the save path interprets it
+   *  appropriately. */
+  function toLocalDateInput(d: Date): string {
     const pad = (n: number) => String(n).padStart(2, '0')
-    return (
-      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
-      `T${pad(d.getHours())}:${pad(d.getMinutes())}`
-    )
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
   }
-  /** `Date` → `YYYY-MM-DD` in UTC (matches the all-day storage shape). */
-  function toDateInput(d: Date): string {
+  /** `Date` → `HH:MM` in the user's local zone. */
+  function toLocalTimeInput(d: Date): string {
     const pad = (n: number) => String(n).padStart(2, '0')
-    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`
   }
-  /** `YYYY-MM-DDTHH:MM` (local) → ISO string in UTC. */
-  function fromLocalInput(s: string): Date {
-    // The browser parses `T`-separated strings without an offset as
-    // local time, so this is the inverse of `toLocalInput`.
-    return new Date(s)
+  /** Combine a local `YYYY-MM-DD` + `HH:MM` into a `Date`. */
+  function fromLocalSplit(date: string, time: string): Date {
+    // Browsers parse `YYYY-MM-DDTHH:MM` (no offset) as local
+    // time, then the Date constructor stores it as UTC under
+    // the hood.  Save-path callers then `.toISOString()` it.
+    return new Date(`${date}T${time || '00:00'}`)
   }
   /** `YYYY-MM-DD` (treated as a UTC calendar date) → midnight UTC. */
   function dateInputToUtcMidnight(s: string): Date {
@@ -593,23 +713,15 @@
     return new Date(`${s}T23:59:59.999Z`)
   }
 
-  // When the user toggles all-day, keep the visible inputs sane: copy
-  // the timed value over to the date-only field on the way in, and
-  // restore a sensible 1-hour timed window on the way out.
+  // When the user toggles all-day, keep the visible inputs sane:
+  // turning it on, the date stays; turning it off, restore a
+  // sensible 09:00 → 10:00 window in local time.
   function onToggleAllDay() {
-    if (allDay) {
-      const s = fromLocalInput(startLocal)
-      const e = fromLocalInput(endLocal)
-      startDate = toDateInput(s)
-      endDate = toDateInput(e)
-    } else {
-      const s = dateInputToUtcMidnight(startDate)
-      const out = new Date(s)
-      out.setHours(9, 0, 0, 0)
-      const end = new Date(out)
-      end.setHours(end.getHours() + 1)
-      startLocal = toLocalInput(out)
-      endLocal = toLocalInput(end)
+    if (!allDay) {
+      // Just turned timed: reset times to a 09:00 → 10:00 slot
+      // on the same date.
+      if (!startTime) startTime = '09:00'
+      if (!endTime) endTime = '10:00'
     }
   }
 
@@ -816,10 +928,10 @@
   function buildInput() {
     const start = allDay
       ? dateInputToUtcMidnight(startDate)
-      : fromLocalInput(startLocal)
+      : fromLocalSplit(startDate, startTime)
     const end = allDay
       ? dateInputToUtcEndOfDay(endDate)
-      : fromLocalInput(endLocal)
+      : fromLocalSplit(endDate, endTime)
     return {
       summary: summary.trim(),
       description: description.trim() ? description.trim() : null,
@@ -933,340 +1045,427 @@
       <h2 class="text-base font-semibold shrink-0">
         {mode === 'create' ? 'New event' : 'Edit event'}
       </h2>
-      <div class="flex items-center gap-2">
-        <!-- Talk meeting shortcut.  Mints a fresh Nextcloud Talk
-             room on the calendar's parent NC account and writes
-             its URL into the event's LOCATION field — same path
-             Nextcloud Calendar's "Make it a Talk conversation"
-             button uses, which is what NC's Calendar UI keys off
-             to render the "Join Talk" affordance.  Disabled
-             before a calendar is picked. -->
-        <button
-          type="button"
-          class="btn btn-sm preset-outlined-primary-500 whitespace-nowrap"
-          disabled={creatingTalkRoom || !calendarId}
-          title="Create a Nextcloud Talk room and use its link as the location"
-          onclick={() => void addTalkLink()}
-        >
-          {creatingTalkRoom ? 'Creating…' : '💬 Talk meeting'}
-        </button>
-        <button
-          class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
-          onclick={onclose}
-          aria-label="Close"
-        >✕</button>
-      </div>
+      <button
+        class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
+        onclick={onclose}
+        aria-label="Close"
+      >✕</button>
     </header>
 
     <div class="flex-1 overflow-y-auto p-5 space-y-3">
+      <!-- Row 1 — Title spans the row alongside the calendar
+           dropdown (mockup #128).  Title gets the lion's share
+           of the width; calendar picker tucks into a fixed
+           240px column on the right so long calendar names
+           don't squeeze the title to nothing.  In edit mode the
+           calendar is read-only (moving an event between
+           calendars is a separate flow). -->
       <div class="flex items-center gap-2">
-        <label class="text-xs w-20 text-surface-500" for="event-summary">Title</label>
         <input
           id="event-summary"
           class="input flex-1 px-3 py-2 text-sm rounded-md"
           bind:value={summary}
-          placeholder="Event title"
+          placeholder="Title of the event"
+          aria-label="Title"
         />
-      </div>
-
-      <div class="flex items-center gap-2">
-        <label class="text-xs w-20 text-surface-500" for="event-calendar">Calendar</label>
         {#if mode === 'create'}
-          <select
-            id="event-calendar"
-            class="select flex-1 px-3 py-2 text-sm rounded-md"
-            bind:value={calendarId}
-          >
-            {#each calendars as c (c.id)}
-              <option value={c.id}>{c.display_name}</option>
-            {/each}
-          </select>
+          <div class="w-60">
+            <Select
+              id="event-calendar"
+              ariaLabel="Calendar"
+              bind:value={calendarId}
+              options={calendars.map((c) => ({ value: c.id, label: c.display_name }))}
+              placeholder="Select calendar"
+            />
+          </div>
         {:else}
-          <span class="flex-1 px-3 py-2 text-sm text-surface-600 dark:text-surface-300">
+          <span class="w-60 px-3 py-2 text-sm text-surface-600 dark:text-surface-300 truncate" title={currentCalendarLabel()}>
             {currentCalendarLabel()}
           </span>
         {/if}
       </div>
 
+      <!-- Row 2 — Status dropdowns: RSVP (only in edit mode and
+           only when the user is themselves an attendee) and
+           Show-as (always).  Mockup positions these together so
+           the user can adjust both without navigating away. -->
       <div class="flex items-center gap-2">
-        <label class="text-xs w-20 text-surface-500" for="event-allday">All day</label>
+        {#if myAttendee}
+          <div class="w-44">
+            <Select
+              id="event-rsvp"
+              ariaLabel="Your response (RSVP)"
+              value={(myAttendee.status ?? 'NEEDS-ACTION').toUpperCase()}
+              options={[
+                { value: 'NEEDS-ACTION', label: '❔ No response' },
+                { value: 'ACCEPTED', label: '✅ Accepted' },
+                { value: 'TENTATIVE', label: '❓ Tentative' },
+                { value: 'DECLINED', label: '❌ Declined' },
+              ]}
+              onchange={(v) => {
+                const target = myAttendee
+                if (!target) return
+                target.status = v
+                requiredAttendees = [...requiredAttendees]
+                optionalAttendees = [...optionalAttendees]
+                chairAttendees = [...chairAttendees]
+              }}
+            />
+          </div>
+        {/if}
+        <div class="w-44">
+          <Select
+            id="event-transp"
+            ariaLabel="Show as (busy / free)"
+            bind:value={transparency}
+            options={[
+              { value: 'OPAQUE', label: 'Busy' },
+              { value: 'TRANSPARENT', label: 'Free' },
+            ]}
+          />
+        </div>
+        <div class="flex-1">
+          <Select
+            id="event-reminder"
+            ariaLabel="Reminder"
+            bind:value={reminderChoice}
+            options={[
+              { value: 'none', label: 'No reminder' },
+              { value: '5', label: '5 minutes before' },
+              { value: '15', label: '15 minutes before' },
+              { value: '30', label: '30 minutes before' },
+              { value: '60', label: '1 hour before' },
+              { value: '1440', label: '1 day before' },
+              ...(reminderChoice === 'custom'
+                ? [{ value: 'custom' as const, label: 'Custom (preserved from server)' }]
+                : []),
+            ]}
+          />
+        </div>
+      </div>
+
+      <!-- All-day toggle on its own thin row above the
+           date/time grid so Start and End sit symmetrically
+           on the row beneath it. -->
+      <label class="flex items-center gap-2 text-xs text-surface-600 dark:text-surface-300">
         <input
-          id="event-allday"
           type="checkbox"
           class="checkbox"
           bind:checked={allDay}
           onchange={onToggleAllDay}
         />
+        All-day event
+      </label>
+
+      <!-- Symmetric Start ↔ End row.  Two equal columns, each
+           with its own date + (optional) time field.  When
+           `allDay` is on the time fields collapse and the
+           dates take the full column width.  Custom DateField
+           / TimeField components (#126) replace the native
+           HTML5 inputs — the native pickers vary too much
+           across platforms / browsers and don't match
+           Outlook's "calendar grid + slot list" UX the issue
+           asks for. -->
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <span class="text-xs text-surface-500 mb-1 block">Start</span>
+          <div class="flex items-center gap-2">
+            <div class="flex-1 min-w-0">
+              <DateField
+                id="event-start-date"
+                ariaLabel="Start date"
+                bind:value={startDate}
+              />
+            </div>
+            {#if !allDay}
+              <div class="w-28">
+                <TimeField
+                  id="event-start-time"
+                  ariaLabel="Start time"
+                  bind:value={startTime}
+                />
+              </div>
+            {/if}
+          </div>
+        </div>
+        <div>
+          <span class="text-xs text-surface-500 mb-1 block">End</span>
+          <div class="flex items-center gap-2">
+            <div class="flex-1 min-w-0">
+              <DateField
+                id="event-end-date"
+                ariaLabel="End date"
+                bind:value={endDate}
+              />
+            </div>
+            {#if !allDay}
+              <div class="w-28">
+                <TimeField
+                  id="event-end-time"
+                  ariaLabel="End time"
+                  bind:value={endTime}
+                />
+              </div>
+            {/if}
+          </div>
+        </div>
       </div>
 
+      <!-- Row 5 — Location + Talk meeting shortcut.  Talk
+           button mints a Nextcloud Talk room and writes its
+           URL into LOCATION (matches NC Calendar's "Make it a
+           Talk conversation" flow); the URL replaces whatever
+           was typed when the field is empty, otherwise it
+           appends to DESCRIPTION (handled in `addTalkLink`). -->
       <div class="flex items-center gap-2">
-        <label class="text-xs w-20 text-surface-500" for="event-start">Starts</label>
-        {#if allDay}
-          <input
-            id="event-start"
-            type="date"
-            class="input flex-1 px-3 py-2 text-sm rounded-md"
-            bind:value={startDate}
-          />
-        {:else}
-          <input
-            id="event-start"
-            type="datetime-local"
-            class="input flex-1 px-3 py-2 text-sm rounded-md"
-            bind:value={startLocal}
-          />
-        {/if}
-      </div>
-
-      <div class="flex items-center gap-2">
-        <label class="text-xs w-20 text-surface-500" for="event-end">Ends</label>
-        {#if allDay}
-          <input
-            id="event-end"
-            type="date"
-            class="input flex-1 px-3 py-2 text-sm rounded-md"
-            bind:value={endDate}
-          />
-        {:else}
-          <input
-            id="event-end"
-            type="datetime-local"
-            class="input flex-1 px-3 py-2 text-sm rounded-md"
-            bind:value={endLocal}
-          />
-        {/if}
-      </div>
-
-      <div class="flex items-center gap-2">
-        <label class="text-xs w-20 text-surface-500" for="event-location">Location</label>
         <input
           id="event-location"
           class="input flex-1 px-3 py-2 text-sm rounded-md"
           bind:value={location}
-          placeholder="Address, room, link…"
+          placeholder="Location"
+          aria-label="Location"
         />
-      </div>
-
-      <div class="flex items-center gap-2">
-        <label class="text-xs w-20 text-surface-500" for="event-transp">Show as</label>
-        <select
-          id="event-transp"
-          class="select flex-1 px-3 py-2 text-sm rounded-md"
-          bind:value={transparency}
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-primary-500 whitespace-nowrap"
+          disabled={creatingTalkRoom || !calendarId}
+          title="Create a Nextcloud Talk room and use its link"
+          onclick={() => void addTalkLink()}
         >
-          <option value="OPAQUE">Busy</option>
-          <option value="TRANSPARENT">Free</option>
-        </select>
+          {creatingTalkRoom ? 'Creating…' : '💬 Talk meeting'}
+        </button>
       </div>
 
-      <div class="flex items-center gap-2">
-        <label class="text-xs w-20 text-surface-500" for="event-reminder">Reminder</label>
-        <select
-          id="event-reminder"
-          class="select flex-1 px-3 py-2 text-sm rounded-md"
-          bind:value={reminderChoice}
-        >
-          <option value="none">None</option>
-          <option value="5">5 minutes before</option>
-          <option value="15">15 minutes before</option>
-          <option value="30">30 minutes before</option>
-          <option value="60">1 hour before</option>
-          <option value="1440">1 day before</option>
-          {#if reminderChoice === 'custom'}
-            <option value="custom">Custom (preserved from server)</option>
-          {/if}
-        </select>
+      <!-- Row 6 — Description.  Tall by default — the mockup
+           shows it occupying the bulk of the form's middle. -->
+      <div>
+        <textarea
+          id="event-description"
+          class="textarea w-full px-3 py-2 text-sm rounded-md min-h-[140px]"
+          bind:value={description}
+          placeholder="Description"
+          aria-label="Description"
+        ></textarea>
       </div>
 
-      <!-- Per-role attendee section.  Each role gets its own row:
-           a chip list of already-added participants (large chips
-           with the CardDAV photo when known, and a × remove
-           button) above an input that adds new ones.  Each input
-           drives its own debounced `search_contacts` dropdown —
-           same plumbing AddressAutocomplete uses on Compose,
-           adapted so a click adds the contact straight into the
-           bucket instead of into a comma-separated string. -->
+      <!-- Attendee section, split into two halves per the
+           mockup (#128):
+             1. Three full-width inputs at the top — one for
+                each role (Hosts / Required / Optional) — so
+                adding people is a clean type-and-press flow
+                without chips elbowing into the input row.
+             2. Below the section separator, the chip lists
+                grouped under role headers, only rendered when
+                there's something in the bucket so the editor
+                stays compact for personal events with no
+                attendees.
+           Each input still drives its own debounced
+           `search_contacts` dropdown with photo previews. -->
 
-      {#snippet attendeeRow(label: string, role: Role, list: EventAttendee[], placeholder: string)}
-        <div class="flex items-start gap-2">
-          <div class="text-xs w-20 text-surface-500 pt-2">{label}</div>
-          <div class="flex-1 min-w-0">
-            {#if list.length > 0}
-              <div class="flex flex-wrap gap-2 mb-2">
-                {#each list as a (a.email)}
-                  {@const c = contactsByEmail.get(a.email.toLowerCase())}
-                  {@const photo = photoUrl(c)}
-                  <span class="inline-flex items-center gap-2 pl-1 pr-2 py-1 rounded-full text-sm bg-surface-200 dark:bg-surface-700 max-w-full">
-                    {#if photo}
-                      <img
-                        src={photo}
-                        alt=""
-                        loading="lazy"
-                        class="w-7 h-7 rounded-full object-cover flex-shrink-0"
-                      />
-                    {:else}
-                      <div class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 flex items-center justify-center text-[11px] font-semibold flex-shrink-0">
-                        {initials(chipLabel(a))}
-                      </div>
-                    {/if}
-                    <span class="flex flex-col min-w-0">
-                      <span class="flex items-center gap-1.5 max-w-[260px]">
-                        <span class="truncate leading-tight font-medium" title={a.email}>{chipLabel(a)}</span>
-                        {#if isInternal(a.email)}
-                          <!-- Tag for NC-internal users — set when
-                               `find_nextcloud_user_by_email` returns
-                               a hit.  Drives the participant-add flow
-                               (internals go in as `users` source) and
-                               the room-visibility downgrade (private
-                               when *every* attendee is internal). -->
-                          <span
-                            class="text-[9px] uppercase tracking-wide font-semibold px-1 py-px rounded bg-primary-500/20 text-primary-700 dark:text-primary-300 leading-tight shrink-0"
-                            title="Nextcloud user on this server"
-                          >internal</span>
-                        {/if}
-                      </span>
-                      {#if a.status && a.status.toUpperCase() !== 'NEEDS-ACTION'}
-                        <span class="text-[10px] uppercase tracking-wide text-surface-500 leading-tight" title="Response status">
-                          {a.status.toLowerCase()}
-                        </span>
-                      {:else if c && c.organization}
-                        <span class="text-[11px] text-surface-500 leading-tight truncate max-w-[220px]">{c.organization}</span>
-                      {/if}
-                    </span>
-                    <button
-                      type="button"
-                      class="text-surface-500 hover:text-red-500 ml-1 text-base leading-none"
-                      title="Remove"
-                      aria-label={`Remove ${a.email}`}
-                      onclick={() => removeAttendee(role, a.email)}
-                    >×</button>
-                  </span>
-                {/each}
-              </div>
-            {/if}
-            <div class="relative">
-              <input
-                type="text"
-                class="input w-full px-3 py-2 text-sm rounded-md"
-                {placeholder}
-                autocomplete="off"
-                value={role === 'REQ-PARTICIPANT'
+      {#snippet attendeeInput(role: Role, placeholder: string)}
+        <div class="relative">
+          <!-- Leading person icon — same visual vocabulary as
+               the trailing icons on DateField/TimeField.  Sits
+               inside the input's left padding so the placeholder
+               text doesn't overlap. -->
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="w-4 h-4 text-surface-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+            <circle cx="12" cy="7" r="4" />
+          </svg>
+          <input
+            type="text"
+            class="input w-full pl-9 pr-3 py-2 text-sm rounded-md"
+            {placeholder}
+            autocomplete="off"
+            value={role === 'REQ-PARTICIPANT'
+              ? requiredInput
+              : role === 'OPT-PARTICIPANT'
+                ? optionalInput
+                : chairInput}
+            oninput={(e) => {
+              const v = (e.currentTarget as HTMLInputElement).value
+              if (role === 'REQ-PARTICIPANT') requiredInput = v
+              else if (role === 'OPT-PARTICIPANT') optionalInput = v
+              else chairInput = v
+              activeSuggestionRole = role
+              runSuggestionSearch(role, v)
+            }}
+            onfocus={() => {
+              activeSuggestionRole = role
+              const v =
+                role === 'REQ-PARTICIPANT'
                   ? requiredInput
                   : role === 'OPT-PARTICIPANT'
                     ? optionalInput
-                    : chairInput}
-                oninput={(e) => {
-                  const v = (e.currentTarget as HTMLInputElement).value
-                  if (role === 'REQ-PARTICIPANT') requiredInput = v
-                  else if (role === 'OPT-PARTICIPANT') optionalInput = v
-                  else chairInput = v
-                  activeSuggestionRole = role
-                  runSuggestionSearch(role, v)
-                }}
-                onfocus={() => {
-                  activeSuggestionRole = role
-                  const v =
-                    role === 'REQ-PARTICIPANT'
-                      ? requiredInput
-                      : role === 'OPT-PARTICIPANT'
-                        ? optionalInput
-                        : chairInput
-                  if (v.trim().length >= 2) runSuggestionSearch(role, v)
-                }}
-                onblur={() => {
-                  // Defer the close so a click on a suggestion
-                  // can fire its onmousedown handler first.
-                  setTimeout(() => {
-                    if (activeSuggestionRole === role) {
-                      activeSuggestionRole = null
-                      dropdownSuggestions = []
-                    }
-                    commitInput(role)
-                  }, 120)
-                }}
-                onkeydown={(e) => {
-                  const open = activeSuggestionRole === role && dropdownSuggestions.length > 0
-                  if (open && e.key === 'ArrowDown') {
+                    : chairInput
+              if (v.trim().length >= 2) runSuggestionSearch(role, v)
+            }}
+            onblur={() => {
+              setTimeout(() => {
+                if (activeSuggestionRole === role) {
+                  activeSuggestionRole = null
+                  dropdownSuggestions = []
+                }
+                commitInput(role)
+              }, 120)
+            }}
+            onkeydown={(e) => {
+              const open = activeSuggestionRole === role && dropdownSuggestions.length > 0
+              if (open && e.key === 'ArrowDown') {
+                e.preventDefault()
+                activeIndex = (activeIndex + 1) % dropdownSuggestions.length
+              } else if (open && e.key === 'ArrowUp') {
+                e.preventDefault()
+                activeIndex =
+                  (activeIndex - 1 + dropdownSuggestions.length) %
+                  dropdownSuggestions.length
+              } else if (open && (e.key === 'Enter' || e.key === 'Tab')) {
+                e.preventDefault()
+                pickSuggestion(role, dropdownSuggestions[activeIndex])
+              } else if (e.key === 'Enter' || e.key === ',') {
+                e.preventDefault()
+                commitInput(role)
+              } else if (e.key === 'Escape') {
+                activeSuggestionRole = null
+                dropdownSuggestions = []
+              }
+            }}
+          />
+          {#if activeSuggestionRole === role && dropdownSuggestions.length > 0}
+            <ul
+              class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-700 rounded-md shadow-lg"
+              role="listbox"
+            >
+              {#each dropdownSuggestions as c, i (c.id)}
+                {@const url = photoUrl(c)}
+                <li
+                  role="option"
+                  aria-selected={i === activeIndex}
+                  class="flex items-center gap-3 px-3 py-2 cursor-pointer text-sm {i === activeIndex
+                    ? 'bg-primary-500/15'
+                    : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
+                  onmousedown={(e) => {
                     e.preventDefault()
-                    activeIndex = (activeIndex + 1) % dropdownSuggestions.length
-                  } else if (open && e.key === 'ArrowUp') {
-                    e.preventDefault()
-                    activeIndex =
-                      (activeIndex - 1 + dropdownSuggestions.length) %
-                      dropdownSuggestions.length
-                  } else if (open && (e.key === 'Enter' || e.key === 'Tab')) {
-                    e.preventDefault()
-                    pickSuggestion(role, dropdownSuggestions[activeIndex])
-                  } else if (e.key === 'Enter' || e.key === ',') {
-                    e.preventDefault()
-                    commitInput(role)
-                  } else if (e.key === 'Escape') {
-                    activeSuggestionRole = null
-                    dropdownSuggestions = []
-                  }
-                }}
-              />
-
-              {#if activeSuggestionRole === role && dropdownSuggestions.length > 0}
-                <ul
-                  class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-700 rounded-md shadow-lg"
-                  role="listbox"
+                    pickSuggestion(role, c)
+                  }}
+                  onmouseenter={() => (activeIndex = i)}
                 >
-                  {#each dropdownSuggestions as c, i (c.id)}
-                    {@const url = photoUrl(c)}
-                    <li
-                      role="option"
-                      aria-selected={i === activeIndex}
-                      class="flex items-center gap-3 px-3 py-2 cursor-pointer text-sm {i === activeIndex
-                        ? 'bg-primary-500/15'
-                        : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
-                      onmousedown={(e) => {
-                        e.preventDefault()
-                        pickSuggestion(role, c)
-                      }}
-                      onmouseenter={() => (activeIndex = i)}
-                    >
-                      {#if url}
-                        <img
-                          src={url}
-                          alt=""
-                          loading="lazy"
-                          class="w-8 h-8 rounded-full object-cover flex-shrink-0"
-                        />
-                      {:else}
-                        <div class="w-8 h-8 rounded-full bg-surface-300 dark:bg-surface-700 flex items-center justify-center text-xs font-semibold flex-shrink-0">
-                          {initials(c.display_name)}
-                        </div>
-                      {/if}
-                      <div class="flex-1 min-w-0">
-                        <p class="font-medium truncate">{c.display_name}</p>
-                        <p class="text-xs text-surface-500 truncate">
-                          {primaryEmail(c)}
-                          {#if c.organization}· {c.organization}{/if}
-                        </p>
-                      </div>
-                    </li>
-                  {/each}
-                </ul>
-              {/if}
-            </div>
-          </div>
+                  {#if url}
+                    <img
+                      src={url}
+                      alt=""
+                      loading="lazy"
+                      class="w-8 h-8 rounded-full object-cover flex-shrink-0"
+                    />
+                  {:else}
+                    <div class="w-8 h-8 rounded-full bg-surface-300 dark:bg-surface-700 flex items-center justify-center text-xs font-semibold flex-shrink-0">
+                      {initials(c.display_name)}
+                    </div>
+                  {/if}
+                  <div class="flex-1 min-w-0">
+                    <p class="font-medium truncate">{c.display_name}</p>
+                    <p class="text-xs text-surface-500 truncate">
+                      {primaryEmail(c)}
+                      {#if c.organization}· {c.organization}{/if}
+                    </p>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         </div>
       {/snippet}
 
-      {@render attendeeRow('Required', 'REQ-PARTICIPANT', requiredAttendees, 'alice@example.com')}
-      {@render attendeeRow('Optional', 'OPT-PARTICIPANT', optionalAttendees, 'bob@example.com')}
-      {@render attendeeRow('Chair', 'CHAIR', chairAttendees, 'meeting host (usually one)')}
+      {#snippet chipList(label: string, role: Role, list: EventAttendee[])}
+        {#if list.length > 0}
+          <div>
+            <div class="border-t border-surface-200 dark:border-surface-700 pt-3 mb-2">
+              <span class="text-xs uppercase tracking-wide text-surface-500">{label}</span>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              {#each list as a (a.email)}
+                {@const c = contactsByEmail.get(a.email.toLowerCase())}
+                {@const photo = photoUrl(c)}
+                <span class="inline-flex items-center gap-2 pl-1 pr-2 py-1 rounded-full text-sm bg-surface-200 dark:bg-surface-700 max-w-full">
+                  {#if photo}
+                    <img
+                      src={photo}
+                      alt=""
+                      loading="lazy"
+                      class="w-7 h-7 rounded-full object-cover flex-shrink-0"
+                    />
+                  {:else}
+                    <div class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 flex items-center justify-center text-[11px] font-semibold flex-shrink-0">
+                      {initials(chipLabel(a))}
+                    </div>
+                  {/if}
+                  <span class="flex flex-col min-w-0">
+                    <span class="flex items-center gap-1.5 max-w-[260px]">
+                      <span class="truncate leading-tight font-medium" title={a.email}>{chipLabel(a)}</span>
+                      {#if isInternal(a.email)}
+                        <span
+                          class="text-[9px] uppercase tracking-wide font-semibold px-1 py-px rounded bg-primary-500/20 text-primary-700 dark:text-primary-300 leading-tight shrink-0"
+                          title="Nextcloud user on this server"
+                        >internal</span>
+                      {/if}
+                    </span>
+                    {#if userIdentities.has(a.email.toLowerCase()) && (a.role ?? '').toUpperCase() === 'CHAIR'}
+                      <!-- The user's own CHAIR row is the
+                           organizer.  Override whatever PARTSTAT
+                           it carries (typically auto-set to
+                           ACCEPTED) with the more meaningful
+                           "Organizer" label, so the user doesn't
+                           see themselves as just another
+                           "accepted" guest.  All other CHAIRs
+                           (co-hosts) keep their response status. -->
+                      <span class="text-[10px] uppercase tracking-wide text-primary-600 dark:text-primary-300 leading-tight" title="You are the organizer">
+                        organizer
+                      </span>
+                    {:else if a.status && a.status.toUpperCase() !== 'NEEDS-ACTION'}
+                      <span class="text-[10px] uppercase tracking-wide text-surface-500 leading-tight" title="Response status">
+                        {a.status.toLowerCase()}
+                      </span>
+                    {:else if c && c.organization}
+                      <span class="text-[11px] text-surface-500 leading-tight truncate max-w-[220px]">{c.organization}</span>
+                    {/if}
+                  </span>
+                  <button
+                    type="button"
+                    class="text-surface-500 hover:text-red-500 ml-1 text-base leading-none"
+                    title="Remove"
+                    aria-label={`Remove ${a.email}`}
+                    onclick={() => removeAttendee(role, a.email)}
+                  >×</button>
+                </span>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      {/snippet}
 
-      <div class="flex items-start gap-2">
-        <label class="text-xs w-20 text-surface-500 pt-2" for="event-description">Notes</label>
-        <textarea
-          id="event-description"
-          class="textarea flex-1 px-3 py-2 text-sm rounded-md min-h-[120px]"
-          bind:value={description}
-          placeholder="Description, agenda, notes…"
-        ></textarea>
-      </div>
+      <!-- Three input rows, one per role.  Order matches the
+           mockup: Hosts (CHAIR) → Required → Optional. -->
+      {@render attendeeInput('CHAIR', 'Hosts attendees')}
+      {@render attendeeInput('REQ-PARTICIPANT', 'Required attendees')}
+      {@render attendeeInput('OPT-PARTICIPANT', 'Optional attendees')}
+
+      <!-- Section separator + the chip lists grouped by role.
+           Each header is faint until there's content under it,
+           and `chipList` short-circuits empty buckets so the
+           card collapses cleanly for unattended events. -->
+      {@render chipList('Hosts', 'CHAIR', chairAttendees)}
+      {@render chipList('Required', 'REQ-PARTICIPANT', requiredAttendees)}
+      {@render chipList('Optional', 'OPT-PARTICIPANT', optionalAttendees)}
 
       {#if error}
         <p class="text-sm text-red-500">{error}</p>

@@ -219,36 +219,51 @@ pub async fn list_rooms(
 /// finish the join in the browser. The room itself is preserved on the
 /// server — leaving an empty room dangling is better than rolling back
 /// and silently dropping a working room the user can still use.
-// `room_type_override`: `2` = group/private (only invited NC
-// users can join), `3` = public (anyone with the URL joins as
-// guest).  `None` falls back to group/private — the
-// Compose-side "create Talk room" flow's behaviour.  Event-bound
-// rooms pass `Some(3)` so externals invited to the event can
-// click through the calendar link without an NC login.
+/// Optional knobs to `create_room` that group together cleanly
+/// — bundling them keeps the call signature within clippy's
+/// `too_many_arguments` ceiling and clarifies that they're all
+/// "tweaks for event-bound rooms" rather than required params.
+///
+/// `room_type`: `2` = group/private (only invited NC users can
+/// join), `3` = public (anyone with the URL joins as guest).
+/// `None` falls back to group/private — the Compose-side
+/// "create Talk room" flow's behaviour.  Event-bound rooms pass
+/// `Some(3)` so externals invited to the event can click
+/// through the calendar link without an NC login.
+///
+/// `object_type` + `object_id` mirror Nextcloud Calendar's
+/// "Make it a Talk conversation" tagging — pass
+/// `Some("event")` and a unique id (typically `crypto.randomUUID()`)
+/// to have Talk's UI categorise the room as a meeting room.
+#[derive(Debug, Default)]
+pub struct CreateRoomOptions<'a> {
+    pub room_type: Option<u8>,
+    pub object_type: Option<&'a str>,
+    pub object_id: Option<&'a str>,
+}
+
 pub async fn create_room(
     server_url: &str,
     username: &str,
     app_password: &str,
     room_name: &str,
     participants: &[ParticipantSource],
-    object_type: Option<&str>,
-    object_id: Option<&str>,
-    room_type_override: Option<u8>,
+    options: CreateRoomOptions<'_>,
 ) -> Result<TalkRoom, NimbusError> {
     let server = client::normalize_server_url(server_url);
     let url = format!("{server}/ocs/v2.php/apps/spreed/api/v4/room?format=json");
 
     tracing::debug!("POST {url} (room_name={room_name:?})");
     let http = client::build()?;
-    let room_type = room_type_override.unwrap_or(ROOM_TYPE_GROUP).to_string();
+    let room_type = options.room_type.unwrap_or(ROOM_TYPE_GROUP).to_string();
     let mut form: Vec<(&str, &str)> = vec![
         ("roomType", room_type.as_str()),
         ("roomName", room_name),
     ];
-    if let Some(t) = object_type {
+    if let Some(t) = options.object_type {
         form.push(("objectType", t));
     }
-    if let Some(id) = object_id {
+    if let Some(id) = options.object_id {
         form.push(("objectId", id));
     }
     let resp = http

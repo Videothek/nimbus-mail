@@ -454,6 +454,35 @@ async fn refresh_nextcloud_capabilities(nc_id: String) -> Result<NextcloudAccoun
     Ok(account)
 }
 
+/// Fetch the configured email address of the Nextcloud user owning
+/// the given account. This is the same `email` field NC's Mail
+/// Provider keys against for iMIP, so it's the right value to use as
+/// `ORGANIZER` / CHAIR in calendar invites — making the calendar's
+/// owning NC identity (not the user's first IMAP account) drive the
+/// organizer line in the editor's attendee list.
+///
+/// Returns `None` when the user hasn't set an email in Personal info
+/// or when the OCS lookup fails — caller should fall back to a
+/// reasonable default (e.g. the first mail account).
+#[tauri::command]
+async fn get_nextcloud_user_email(nc_id: String) -> Result<Option<String>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    match nimbus_nextcloud::user::fetch_current_user(
+        &account.server_url,
+        &account.username,
+        &app_password,
+    )
+    .await
+    {
+        Ok(profile) => Ok(profile.email),
+        Err(e) => {
+            tracing::warn!("get_nextcloud_user_email for {nc_id}: {e}");
+            Ok(None)
+        }
+    }
+}
+
 /// Remove a Nextcloud connection and its stored app password.
 ///
 /// Does **not** attempt to revoke the app password on the server —
@@ -1090,9 +1119,11 @@ async fn create_talk_room(
         &app_password,
         &room_name,
         &participants,
-        object_type.as_deref(),
-        object_id.as_deref(),
-        room_type,
+        nimbus_nextcloud::CreateRoomOptions {
+            room_type,
+            object_type: object_type.as_deref(),
+            object_id: object_id.as_deref(),
+        },
     )
     .await
 }
@@ -2632,7 +2663,6 @@ fn parse_event_invite(bytes: Vec<u8>) -> Result<InviteSummary, NimbusError> {
 /// the line as a single token after the colon (REQUEST / REPLY /
 /// CANCEL / etc.); we just normalise to upper case so JS-side
 /// equality checks don't have to be case-insensitive.
-
 fn extract_calendar_method(ics: &str) -> Option<String> {
     for line in ics.lines() {
         let trimmed = line.trim();
@@ -3042,14 +3072,13 @@ async fn get_event_partstat_for_user(
     // CalDAV client without waiting for the background-sync
     // interval.  Best-effort: a sync failure leaves the cache
     // as-is and we return the locally-known state.
-    if let Some((_, cal_path)) = cache.get_calendar_server_path(&handle.calendar_id)? {
-        if let Err(e) =
+    if let Some((_, cal_path)) = cache.get_calendar_server_path(&handle.calendar_id)?
+        && let Err(e) =
             refresh_calendar_cache(&cache, &handle.nextcloud_account_id, &cal_path).await
-        {
-            tracing::warn!(
-                "RSVP badge: pre-read calendar sync failed (continuing with stale cache): {e}"
-            );
-        }
+    {
+        tracing::warn!(
+            "RSVP badge: pre-read calendar sync failed (continuing with stale cache): {e}"
+        );
     }
     let Some(handle) = cache.get_event_server_handle(&event_id)? else {
         return Ok(None);
@@ -5390,6 +5419,7 @@ fn main() {
             poll_nextcloud_login,
             get_nextcloud_accounts,
             refresh_nextcloud_capabilities,
+            get_nextcloud_user_email,
             remove_nextcloud_account,
             open_url,
             list_nextcloud_files,

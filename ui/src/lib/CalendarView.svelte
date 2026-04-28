@@ -33,6 +33,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
   import EventEditor, { type SavedEvent } from './EventEditor.svelte'
+  import Select from './Select.svelte'
 
   interface Props {
     onclose: () => void
@@ -129,6 +130,18 @@
 
   // Current navigation focus: the Monday of the visible week.
   let currentWeekStart = $state<Date>(startOfWeek(new Date()))
+  // Live "now" — drives the today-column current-time line and
+  // the gray "past" overlay on today.  Ticked every 30s; cheap
+  // because Svelte 5's reactivity only re-renders the dependent
+  // overlay/line, not the whole grid.
+  let now = $state(new Date())
+  $effect(() => {
+    const id = setInterval(() => {
+      now = new Date()
+    }, 30_000)
+    return () => clearInterval(id)
+  })
+  const nowMinutes = $derived(now.getHours() * 60 + now.getMinutes())
   // What range of data we currently have fetched. Tracked so week
   // nav can tell whether it's crossing into uncached territory and
   // trigger an extension.
@@ -144,6 +157,47 @@
   /** Calendars shown in the sidebar: everything not hidden by Settings
    *  (Layer 1). The muted flag (Layer 2) only affects event rendering. */
   const sidebarCalendars = $derived(calendars.filter((c) => !c.hidden))
+
+  /** Pretty hostname extracted from a Nextcloud `server_url`,
+   *  e.g. "https://cloud.example.com/" → "cloud.example.com".
+   *  Falls back to the raw URL on parse failure so the user
+   *  always sees *something* identifying the server. */
+  function ncHostname(serverUrl: string): string {
+    try {
+      return new URL(serverUrl).host
+    } catch {
+      return serverUrl
+    }
+  }
+  /** Sidebar calendars grouped by their owning NC account, in
+   *  the order the accounts were configured.  Each group gets a
+   *  divider + hostname header so users with multiple servers
+   *  can tell at a glance which calendars belong where. */
+  const sidebarGroups = $derived.by(() => {
+    const byNc = new Map<string, CalendarSummary[]>()
+    for (const c of sidebarCalendars) {
+      const list = byNc.get(c.nextcloud_account_id) ?? []
+      list.push(c)
+      byNc.set(c.nextcloud_account_id, list)
+    }
+    const out: { ncId: string; label: string; calendars: CalendarSummary[] }[] = []
+    // Walk `accounts` first so the visual order matches the
+    // Settings list; fall back to insertion order for any
+    // calendar whose account isn't in `accounts` yet (still
+    // loading).
+    const seen = new Set<string>()
+    for (const a of accounts) {
+      const list = byNc.get(a.id)
+      if (!list) continue
+      out.push({ ncId: a.id, label: ncHostname(a.server_url), calendars: list })
+      seen.add(a.id)
+    }
+    for (const [ncId, list] of byNc) {
+      if (seen.has(ncId)) continue
+      out.push({ ncId, label: ncId, calendars: list })
+    }
+    return out
+  })
   /** Calendars whose events paint on the grid: sidebar calendars that
    *  are also not muted (Layer 2). */
   const visibleCalendars = $derived(sidebarCalendars.filter((c) => !c.muted))
@@ -219,6 +273,22 @@
       document.removeEventListener('mousedown', onDocMouseDown)
       document.removeEventListener('keydown', onDocKey)
     }
+  })
+
+  // Esc dismisses the "New calendar" modal — same UX shortcut as
+  // the EventEditor.  Skip if the account-picker dropdown is open
+  // (its own listbox handles Esc to close just the dropdown).
+  $effect(() => {
+    if (!newCalendarForm) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (document.querySelector('[role="listbox"]')) return
+      e.preventDefault()
+      newCalendarForm = null
+      calendarOpError = ''
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
   })
 
   /** Refresh the calendar list + events from the cache after a
@@ -1067,7 +1137,19 @@
           >+</button>
         </div>
         <ul class="space-y-1">
-          {#each sidebarCalendars as c (c.id)}
+          {#each sidebarGroups as g, gi (g.ncId)}
+            <!-- NC account divider + hostname header.  Skipped
+                 above the very first group so the list doesn't
+                 start with an empty divider line. -->
+            <li class="pt-2 {gi === 0 ? '' : 'border-t border-surface-200 dark:border-surface-700 mt-2'}">
+              <div
+                class="px-1 pb-1 text-[10px] uppercase tracking-wider text-surface-500 truncate"
+                title={g.label}
+              >
+                {g.label}
+              </div>
+            </li>
+            {#each g.calendars as c (c.id)}
             <li>
               {#if renamingCalendarId === c.id}
                 <div class="flex items-center gap-2 px-2 py-1">
@@ -1115,6 +1197,7 @@
                 </div>
               {/if}
             </li>
+            {/each}
           {/each}
           {#if sidebarCalendars.length === 0 && calendars.length > 0}
             <li class="px-2 py-1 text-xs text-surface-500">
@@ -1236,6 +1319,7 @@
                  24-hour axis without interfering with each other. -->
             {#each weekBuckets as b (b.dayKey)}
               {@const overlay = dragOverlay(b)}
+              {@const todayCol = isToday(b.date)}
               <div
                 class="relative border-l border-surface-200 dark:border-surface-700 cursor-crosshair select-none"
                 class:bg-surface-100={isPast(b.date)}
@@ -1246,13 +1330,44 @@
                 onmouseleave={onDayMouseLeave}
                 role="presentation"
               >
-                <!-- Hour gridlines — pure visual rhythm. -->
+                <!-- Today: gray out the portion of the day that has
+                     already happened, matching the full-column
+                     background applied to past days.  Painted
+                     *before* the gridlines so the hour rules still
+                     show through it.  Pointer-events-none so the
+                     user can still click-drag to create events in
+                     the past part of today (they may want to log
+                     something they just did). -->
+                {#if todayCol}
+                  <div
+                    class="absolute left-0 right-0 top-0 bg-surface-100 dark:bg-surface-800 pointer-events-none"
+                    style="height: {nowMinutes * PX_PER_MINUTE}px;"
+                  ></div>
+                {/if}
+
+                <!-- Hour gridlines — pure visual rhythm.  Drawn
+                     after the past-today overlay so the lines run
+                     uninterrupted across the full 24 hours and the
+                     greyed and ungreyed halves of today match. -->
                 {#each Array.from({ length: 24 }, (_, i) => i) as h}
                   <div
                     class="absolute left-0 right-0 border-t border-surface-200/60 dark:border-surface-700/60"
                     style="top: {h * HOUR_HEIGHT_PX}px;"
                   ></div>
                 {/each}
+
+                {#if todayCol}
+                  <!-- Current-time line. Red-500 + small leading
+                       dot for an Outlook/Apple-Calendar-style
+                       indicator the eye picks up immediately. -->
+                  <div
+                    class="absolute left-0 right-0 z-20 pointer-events-none"
+                    style="top: {nowMinutes * PX_PER_MINUTE}px;"
+                  >
+                    <div class="absolute -left-1 -top-1 w-2 h-2 rounded-full bg-red-500"></div>
+                    <div class="border-t border-red-500"></div>
+                  </div>
+                {/if}
 
                 <!-- In-progress drag overlay — translucent rectangle
                      that follows the pointer between mousedown and
@@ -1408,18 +1523,24 @@
     <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-96 max-w-full p-5">
       <h3 class="text-base font-semibold mb-3">New calendar</h3>
 
+      <!-- Account picker: only meaningful with more than one
+           connected NC account.  Hidden when there's a single
+           account (the form's `ncId` is already pre-seeded with
+           it on open). -->
       {#if accounts.length > 1}
         <label class="block text-xs text-surface-500 mb-1" for="new-cal-account">Nextcloud account</label>
-        <select
-          id="new-cal-account"
-          class="select w-full text-sm px-2 py-1.5 rounded-md mb-3"
-          bind:value={newCalendarForm.ncId}
-          disabled={calendarOpBusy}
-        >
-          {#each accounts as a (a.id)}
-            <option value={a.id}>{a.display_name || a.username}</option>
-          {/each}
-        </select>
+        <div class="mb-3">
+          <Select
+            id="new-cal-account"
+            ariaLabel="Nextcloud account"
+            bind:value={newCalendarForm.ncId}
+            disabled={calendarOpBusy}
+            options={accounts.map((a) => ({
+              value: a.id,
+              label: `${a.display_name || a.username} — ${ncHostname(a.server_url)}`,
+            }))}
+          />
+        </div>
       {/if}
 
       <label class="block text-xs text-surface-500 mb-1" for="new-cal-name">Name</label>
