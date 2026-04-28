@@ -2697,7 +2697,26 @@ async fn list_nextcloud_groups(
 ) -> Result<Vec<NextcloudGroupView>, NimbusError> {
     let accounts = nextcloud_store::load_accounts().unwrap_or_default();
     let mut out: Vec<NextcloudGroupView> = Vec::new();
-    let _ = cache; // currently unused; kept for parity / future caching
+    // Build a uid → email fallback map from the local CardDAV
+    // cache.  Most NC instances sync the system addressbook into
+    // CardDAV with each user's vCard UID == their NC user_id, so
+    // this lets us recover emails even when the OCS user-profile
+    // endpoint hides them (regular users querying other users
+    // only get a display name, not the email field).
+    let cache_uid_email: std::collections::HashMap<String, (String, String)> = cache
+        .list_contacts(None)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|c| {
+            let email = c.email.into_iter().next().map(|e| e.value).unwrap_or_default();
+            if email.is_empty() {
+                return None;
+            }
+            // Composite id is `nc::uid` — split off the bare UID.
+            let uid = c.id.split("::").nth(1).unwrap_or(&c.id).to_string();
+            Some((uid, (c.display_name, email)))
+        })
+        .collect();
     for acc in &accounts {
         let app_password = match credentials::get_nextcloud_password(&acc.id) {
             Ok(p) => p,
@@ -2721,7 +2740,7 @@ async fn list_nextcloud_groups(
             }
         };
         for gid in group_ids {
-            let members = collect_group_members(&acc, &app_password, &gid).await;
+            let members = collect_group_members(acc, &app_password, &gid, &cache_uid_email).await;
             // OCS groups + Circles both surface as "team" so
             // the UI presents a single Teams section.  We keep
             // the raw `gid` in the unified id (`team:<gid>`) so
@@ -2764,28 +2783,13 @@ async fn list_nextcloud_groups(
                     Vec::new()
                 }
             };
-            let mut members = Vec::with_capacity(mids.len());
-            for uid in mids {
-                let prof = nimbus_nextcloud::fetch_user_profile(
-                    &acc.server_url,
-                    &acc.username,
-                    &app_password,
-                    &uid,
-                )
-                .await;
-                match prof {
-                    Ok(p) => members.push(NextcloudGroupMemberView {
-                        user_id: p.user_id,
-                        display_name: p.display_name,
-                        email: p.email.unwrap_or_default(),
-                    }),
-                    Err(_) => members.push(NextcloudGroupMemberView {
-                        user_id: uid.clone(),
-                        display_name: uid,
-                        email: String::new(),
-                    }),
-                }
-            }
+            let members = resolve_member_profiles(
+                acc,
+                &app_password,
+                mids,
+                &cache_uid_email,
+            )
+            .await;
             out.push(NextcloudGroupView {
                 nextcloud_account_id: acc.id.clone(),
                 id: format!("team:{}", c.id),
@@ -2806,6 +2810,7 @@ async fn collect_group_members(
     acc: &NextcloudAccount,
     app_password: &str,
     group_id: &str,
+    cache_uid_email: &std::collections::HashMap<String, (String, String)>,
 ) -> Vec<NextcloudGroupMemberView> {
     let ids = match nimbus_nextcloud::fetch_group_member_ids(
         &acc.server_url,
@@ -2821,8 +2826,20 @@ async fn collect_group_members(
             return Vec::new();
         }
     };
-    let mut out = Vec::with_capacity(ids.len());
-    for uid in ids {
+    resolve_member_profiles(acc, app_password, ids, cache_uid_email).await
+}
+
+/// Resolve a list of NC user-ids to (display_name, email) tuples
+/// in parallel.  Falls back to the local CardDAV cache (system
+/// addressbook) when OCS hides the email field — that's the
+/// default for non-admin users querying other accounts.
+async fn resolve_member_profiles(
+    acc: &NextcloudAccount,
+    app_password: &str,
+    ids: Vec<String>,
+    cache_uid_email: &std::collections::HashMap<String, (String, String)>,
+) -> Vec<NextcloudGroupMemberView> {
+    let futs = ids.into_iter().map(|uid| async move {
         let prof = nimbus_nextcloud::fetch_user_profile(
             &acc.server_url,
             &acc.username,
@@ -2830,20 +2847,41 @@ async fn collect_group_members(
             &uid,
         )
         .await;
-        match prof {
-            Ok(p) => out.push(NextcloudGroupMemberView {
-                user_id: p.user_id,
-                display_name: p.display_name,
-                email: p.email.unwrap_or_default(),
-            }),
-            Err(_) => out.push(NextcloudGroupMemberView {
-                user_id: uid.clone(),
-                display_name: uid,
-                email: String::new(),
-            }),
-        }
-    }
-    out
+        (uid, prof)
+    });
+    let results = futures::future::join_all(futs).await;
+    results
+        .into_iter()
+        .map(|(uid, prof)| {
+            let (display_name, email_from_ocs) = match prof {
+                Ok(p) => (p.display_name, p.email.unwrap_or_default()),
+                Err(_) => (uid.clone(), String::new()),
+            };
+            // Fall back to the local CardDAV cache when OCS didn't
+            // return an email (regular-user privacy default) — the
+            // system addressbook entry usually has it.
+            let (display_name, email) = if email_from_ocs.is_empty() {
+                match cache_uid_email.get(&uid) {
+                    Some((cached_name, cached_email)) => {
+                        let dn = if display_name == uid && !cached_name.is_empty() {
+                            cached_name.clone()
+                        } else {
+                            display_name
+                        };
+                        (dn, cached_email.clone())
+                    }
+                    None => (display_name, String::new()),
+                }
+            } else {
+                (display_name, email_from_ocs)
+            };
+            NextcloudGroupMemberView {
+                user_id: uid,
+                display_name,
+                email,
+            }
+        })
+        .collect()
 }
 
 /// A trimmed-down addressbook record for the UI's "save new contact
