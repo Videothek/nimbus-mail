@@ -8,6 +8,9 @@
     "core:webview:allow-create-webview-window",
     "core:window:allow-close",
     "notification:default",
-    "dialog:default"
+    "dialog:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled"
   ]
 }

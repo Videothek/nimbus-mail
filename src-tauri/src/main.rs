@@ -5740,6 +5740,16 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        // #131 follow-up: cross-platform "launch on login".
+        // The plugin registers an XDG autostart entry on Linux,
+        // a LaunchAgent plist on macOS, and an HKCU\…\Run
+        // registry value on Windows.  No launcher args — the
+        // binary's default entry point is what we want
+        // autostarted.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(cache)
         .manage(shared_settings)
         .register_uri_scheme_protocol("contact-photo", contact_photo_protocol)

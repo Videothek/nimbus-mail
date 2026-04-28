@@ -197,6 +197,7 @@
     mail_html_white_background: boolean
     auto_advance_after_remove: boolean
     talk_reminder_enabled: boolean
+    autostart_enabled: boolean
   }
 
   // Issue #123: Talk-join reminders.  Rust scans upcoming
