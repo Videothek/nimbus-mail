@@ -38,6 +38,10 @@ tauri-plugin-dialog = "2"
 # and we sync it to the OS via the plugin's enable() / disable()
 # IPCs.
 tauri-plugin-autostart = "2"
+# Used by `custom_themes_dir()` to locate the user's config root
+# the same way the rest of the app's per-platform persistence
+# does.  Workspace dep so we share the same major version.
+dirs = { workspace = true }
 # Opens a URL in the system default browser. Used by the Nextcloud
 # Login Flow v2 command to bounce the user out to their NC login page.
 open = { workspace = true }
