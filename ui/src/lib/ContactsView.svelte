@@ -414,53 +414,124 @@
   /** Add a contact to the currently-selected mailing list.
    *  Manual lists go through `update_contact_group`; category
    *  lists go through `add_contact_to_category`.  Teams are
-   *  read-only — the caller never reaches this for a team. */
+   *  read-only — the caller never reaches this for a team.
+   *  Updates the UI optimistically so the row appears instantly;
+   *  the CardDAV PUT happens in the background. */
   async function addContactToSelectedList(contactId: string) {
     if (!selectedList) return
     const ml = selectedList
+    const target = contacts.find((c) => c.id === contactId)
+    if (!target) return
+    const memberView = {
+      displayName: target.display_name,
+      email: target.email[0]?.value ?? '',
+    }
     if (ml.source === 'manual') {
-      // `manual` rows carry an id like `list:<vcardUid>`; the
-      // group_id the IPC takes is `nc::vcardUid`.  We rebuild
-      // it from the contact's composite id.
       const groupId = ml.id.startsWith('list:') ? ml.id.slice(5) : ml.id
-      // Pull the existing member uids out of the live row so
-      // we don't lose anyone — append the new one + push back
-      // through the update IPC.
       const currentUids = ml.members
         .map((m) => {
-          // The MailingListView.members shape doesn't carry a
-          // bare vcard UID, only display_name + email.  We
-          // round-trip through the contacts list to recover
-          // the uid for each existing member.
           const c = contacts.find((cc) =>
             cc.email.some((e) => e.value.toLowerCase() === m.email.toLowerCase()),
           )
           return c ? bareUidOfContact(c) : null
         })
         .filter((u): u is string => !!u)
-      const target = contacts.find((c) => c.id === contactId)
-      if (!target) return
       const targetUid = bareUidOfContact(target)
       if (currentUids.includes(targetUid)) return
+      mailingLists = mailingLists.map((m) =>
+        m.id === ml.id ? { ...m, members: [...m.members, memberView] } : m,
+      )
       try {
         await invoke('update_contact_group', {
           groupId,
           displayName: null,
           memberUids: [...currentUids, targetUid],
         })
-        mailingLists = await invoke<MailingListView[]>('list_mailing_lists')
       } catch (e) {
+        // Roll back the optimistic add on failure.
+        mailingLists = mailingLists.map((m) =>
+          m.id === ml.id ? { ...m, members: m.members.filter((mm) => mm !== memberView) } : m,
+        )
         formError = formatError(e) || 'Failed to add member'
       }
     } else if (ml.source === 'category') {
+      mailingLists = mailingLists.map((m) =>
+        m.id === ml.id && memberView.email
+          ? { ...m, members: [...m.members, memberView] }
+          : m,
+      )
+      contacts = contacts.map((c) => {
+        if (c.id !== contactId) return c
+        const cats = c.categories ?? []
+        return cats.includes(ml.name) ? c : { ...c, categories: [...cats, ml.name] }
+      })
       try {
-        await invoke('add_contact_to_category', {
-          contactId,
+        await invoke('add_contact_to_category', { contactId, category: ml.name })
+      } catch (e) {
+        await reloadContacts()
+        formError = formatError(e) || 'Failed to tag contact'
+      }
+    }
+  }
+
+  /** Remove a member (by email) from the currently-selected
+   *  mailing list.  Same source split as `addContactToSelectedList`. */
+  async function removeContactFromSelectedList(email: string) {
+    if (!selectedList) return
+    const ml = selectedList
+    const lower = email.toLowerCase()
+    if (ml.source === 'manual') {
+      const groupId = ml.id.startsWith('list:') ? ml.id.slice(5) : ml.id
+      const remainingUids = ml.members
+        .filter((m) => m.email.toLowerCase() !== lower)
+        .map((m) => {
+          const c = contacts.find((cc) =>
+            cc.email.some((e) => e.value.toLowerCase() === m.email.toLowerCase()),
+          )
+          return c ? bareUidOfContact(c) : null
+        })
+        .filter((u): u is string => !!u)
+      const before = ml.members
+      mailingLists = mailingLists.map((m) =>
+        m.id === ml.id
+          ? { ...m, members: m.members.filter((mm) => mm.email.toLowerCase() !== lower) }
+          : m,
+      )
+      try {
+        await invoke('update_contact_group', {
+          groupId,
+          displayName: null,
+          memberUids: remainingUids,
+        })
+      } catch (e) {
+        mailingLists = mailingLists.map((m) =>
+          m.id === ml.id ? { ...m, members: before } : m,
+        )
+        formError = formatError(e) || 'Failed to remove member'
+      }
+    } else if (ml.source === 'category') {
+      const target = contacts.find((c) =>
+        c.email.some((e) => e.value.toLowerCase() === lower),
+      )
+      if (!target) return
+      mailingLists = mailingLists.map((m) =>
+        m.id === ml.id
+          ? { ...m, members: m.members.filter((mm) => mm.email.toLowerCase() !== lower) }
+          : m,
+      )
+      contacts = contacts.map((c) =>
+        c.id === target.id
+          ? { ...c, categories: (c.categories ?? []).filter((cat) => cat !== ml.name) }
+          : c,
+      )
+      try {
+        await invoke('remove_contact_from_category', {
+          contactId: target.id,
           category: ml.name,
         })
-        await reloadContacts()
       } catch (e) {
-        formError = formatError(e) || 'Failed to tag contact'
+        await reloadContacts()
+        formError = formatError(e) || 'Failed to untag contact'
       }
     }
   }
@@ -1323,7 +1394,7 @@
               </p>
             {/if}
             {#each filteredMembers as m, i (`${m.email}::${i}`)}
-              <div class="flex items-center gap-2 px-3 py-2 rounded-md bg-surface-200/40 dark:bg-surface-700/40">
+              <div class="group flex items-center gap-2 px-3 py-2 rounded-md bg-surface-200/40 dark:bg-surface-700/40">
                 <span class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 text-xs font-semibold flex items-center justify-center shrink-0">
                   {(m.displayName || m.email || '?').slice(0, 1).toUpperCase()}
                 </span>
@@ -1333,6 +1404,14 @@
                     {m.email || '(no email)'}
                   </p>
                 </div>
+                {#if editable && m.email}
+                  <button
+                    class="opacity-0 group-hover:opacity-100 transition-opacity w-7 h-7 rounded-md text-surface-500 hover:bg-error-500/15 hover:text-error-500 leading-none shrink-0"
+                    title="Remove from list"
+                    aria-label="Remove from list"
+                    onclick={() => void removeContactFromSelectedList(m.email)}
+                  >×</button>
+                {/if}
               </div>
             {/each}
           {/if}
