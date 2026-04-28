@@ -1033,12 +1033,14 @@
         </p>
       {/if}
     </div>
-    {:else}
+    {/if}
+    {#if activeTab === 'lists'}
     <!-- Lists tab — sidebar shows three sections (Mailing
-         lists / Kontaktgruppen / Teams).  No search field or
-         top-of-sidebar `+` button — search lives in the right
-         pane (filters members of the selected list) and "New
-         mailing list" rides next to its own section header. -->
+         lists / Kontaktgruppen / Teams).  Split out from the
+         {#if/:else} pair as two independent branches because
+         the {:else} variant was being clipped by the open
+         three-dot menu's fixed overlay on first click,
+         leaving activeTab updated but visually stale. -->
     <div class="flex-1 overflow-y-auto px-2 py-3 space-y-1">
       {#snippet listRow(ml: MailingListView, sourceIcon: string, pillCls: string, pillText: string)}
         {@const sel = selectedListId === ml.id}
@@ -1232,7 +1234,8 @@
         {/each}
       {/if}
     </div>
-    {:else}
+    {/if}
+    {#if activeTab === 'lists'}
     <!-- Lists tab — middle column shows the SELECTED list's
          members (or a hint if nothing's selected).  All
          management (create / rename / hide / delete) happens
