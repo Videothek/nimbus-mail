@@ -61,6 +61,19 @@ nimbus-mail/
 - **Security-first** — TLS everywhere, credential storage via OS keychain, no plaintext secrets
 - **Modular design** — each protocol as its own crate for testability and reuse
 
+## UI Conventions
+
+These are project-wide affordances we expect Claude to apply automatically when adding new list rows, sidebar items, or any other repeating element that has actions attached:
+
+- **Three-dot button (⋯) signals "this row has actions."** Whenever a row carries any action beyond its primary click (rename, delete, change emoji/icon, hide, etc.), surface a `⋯` button on the right side of the row. Default to opacity-0 with `group-hover:opacity-100` (and persistent when its own menu is open) so resting rows stay quiet. The button must be keyboard-focusable and the menu must dismiss on outside-click and Escape.
+- **Right-click does the same thing.** Every row that has a three-dot button must also respond to `oncontextmenu` by opening the *exact same* menu, anchored at the cursor position. The two surfaces share one menu component — never let them drift. This is our compatibility contract for trackpad / touchscreen users (who get the dots) versus mouse users (who reach for right-click).
+- **Menu anchor pattern.** Use `position: fixed` with coordinates from `getBoundingClientRect()` (three-dot trigger) or `e.clientX/Y` (right-click). Stop `mousedown` from propagating out of the menu div — the document-level mousedown listener that dismisses it fires *before* a click, and without `stopPropagation` the menu unmounts before its item handlers run.
+- **Inline edits over modals where possible.** "Rename" should swap the row's label for an `<input>` (Enter commits, Escape cancels, blur commits) — not a modal. Modals are reserved for create flows and destructive confirms.
+- **Shared `EmojiPicker` for any emoji input.** Never build a one-off grid. Use `ui/src/lib/EmojiPicker.svelte` (categories + search + clear). Set `allowClear={false}` only when "no emoji" is meaningless (e.g. inserting into a text editor).
+- **Outside-click dismissal idiom.** When you open a popover, register `document.addEventListener('mousedown', close)` *inside an `$effect` that depends on the open state*, with a one-tick delay (`setTimeout(..., 0)`) so the click that opened it doesn't immediately close it. Tear down on close.
+
+When in doubt, look at how `ContactsView` (mailing-list rows) and `Sidebar` (mail-folder rows) implement these — they're the canonical reference.
+
 ## Development Guidelines
 
 - Write clear, well-documented code — the team is learning as they build
