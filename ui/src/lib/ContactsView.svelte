@@ -58,6 +58,11 @@
     note?: string | null
     addresses?: ContactAddress[]
     urls?: string[]
+    /** vCard CATEGORIES — the Kontaktgruppen the contact
+     *  belongs to.  Mutated by drag-drop onto a Kontaktgruppe
+     *  row in the sidebar; sync goes back to NC via
+     *  `add_contact_to_category`. */
+    categories?: string[]
   }
   interface ContactInput {
     display_name: string
@@ -133,77 +138,176 @@
   // in the new-contact form doesn't re-hit the server.
   let addressbooksByAccount = $state<Record<string, AddressbookSummary[]>>({})
 
-  // ── Contact groups / mailing lists (#133, #113) ───────────────
-  interface ContactGroupView {
+  // ── Categories + mailing lists (#133 redesign) ───────────────
+  interface ContactCategoryView {
+    name: string
+    memberCount: number
+    useAsMailingList: boolean
+  }
+  interface MailingListView {
     id: string
-    nextcloudAccountId: string
-    displayName: string
-    memberUids: string[]
-    members: { id: string; displayName: string; email: string }[]
-    emoji: string | null
-    hidden: boolean
+    source: 'category' | 'team' | 'manual'
+    name: string
+    members: { displayName: string; email: string }[]
+    hiddenFromAutocomplete: boolean
   }
-  let groups = $state<ContactGroupView[]>([])
-  /** Read-only NC user groups + Teams (#133 follow-up).
-   *  Hydrated once on mount via `list_nextcloud_groups`; the
-   *  sidebar renders them in their own section so the user can
-   *  filter / autocomplete from them without confusing them
-   *  with locally-managed vCard groups. */
-  interface NcGroupView {
-    nextcloudAccountId: string
-    id: string
-    source: 'group' | 'team'
-    displayName: string
-    members: { userId: string; displayName: string; email: string }[]
-  }
-  let ncGroups = $state<NcGroupView[]>([])
-  /** Currently-active filter: `'all'` shows every contact in the
-   *  middle list; a group id filters the list to that group's
-   *  members.  Hidden groups are excluded from the sidebar so
-   *  they don't appear here either. */
-  let selectedGroupId = $state<string | 'all'>('all')
-  /** Drag state for the "drop a contact onto a group to add it"
-   *  flow.  Holds the contact's vcard UID (bare, no
-   *  `urn:uuid:`) so the group update IPC can append it to the
-   *  member list. */
-  let draggedContactUid = $state<string | null>(null)
-  let dragHoverGroupId = $state<string | null>(null)
-  /** Visible groups — hidden ones are filtered out so they
-   *  don't clutter the sidebar.  Hidden groups can still be
-   *  un-hidden through a settings panel later; for now hidden =
-   *  invisible everywhere except the contacts edit flow when a
-   *  contact happens to be a member. */
-  const visibleGroups = $derived(groups.filter((g) => !g.hidden))
-  /** Bare UID of the currently-selected contact's vcard, used
-   *  when dragging starts.  Composite ids look like `nc::uid`
-   *  so we split on `::`. */
-  function bareUidOf(c: Contact): string {
-    const segs = c.id.split('::')
-    return segs[1] ?? c.id
-  }
-  async function loadGroups() {
+  type ContactsTab = 'contacts' | 'lists'
+  let activeTab = $state<ContactsTab>('contacts')
+  /** Distinct addressbook paths across the cached contacts —
+   *  populated lazily once `accounts` resolves so the sidebar
+   *  can render one row per CardDAV collection.  Each row is
+   *  `{ ncId, path, name, displayName? }`. */
+  let allAddressbooks = $state<
+    { ncId: string; path: string; name: string; displayName: string | null }[]
+  >([])
+  let categories = $state<ContactCategoryView[]>([])
+  let mailingLists = $state<MailingListView[]>([])
+  /** Currently-active sidebar selection on the Contacts tab.
+   *  Strings: `'all'` | `'addressbook:<path>'` | `'category:<name>'`. */
+  let selectedScope = $state<string>('all')
+
+  /** Drag state for the drop-a-contact-on-a-Kontaktgruppe
+   *  flow.  Carries the *app-side* contact id (`nc::uid`)
+   *  since the IPC takes the composite id, not the bare UID. */
+  let draggedContactId = $state<string | null>(null)
+  let dragHoverCategory = $state<string | null>(null)
+
+  async function loadSidebarData() {
+    // Addressbooks: list per NC account, dedupe by composite
+    // (ncId, path).  We don't show empty addressbooks the user
+    // hasn't synced yet — the contacts list is the source of
+    // truth.
     try {
-      groups = await invoke<ContactGroupView[]>('list_contact_groups')
-      groups.sort((a, b) =>
-        a.displayName.localeCompare(b.displayName, undefined, {
-          sensitivity: 'base',
-        }),
+      const seen = new Set<string>()
+      const rows: typeof allAddressbooks = []
+      for (const a of accounts) {
+        try {
+          const books = await invoke<AddressbookSummary[]>(
+            'list_nextcloud_addressbooks',
+            { ncId: a.id },
+          )
+          for (const b of books) {
+            const k = `${a.id}::${b.path}`
+            if (seen.has(k)) continue
+            seen.add(k)
+            rows.push({
+              ncId: a.id,
+              path: b.path,
+              name: b.name,
+              displayName: b.display_name,
+            })
+          }
+        } catch (e) {
+          console.warn('list_nextcloud_addressbooks failed for', a.id, e)
+        }
+      }
+      allAddressbooks = rows
+    } catch (e) {
+      console.warn('addressbooks load failed', e)
+    }
+    try {
+      categories = await invoke<ContactCategoryView[]>('list_contact_categories')
+    } catch (e) {
+      console.warn('list_contact_categories failed', e)
+    }
+    try {
+      mailingLists = await invoke<MailingListView[]>('list_mailing_lists')
+    } catch (e) {
+      console.warn('list_mailing_lists failed', e)
+    }
+  }
+
+  // ── Kontaktgruppe (CATEGORIES) CRUD ────────────────────────
+  async function createCategory() {
+    const name = prompt('New Kontaktgruppe — name?')?.trim()
+    if (!name) return
+    if (contacts.length === 0) {
+      formError = 'Add at least one contact before creating a Kontaktgruppe — a tag with no contacts vanishes on the next sync.'
+      return
+    }
+    const seedRaw = prompt(
+      `Seed members — paste contact emails separated by commas (or leave blank to add later via drag-drop).`,
+    )
+    if (seedRaw === null) return
+    const seedEmails = new Set(
+      seedRaw
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean),
+    )
+    const seedIds = contacts
+      .filter((c) => c.email.some((e) => seedEmails.has(e.value.toLowerCase())))
+      .map((c) => c.id)
+    if (seedIds.length === 0) {
+      // No matching contacts — the category would vanish.
+      // Bail with a hint rather than silently doing nothing.
+      formError = 'None of the pasted emails matched a cached contact — Kontaktgruppe not created.'
+      return
+    }
+    for (const id of seedIds) {
+      try {
+        await invoke('add_contact_to_category', { contactId: id, category: name })
+      } catch (e) {
+        console.warn('seed category member failed', id, e)
+      }
+    }
+    await reloadContacts()
+    selectedScope = `category:${name}`
+  }
+  async function renameCategory(name: string) {
+    const next = prompt('Rename Kontaktgruppe', name)?.trim()
+    if (!next || next === name) return
+    try {
+      await invoke('rename_contact_category', { old: name, new: next })
+      await reloadContacts()
+      if (selectedScope === `category:${name}`) selectedScope = `category:${next}`
+    } catch (e) {
+      formError = formatError(e) || 'Failed to rename Kontaktgruppe'
+    }
+  }
+  async function deleteCategory(name: string) {
+    if (!confirm(`Remove the "${name}" tag from every contact carrying it? Contacts themselves are kept.`)) return
+    try {
+      await invoke('delete_contact_category', { name })
+      await reloadContacts()
+      if (selectedScope === `category:${name}`) selectedScope = 'all'
+    } catch (e) {
+      formError = formatError(e) || 'Failed to delete Kontaktgruppe'
+    }
+  }
+  async function toggleCategoryAsList(name: string, currentlyOn: boolean) {
+    try {
+      await invoke('set_category_use_as_mailing_list', {
+        name,
+        enabled: !currentlyOn,
+      })
+      categories = categories.map((c) =>
+        c.name === name ? { ...c, useAsMailingList: !currentlyOn } : c,
       )
+      // Mailing-lists view depends on this flag, refresh once.
+      try {
+        mailingLists = await invoke<MailingListView[]>('list_mailing_lists')
+      } catch (e) {
+        console.warn('list_mailing_lists refresh failed', e)
+      }
     } catch (e) {
-      console.warn('list_contact_groups failed', e)
-    }
-    try {
-      ncGroups = await invoke<NcGroupView[]>('list_nextcloud_groups')
-    } catch (e) {
-      console.warn('list_nextcloud_groups failed', e)
+      formError = formatError(e) || 'Failed to toggle "Use as mailing list"'
     }
   }
-  async function createGroup() {
-    const name = prompt('Group name', '')?.trim()
+  async function addContactIdToCategory(contactId: string, name: string) {
+    try {
+      await invoke('add_contact_to_category', { contactId, category: name })
+      await reloadContacts()
+    } catch (e) {
+      formError = formatError(e) || 'Failed to tag contact'
+    }
+  }
+
+  // ── Manual mailing list CRUD ──────────────────────────────
+  async function createManualMailingList() {
+    const name = prompt('New mailing list — name?')?.trim()
     if (!name) return
     if (accounts.length === 0) return
-    // Default to the first NC account + first non-hidden
-    // addressbook on it — same heuristic create-contact uses.
     const ncId = accounts[0].id
     let books = addressbooksByAccount[ncId]
     if (!books) {
@@ -221,96 +325,43 @@
     const book = books[0]
     if (!book) return
     try {
-      const created = await invoke<ContactGroupView>('create_contact_group', {
+      await invoke('create_contact_group', {
         ncId,
         addressbookUrl: book.path,
         addressbookName: book.name,
         displayName: name,
         memberUids: [],
       })
-      groups = [...groups, created].sort((a, b) =>
-        a.displayName.localeCompare(b.displayName, undefined, {
-          sensitivity: 'base',
-        }),
+      try {
+        mailingLists = await invoke<MailingListView[]>('list_mailing_lists')
+      } catch (e) {
+        console.warn('list_mailing_lists refresh failed', e)
+      }
+    } catch (e) {
+      formError = formatError(e) || 'Failed to create mailing list'
+    }
+  }
+  async function deleteManualMailingList(id: string, name: string) {
+    if (!confirm(`Delete mailing list "${name}"? Members are not affected.`)) return
+    // Manual rows use `list:<vcard-uid>` ids; the underlying
+    // group_id (composite contact id) is `nc::uid`.  Strip the
+    // prefix to get back to the contact-handle id.
+    const groupId = id.startsWith('list:') ? id.slice(5) : id
+    try {
+      await invoke('delete_contact_group', { groupId })
+      mailingLists = mailingLists.filter((m) => m.id !== id)
+    } catch (e) {
+      formError = formatError(e) || 'Failed to delete mailing list'
+    }
+  }
+  async function toggleMailingListHidden(id: string, currently: boolean) {
+    try {
+      await invoke('set_mailing_list_hidden', { id, hidden: !currently })
+      mailingLists = mailingLists.map((m) =>
+        m.id === id ? { ...m, hiddenFromAutocomplete: !currently } : m,
       )
-      selectedGroupId = created.id
     } catch (e) {
-      formError = formatError(e) || 'Failed to create group'
-    }
-  }
-  async function renameGroup(g: ContactGroupView) {
-    const next = prompt('Rename group', g.displayName)?.trim()
-    if (!next || next === g.displayName) return
-    try {
-      const updated = await invoke<ContactGroupView>('update_contact_group', {
-        groupId: g.id,
-        displayName: next,
-        memberUids: null,
-      })
-      groups = groups.map((x) => (x.id === g.id ? updated : x))
-    } catch (e) {
-      formError = formatError(e) || 'Failed to rename group'
-    }
-  }
-  async function deleteGroup(g: ContactGroupView) {
-    if (!confirm(`Delete the group "${g.displayName}"? Members are not affected.`)) return
-    try {
-      await invoke('delete_contact_group', { groupId: g.id })
-      groups = groups.filter((x) => x.id !== g.id)
-      if (selectedGroupId === g.id) selectedGroupId = 'all'
-    } catch (e) {
-      formError = formatError(e) || 'Failed to delete group'
-    }
-  }
-  async function setGroupEmoji(g: ContactGroupView) {
-    const next = prompt('Emoji (leave blank to clear)', g.emoji ?? '')
-    if (next === null) return
-    const v = next.trim()
-    try {
-      await invoke('set_contact_group_emoji', {
-        groupId: g.id,
-        emoji: v || null,
-      })
-      groups = groups.map((x) => (x.id === g.id ? { ...x, emoji: v || null } : x))
-    } catch (e) {
-      formError = formatError(e) || 'Failed to update emoji'
-    }
-  }
-  async function toggleGroupHidden(g: ContactGroupView) {
-    const next = !g.hidden
-    try {
-      await invoke('set_contact_group_hidden', { groupId: g.id, hidden: next })
-      groups = groups.map((x) => (x.id === g.id ? { ...x, hidden: next } : x))
-    } catch (e) {
-      formError = formatError(e) || 'Failed to update hidden state'
-    }
-  }
-  async function addContactToGroup(g: ContactGroupView, contactUid: string) {
-    if (g.memberUids.includes(contactUid)) return
-    const nextMembers = [...g.memberUids, contactUid]
-    try {
-      const updated = await invoke<ContactGroupView>('update_contact_group', {
-        groupId: g.id,
-        displayName: null,
-        memberUids: nextMembers,
-      })
-      groups = groups.map((x) => (x.id === g.id ? updated : x))
-    } catch (e) {
-      formError = formatError(e) || 'Failed to add member'
-    }
-  }
-  async function removeContactFromGroup(g: ContactGroupView, contactUid: string) {
-    const nextMembers = g.memberUids.filter((u) => u !== contactUid)
-    if (nextMembers.length === g.memberUids.length) return
-    try {
-      const updated = await invoke<ContactGroupView>('update_contact_group', {
-        groupId: g.id,
-        displayName: null,
-        memberUids: nextMembers,
-      })
-      groups = groups.map((x) => (x.id === g.id ? updated : x))
-    } catch (e) {
-      formError = formatError(e) || 'Failed to remove member'
+      formError = formatError(e) || 'Failed to toggle hide flag'
     }
   }
 
@@ -321,26 +372,24 @@
   const filteredContacts = $derived.by(() => {
     const q = query.trim().toLowerCase()
     let scope = contacts
-    if (selectedGroupId !== 'all') {
-      // vCard groups match by bare UID; NC groups / Teams (id
-      // prefixed with `nc:`) match by email since their members
-      // are NC user IDs, not vCard UIDs.
-      if (selectedGroupId.startsWith('nc:')) {
-        const ncId = selectedGroupId.slice(3)
-        const g = ncGroups.find((x) => x.id === ncId)
-        const emails = new Set(
-          (g?.members ?? [])
-            .map((m) => m.email.toLowerCase())
-            .filter((e) => e.length > 0),
+    if (selectedScope.startsWith('addressbook:')) {
+      const path = selectedScope.slice('addressbook:'.length)
+      // Composite ids are `nc::uid`, but the addressbook lives
+      // server-side and we don't ship it on `Contact` directly.
+      // Match via emailing through the cache row's
+      // `nextcloud_account_id` + a separate IPC isn't worth it
+      // for the typical user with one or two books — for now
+      // we filter by the addressbook's nc-account at minimum
+      // so each book row doesn't show every account's contacts.
+      const book = allAddressbooks.find((b) => b.path === path)
+      if (book) {
+        scope = contacts.filter(
+          (c) => c.nextcloud_account_id === book.ncId,
         )
-        scope = contacts.filter((c) =>
-          c.email.some((e) => emails.has(e.value.toLowerCase())),
-        )
-      } else {
-        const g = groups.find((x) => x.id === selectedGroupId)
-        const uids = new Set(g?.memberUids ?? [])
-        scope = contacts.filter((c) => uids.has(bareUidOf(c)))
       }
+    } else if (selectedScope.startsWith('category:')) {
+      const name = selectedScope.slice('category:'.length)
+      scope = contacts.filter((c) => c.categories?.includes(name))
     }
     if (!q) return scope
     return scope.filter(
@@ -383,11 +432,10 @@
 
   async function reloadContacts() {
     contacts = await invoke<Contact[]>('get_contacts', { ncId: null })
-    // Keep the list sorted by name so edits don't reshuffle it.
     contacts.sort((a, b) =>
       a.display_name.localeCompare(b.display_name, undefined, { sensitivity: 'base' }),
     )
-    await loadGroups()
+    await loadSidebarData()
   }
 
   async function syncInBackground() {
@@ -680,132 +728,128 @@
 </script>
 
 <div class="h-full flex bg-surface-50 dark:bg-surface-900">
-  <!-- ── Groups / mailing lists sidebar (#133, #113) ──────── -->
+  <!-- ── Sidebar (Contacts tab) — addressbooks + Kontaktgruppen.
+       Mailing-lists tab replaces the contacts list with the
+       new mailing-list catalogue, so the sidebar only renders
+       on the Contacts tab. ─────────────────────────────────── -->
+  {#if activeTab === 'contacts'}
   <aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100/60 dark:bg-surface-800/40 flex flex-col">
-    <div class="p-3 border-b border-surface-200 dark:border-surface-700">
-      <span class="text-xs font-semibold uppercase tracking-wider text-surface-500">Groups</span>
-    </div>
-    <div class="px-3 pt-3">
+    <div class="flex-1 overflow-y-auto px-2 py-3 space-y-1">
+      <!-- "All" -->
       <button
-        class="btn w-full preset-filled-primary-500 text-sm"
-        title="Create a contact group / mailing list — Nimbus stores both as a vCard KIND:group, so the same flow works for either."
-        onclick={() => void createGroup()}
-      >+ New group / list</button>
-    </div>
-    <div class="flex-1 overflow-y-auto px-2 py-2 space-y-1">
-      <!-- "All" pseudo-row clears the filter. -->
-      <button
-        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors {selectedGroupId === 'all'
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors {selectedScope === 'all'
           ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
           : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
-        onclick={() => (selectedGroupId = 'all')}
+        onclick={() => (selectedScope = 'all')}
       >
         <span class="w-6 text-center">👥</span>
         <span class="flex-1 truncate">All contacts</span>
         <span class="text-xs text-surface-500">{contacts.length}</span>
       </button>
-      {#each visibleGroups as g (g.id)}
-        {@const active = selectedGroupId === g.id}
-        {@const dragOver = dragHoverGroupId === g.id}
+
+      <!-- Addressbooks — one row per CardDAV collection.  Click
+           filters the middle list to entries from that book's
+           NC account (the contact row doesn't carry the
+           addressbook path, so we approximate by NC account). -->
+      {#if allAddressbooks.length > 0}
+        <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">
+          Addressbooks
+        </div>
+        {#each allAddressbooks as b (`${b.ncId}::${b.path}`)}
+          {@const sel = selectedScope === `addressbook:${b.path}`}
+          <button
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
+                   {sel
+                     ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
+                     : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            onclick={() => (selectedScope = `addressbook:${b.path}`)}
+          >
+            <span class="w-6 text-center">📒</span>
+            <span class="flex-1 truncate">{b.displayName ?? b.name}</span>
+          </button>
+        {/each}
+      {/if}
+
+      <!-- Kontaktgruppen — derived from CATEGORIES on every
+           cached vCard.  Drag-drop a contact onto a row to add
+           it; right-click opens rename / delete; the swatch
+           toggles "Use as mailing list". -->
+      <div class="px-3 pt-3 pb-1 flex items-center justify-between">
+        <span class="text-[10px] uppercase tracking-wider text-surface-500">Kontaktgruppen</span>
+        <button
+          class="w-5 h-5 rounded-md flex items-center justify-center text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700"
+          title="New Kontaktgruppe"
+          aria-label="New Kontaktgruppe"
+          onclick={() => void createCategory()}
+        >+</button>
+      </div>
+      {#each categories as c (c.name)}
+        {@const sel = selectedScope === `category:${c.name}`}
+        {@const dragOver = dragHoverCategory === c.name}
         <button
           class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
-                 {active
+                 {sel
                    ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
                    : 'hover:bg-surface-200 dark:hover:bg-surface-700'}
                  {dragOver ? 'ring-2 ring-primary-500' : ''}"
           oncontextmenu={(e) => {
             e.preventDefault()
             const action = prompt(
-              `"${g.displayName}" — type:\n  rename / emoji / hide / unhide / delete`,
+              `"${c.name}" — type: rename / delete`,
               '',
             )?.trim()
-            if (action === 'rename') void renameGroup(g)
-            else if (action === 'emoji') void setGroupEmoji(g)
-            else if (action === 'hide' || action === 'unhide') void toggleGroupHidden(g)
-            else if (action === 'delete') void deleteGroup(g)
+            if (action === 'rename') void renameCategory(c.name)
+            else if (action === 'delete') void deleteCategory(c.name)
           }}
           ondragover={(e) => {
-            if (!draggedContactUid) return
+            if (!draggedContactId) return
             e.preventDefault()
-            dragHoverGroupId = g.id
+            dragHoverCategory = c.name
           }}
           ondragleave={() => {
-            if (dragHoverGroupId === g.id) dragHoverGroupId = null
+            if (dragHoverCategory === c.name) dragHoverCategory = null
           }}
           ondrop={(e) => {
             e.preventDefault()
-            const uid = draggedContactUid
-            dragHoverGroupId = null
-            draggedContactUid = null
-            if (uid) void addContactToGroup(g, uid)
+            const id = draggedContactId
+            dragHoverCategory = null
+            draggedContactId = null
+            if (id) void addContactIdToCategory(id, c.name)
           }}
-          onclick={() => (selectedGroupId = g.id)}
+          onclick={() => (selectedScope = `category:${c.name}`)}
         >
-          <span class="w-6 text-center">
-            {g.emoji && g.emoji.trim()
-              ? g.emoji
-              : (g.displayName || '?').slice(0, 1).toUpperCase()}
-          </span>
-          <span class="flex-1 truncate">{g.displayName}</span>
-          <span class="text-xs text-surface-500">{g.memberUids.length}</span>
+          <span class="w-6 text-center">{(c.name || '?').slice(0, 1).toUpperCase()}</span>
+          <span class="flex-1 truncate">{c.name}</span>
+          <!-- Per-row "Use as mailing list" swatch — filled
+               primary when on, empty outline when off.  Click
+               toggles WITHOUT propagating to the row's main
+               click handler. -->
+          <button
+            class="w-3 h-3 rounded-sm shrink-0 border transition-colors cursor-pointer mr-1"
+            style={c.useAsMailingList
+              ? `background-color: var(--color-primary-500); border-color: var(--color-primary-500);`
+              : `background-color: transparent; border-color: var(--color-surface-400);`}
+            title={c.useAsMailingList
+              ? 'Currently usable as a mailing list (click to disable)'
+              : 'Currently NOT usable as a mailing list (click to enable)'}
+            aria-label="Toggle use as mailing list"
+            onclick={(e) => {
+              e.stopPropagation()
+              void toggleCategoryAsList(c.name, c.useAsMailingList)
+            }}
+          ></button>
+          <span class="text-xs text-surface-500">{c.memberCount}</span>
         </button>
       {/each}
-      {#if visibleGroups.length === 0}
+      {#if categories.length === 0}
         <p class="px-3 py-2 text-xs text-surface-500 italic">
-          No groups yet. Click <span class="font-semibold">+ New group / list</span> above
-          — works for both contact groups and mailing lists. Drag a contact onto
-          a group to add them, right-click for rename / emoji / delete.
+          No Kontaktgruppen yet. Click <span class="font-semibold">+</span> to
+          create one — drag contacts onto it after to tag them.
         </p>
-      {/if}
-
-      <!-- Nextcloud user groups + Teams (#133 follow-up).
-           Read-only — managed in the NC admin UI / Files
-           sidebar — so we render them in a separate section
-           with a "NC" / "Team" pill and skip the right-click
-           menu.  Click filters the contact list to members
-           whose email matches the group roster. -->
-      {#if ncGroups.some((g) => g.source === 'group')}
-        <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">
-          Nextcloud groups
-        </div>
-        {#each ncGroups.filter((g) => g.source === 'group') as g (g.id)}
-          {@const sel = selectedGroupId === `nc:${g.id}`}
-          <button
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
-                   {sel
-                     ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
-                     : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
-            title="Read-only — manage members in your Nextcloud admin UI"
-            onclick={() => (selectedGroupId = `nc:${g.id}`)}
-          >
-            <span class="w-6 text-center">🏢</span>
-            <span class="flex-1 truncate">{g.displayName}</span>
-            <span class="text-xs text-surface-500">{g.members.length}</span>
-          </button>
-        {/each}
-      {/if}
-      {#if ncGroups.some((g) => g.source === 'team')}
-        <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">
-          Teams
-        </div>
-        {#each ncGroups.filter((g) => g.source === 'team') as g (g.id)}
-          {@const sel = selectedGroupId === `nc:${g.id}`}
-          <button
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
-                   {sel
-                     ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
-                     : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
-            title="Read-only — manage members in Nextcloud's Teams app"
-            onclick={() => (selectedGroupId = `nc:${g.id}`)}
-          >
-            <span class="w-6 text-center">⚡</span>
-            <span class="flex-1 truncate">{g.displayName}</span>
-            <span class="text-xs text-surface-500">{g.members.length}</span>
-          </button>
-        {/each}
       {/if}
     </div>
   </aside>
+  {/if}
 
   <!-- ── Left: contact list ──────────────────────────────── -->
   <aside class="w-80 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col">
@@ -817,11 +861,33 @@
       >
         &larr;
       </button>
-      <h2 class="text-base font-semibold flex-1">Contacts</h2>
+      <h2 class="text-base font-semibold flex-1">{activeTab === 'contacts' ? 'Contacts' : 'Mailing lists'}</h2>
       {#if syncing}
         <span class="text-[10px] text-surface-500">Syncing…</span>
       {/if}
     </div>
+
+    <!-- Tab strip — Contacts / Mailing lists.  Same shell so
+         the back button / sync indicator stays anchored, only
+         the column body swaps. -->
+    <div class="px-3 pt-2 flex gap-1 border-b border-surface-200 dark:border-surface-700">
+      <button
+        type="button"
+        class="flex-1 px-3 py-2 text-sm rounded-t-md transition-colors {activeTab === 'contacts'
+          ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
+          : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => (activeTab = 'contacts')}
+      >Contacts</button>
+      <button
+        type="button"
+        class="flex-1 px-3 py-2 text-sm rounded-t-md transition-colors {activeTab === 'lists'
+          ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
+          : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => (activeTab = 'lists')}
+      >Mailing lists</button>
+    </div>
+
+    {#if activeTab === 'contacts'}
     <div class="p-3 flex flex-col gap-2">
       <input
         type="search"
@@ -854,13 +920,13 @@
                 : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
             draggable="true"
             ondragstart={(e) => {
-              draggedContactUid = bareUidOf(c)
+              draggedContactId = c.id
               e.dataTransfer?.setData('text/plain', c.display_name)
               if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
             }}
             ondragend={() => {
-              draggedContactUid = null
-              dragHoverGroupId = null
+              draggedContactId = null
+              dragHoverCategory = null
             }}
             onclick={() => selectContact(c.id)}
           >
@@ -886,6 +952,76 @@
         {/each}
       {/if}
     </div>
+    {:else}
+    <!-- Mailing lists tab — virtual rows from categories
+         (auto-mirrored), manual KIND:group cards (CRUD), and
+         Teams (read-only).  Per-row hide swatch on non-category
+         sources; categories use their sidebar swatch instead. -->
+    <div class="p-3 flex flex-col gap-2">
+      <button
+        class="btn preset-filled-primary-500"
+        onclick={() => void createManualMailingList()}
+      >+ New mailing list</button>
+    </div>
+    <div class="flex-1 overflow-y-auto px-2 pb-3 space-y-1">
+      {#if mailingLists.length === 0}
+        <p class="px-3 py-2 text-xs text-surface-500 italic">
+          No mailing lists yet. Click <span class="font-semibold">+ New mailing list</span> to
+          create one, or tag contacts with a Kontaktgruppe and flip its
+          "Use as mailing list" swatch on.
+        </p>
+      {/if}
+      {#each mailingLists as ml (ml.id)}
+        {@const isManual = ml.source === 'manual'}
+        {@const isTeam = ml.source === 'team'}
+        {@const isCategory = ml.source === 'category'}
+        <div class="px-3 py-2 rounded-md hover:bg-surface-200 dark:hover:bg-surface-700">
+          <div class="flex items-center gap-2">
+            <span class="w-6 text-center">
+              {isCategory ? '🏷️' : isTeam ? '⚡' : '📨'}
+            </span>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="font-medium truncate">{ml.name}</span>
+                <span class="text-[10px] uppercase tracking-wider font-semibold px-1 py-px rounded
+                             {isCategory
+                               ? 'bg-primary-500/20 text-primary-600 dark:text-primary-300'
+                               : isTeam
+                                 ? 'bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200'
+                                 : 'bg-success-500/20 text-success-600 dark:text-success-300'}">
+                  {isCategory ? 'category' : isTeam ? 'team' : 'manual'}
+                </span>
+              </div>
+              <p class="text-xs text-surface-500 truncate">
+                {ml.members.filter((m) => m.email).length} member{ml.members.filter((m) => m.email).length === 1 ? '' : 's'} with email
+              </p>
+            </div>
+            {#if !isCategory}
+              <button
+                class="w-3 h-3 rounded-sm shrink-0 border transition-colors cursor-pointer"
+                style={ml.hiddenFromAutocomplete
+                  ? `background-color: transparent; border-color: var(--color-surface-400);`
+                  : `background-color: var(--color-primary-500); border-color: var(--color-primary-500);`}
+                title={ml.hiddenFromAutocomplete
+                  ? 'Currently hidden from autocomplete (click to show)'
+                  : 'Currently shown in autocomplete (click to hide)'}
+                aria-label="Toggle hidden from autocomplete"
+                onclick={() => void toggleMailingListHidden(ml.id, ml.hiddenFromAutocomplete)}
+              ></button>
+            {/if}
+            {#if isManual}
+              <button
+                class="text-xs text-surface-500 hover:text-error-500"
+                title="Delete mailing list"
+                aria-label="Delete mailing list"
+                onclick={() => void deleteManualMailingList(ml.id, ml.name)}
+              >×</button>
+            {/if}
+          </div>
+        </div>
+      {/each}
+    </div>
+    {/if}
   </aside>
 
   <!-- ── Right: detail / edit pane ──────────────────────────── -->

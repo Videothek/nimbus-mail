@@ -2293,12 +2293,14 @@ async fn list_mailing_lists(
         }
     }
 
-    // 3. NC user groups + Teams.  Pulled live via the existing
-    // OCS path.  We don't cache these on disk yet — they're
-    // typically a handful per server and refresh on every list.
+    // 3. Teams.  list_nextcloud_groups already returns OCS
+    // user groups + Circles unified under `source = "team"`
+    // with cleaned display names — we just forward each row
+    // verbatim.  These refresh every call (typically a handful
+    // per server, so live OCS round-trip is fine).
     let nc_groups = list_nextcloud_groups(cache).await.unwrap_or_default();
     for g in nc_groups {
-        let id = format!("{}:{}", g.source, g.id.trim_start_matches("group:").trim_start_matches("team:"));
+        let id = g.id;
         let suppressed_row = suppressed.contains(&id);
         let members = g
             .members
@@ -2310,11 +2312,7 @@ async fn list_mailing_lists(
             .collect();
         out.push(MailingListView {
             id,
-            source: if g.source == "team" {
-                "team".to_string()
-            } else {
-                "nc-group".to_string()
-            },
+            source: "team".to_string(),
             name: g.display_name,
             members,
             hidden_from_autocomplete: suppressed_row,
@@ -2634,6 +2632,25 @@ struct NextcloudGroupMemberView {
     email: String,
 }
 
+/// Strip the SAML / LDAP prefixes some NC instances bake into
+/// group ids when they sync from an upstream IdP — the user
+/// sees a clean display name instead of `SAML_Engineering`.
+/// Idempotent and case-insensitive on the prefix; everything
+/// else passes through untouched.
+fn humanize_nc_group_name(raw: &str) -> String {
+    const PREFIXES: &[&str] = &[
+        "SAML_", "saml_", "saml-", "SAML-",
+        "LDAP_", "ldap_", "ldap-", "LDAP-",
+        "OIDC_", "oidc_", "oidc-", "OIDC-",
+    ];
+    for p in PREFIXES {
+        if let Some(rest) = raw.strip_prefix(p) {
+            return rest.to_string();
+        }
+    }
+    raw.to_string()
+}
+
 /// Pull every NC user group and Circle / Team the user belongs
 /// to across every connected NC account, hydrating each with
 /// (display_name, email) per member.  Soft-fails per group so
@@ -2669,11 +2686,16 @@ async fn list_nextcloud_groups(
         };
         for gid in group_ids {
             let members = collect_group_members(&acc, &app_password, &gid).await;
+            // OCS groups + Circles both surface as "team" so
+            // the UI presents a single Teams section.  We keep
+            // the raw `gid` in the unified id (`team:<gid>`) so
+            // the per-row hide swatch can still target this
+            // exact NC group across reloads.
             out.push(NextcloudGroupView {
                 nextcloud_account_id: acc.id.clone(),
-                id: format!("group:{gid}"),
-                source: "group".to_string(),
-                display_name: gid,
+                id: format!("team:{gid}"),
+                source: "team".to_string(),
+                display_name: humanize_nc_group_name(&gid),
                 members,
             });
         }
@@ -2732,7 +2754,7 @@ async fn list_nextcloud_groups(
                 nextcloud_account_id: acc.id.clone(),
                 id: format!("team:{}", c.id),
                 source: "team".to_string(),
-                display_name: c.display_name,
+                display_name: humanize_nc_group_name(&c.display_name),
                 members,
             });
         }

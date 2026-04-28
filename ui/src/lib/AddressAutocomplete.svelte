@@ -62,22 +62,14 @@
    *  field rather than inserting a single address. */
   type Suggestion =
     | { kind: 'contact'; contact: Contact }
-    | { kind: 'group'; group: GroupSuggestion }
-    | { kind: 'nc-group'; group: NcGroupSuggestion }
-  interface GroupSuggestion {
+    | { kind: 'list'; list: MailingListSuggestion }
+  interface MailingListSuggestion {
     id: string
-    displayName: string
-    emoji: string | null
-    members: { id: string; displayName: string; email: string }[]
-    hidden: boolean
-  }
-  /** Read-only NC user group / Team — members are NC user IDs
-   *  resolved to (display, email) by the backend. */
-  interface NcGroupSuggestion {
-    id: string
-    source: 'group' | 'team'
-    displayName: string
-    members: { userId: string; displayName: string; email: string }[]
+    /** `category` | `team` | `manual` — drives the pill colour. */
+    source: 'category' | 'team' | 'manual'
+    name: string
+    members: { displayName: string; email: string }[]
+    hiddenFromAutocomplete: boolean
   }
   let suggestions = $state<Suggestion[]>([])
   let open = $state(false)
@@ -86,16 +78,15 @@
   /** All non-hidden groups, fetched once and refreshed when
    *  `list_contact_groups` is available — we filter client-side
    *  on every keystroke so the dropdown stays snappy. */
-  let allGroups = $state<GroupSuggestion[]>([])
-  let allNcGroups = $state<NcGroupSuggestion[]>([])
-  void invoke<GroupSuggestion[]>('list_contact_groups')
+  let allLists = $state<MailingListSuggestion[]>([])
+  void invoke<MailingListSuggestion[]>('list_mailing_lists')
     .then((rows) => {
-      allGroups = rows.filter((g) => !g.hidden)
+      // Backend already excludes "Use as mailing list = off"
+      // categories; the per-row hide swatch (manual / team
+      // sources) is the remaining filter we apply here.
+      allLists = rows.filter((m) => !m.hiddenFromAutocomplete)
     })
-    .catch((e) => console.warn('list_contact_groups failed', e))
-  void invoke<NcGroupSuggestion[]>('list_nextcloud_groups')
-    .then((rows) => (allNcGroups = rows))
-    .catch((e) => console.warn('list_nextcloud_groups failed', e))
+    .catch((e) => console.warn('list_mailing_lists failed', e))
 
   // 150ms debounce keeps the UI snappy without firing a DB query on
   // every keystroke of a fast typer. The timer is a setTimeout handle
@@ -130,20 +121,15 @@
       // they're typically a handful per user, so a substring
       // scan beats round-tripping a dedicated IPC.
       const q = query.toLowerCase()
-      const groupHits = allGroups
-        .filter((g) => g.displayName.toLowerCase().includes(q))
+      const listHits = allLists
+        .filter((m) => m.name.toLowerCase().includes(q))
         .slice(0, LIMIT)
-      const ncGroupHits = allNcGroups
-        .filter((g) => g.displayName.toLowerCase().includes(q))
-        .slice(0, LIMIT)
-      // Groups go first — a group typed by name is almost
-      // always the user's intent, and putting them at the top
-      // matches Outlook / Apple Mail's autocomplete ordering.
-      // NC groups + Teams come right after vCard groups so the
-      // ordering is "things that are explicitly groups → people".
+      // Mailing-list hits stay first (typing a list name is
+      // almost always intent to address the bundle), then
+      // individual contacts.  Matches Outlook / Apple Mail's
+      // ranking.
       const merged: Suggestion[] = [
-        ...groupHits.map((g) => ({ kind: 'group' as const, group: g })),
-        ...ncGroupHits.map((g) => ({ kind: 'nc-group' as const, group: g })),
+        ...listHits.map((m) => ({ kind: 'list' as const, list: m })),
         ...rows.map((c) => ({ kind: 'contact' as const, contact: c })),
       ]
       suggestions = merged.slice(0, LIMIT)
@@ -200,42 +186,20 @@
     inputEl?.focus()
   }
 
-  /** Expand a group selection: drop every member's email into
-   *  the field as its own RFC-shaped address.  Members with no
-   *  email (phone/photo-only contacts that ended up in a group)
-   *  are silently skipped — they wouldn't survive an SMTP send
-   *  anyway. */
-  function pickGroup(g: GroupSuggestion) {
+  /** Expand a mailing list — every member's email lands in
+   *  the field as its own RFC-shaped address, members without
+   *  an email are silently skipped (they wouldn't survive an
+   *  SMTP send anyway). */
+  function pickList(m: MailingListSuggestion) {
     const { prefix } = currentToken(value)
-    const formatted = g.members
-      .filter((m) => m.email)
-      .map((m) => {
-        if (m.displayName && m.displayName !== m.email) {
-          const safe = m.displayName.replace(/"/g, '\\"')
-          return `"${safe}" <${m.email}>`
+    const formatted = m.members
+      .filter((mm) => mm.email)
+      .map((mm) => {
+        if (mm.displayName && mm.displayName !== mm.email) {
+          const safe = mm.displayName.replace(/"/g, '\\"')
+          return `"${safe}" <${mm.email}>`
         }
-        return m.email
-      })
-      .join(', ')
-    if (!formatted) return
-    value = `${prefix}${formatted}, `
-    suggestions = []
-    open = false
-    inputEl?.focus()
-  }
-
-  /** Expand an NC group / Team — same shape as `pickGroup` but
-   *  the member type uses `userId` instead of `id`. */
-  function pickNcGroup(g: NcGroupSuggestion) {
-    const { prefix } = currentToken(value)
-    const formatted = g.members
-      .filter((m) => m.email)
-      .map((m) => {
-        if (m.displayName && m.displayName !== m.email) {
-          const safe = m.displayName.replace(/"/g, '\\"')
-          return `"${safe}" <${m.email}>`
-        }
-        return m.email
+        return mm.email
       })
       .join(', ')
     if (!formatted) return
@@ -247,8 +211,7 @@
 
   function pick(s: Suggestion) {
     if (s.kind === 'contact') pickContact(s.contact)
-    else if (s.kind === 'group') pickGroup(s.group)
-    else pickNcGroup(s.group)
+    else pickList(s.list)
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -332,11 +295,7 @@
              dark:border-surface-700 rounded-md shadow-lg"
       role="listbox"
     >
-      {#each suggestions as s, i (s.kind === 'contact'
-        ? s.contact.id
-        : s.kind === 'group'
-          ? `g:${s.group.id}`
-          : `nc:${s.group.id}`)}
+      {#each suggestions as s, i (s.kind === 'contact' ? s.contact.id : s.list.id)}
         <li
           role="option"
           aria-selected={i === activeIndex}
@@ -368,37 +327,24 @@
                 {#if c.organization}· {c.organization}{/if}
               </p>
             </div>
-          {:else if s.kind === 'group'}
-            {@const g = s.group}
-            {@const sendable = g.members.filter((m) => m.email).length}
+          {:else}
+            {@const m = s.list}
+            {@const sendable = m.members.filter((mm) => mm.email).length}
+            {@const pillCls = m.source === 'category'
+              ? 'bg-primary-500/20 text-primary-600 dark:text-primary-300'
+              : m.source === 'team'
+                ? 'bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200'
+                : 'bg-success-500/20 text-success-600 dark:text-success-300'}
+            {@const icon = m.source === 'category' ? '🏷️' : m.source === 'team' ? '⚡' : '📨'}
             <div class="w-8 h-8 rounded-full bg-primary-500/20 text-primary-600 dark:text-primary-300
                         flex items-center justify-center text-base font-semibold flex-shrink-0">
-              {g.emoji && g.emoji.trim() ? g.emoji : (g.displayName || '?').slice(0, 1).toUpperCase()}
+              {icon}
             </div>
             <div class="flex-1 min-w-0">
               <p class="font-medium truncate flex items-center gap-2">
-                <span class="truncate">{g.displayName}</span>
-                <span class="text-[10px] uppercase tracking-wider font-semibold px-1 py-px rounded bg-primary-500/20 text-primary-600 dark:text-primary-300">
-                  group
-                </span>
-              </p>
-              <p class="text-xs text-surface-500 truncate">
-                {sendable} member{sendable === 1 ? '' : 's'} with email
-              </p>
-            </div>
-          {:else}
-            {@const g = s.group}
-            {@const sendable = g.members.filter((m) => m.email).length}
-            {@const isTeam = g.source === 'team'}
-            <div class="w-8 h-8 rounded-full bg-surface-300 dark:bg-surface-700
-                        flex items-center justify-center text-base font-semibold flex-shrink-0">
-              {isTeam ? '⚡' : '🏢'}
-            </div>
-            <div class="flex-1 min-w-0">
-              <p class="font-medium truncate flex items-center gap-2">
-                <span class="truncate">{g.displayName}</span>
-                <span class="text-[10px] uppercase tracking-wider font-semibold px-1 py-px rounded bg-surface-200 dark:bg-surface-700 text-surface-600 dark:text-surface-300">
-                  {isTeam ? 'team' : 'nc group'}
+                <span class="truncate">{m.name}</span>
+                <span class="text-[10px] uppercase tracking-wider font-semibold px-1 py-px rounded {pillCls}">
+                  {m.source}
                 </span>
               </p>
               <p class="text-xs text-surface-500 truncate">
