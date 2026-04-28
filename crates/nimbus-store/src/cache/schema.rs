@@ -640,6 +640,24 @@ const MIGRATIONS: &[&str] = &[
         cancelled_at  INTEGER NOT NULL
     );
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v15 → v16: account UI polish (Issue #115).
+    //
+    // - `emoji` — optional avatar emoji shown in the IconRail in
+    //   place of the initials bubble.  NULL falls back to initials.
+    // - `sort_order` — display rank in the IconRail / Settings.
+    //   Lower values render first; ties break on `id`.  Defaults to
+    //   `0` so existing rows keep their insertion order until the
+    //   user reorders.
+    // - `person_name` — human's full name for the From: header,
+    //   separate from `display_name` (the account label).  NULL
+    //   falls back to `display_name`, preserving pre-#115 behaviour.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE accounts ADD COLUMN emoji TEXT;
+    ALTER TABLE accounts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE accounts ADD COLUMN person_name TEXT;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

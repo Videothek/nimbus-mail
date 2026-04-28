@@ -5212,6 +5212,30 @@ fn refresh_unread_badge(app: &AppHandle) {
     if let Err(e) = app.emit("unread-count-updated", total) {
         tracing::warn!("failed to emit unread-count-updated: {e}");
     }
+    // Issue #115: also push the per-account split so the
+    // IconRail can paint a red badge on each account's avatar
+    // without doing its own poll.  Soft-fails — the global
+    // count above is still informative even if this query
+    // bombs.
+    match app.state::<Cache>().unread_counts_by_account() {
+        Ok(by_acc) => {
+            if let Err(e) = app.emit("unread-count-by-account-updated", &by_acc) {
+                tracing::warn!("failed to emit unread-count-by-account-updated: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("unread_counts_by_account failed: {e}"),
+    }
+}
+
+/// Per-account unread INBOX count map, keyed by account id.
+/// Used by the IconRail on mount to paint per-avatar badges
+/// before the next `unread-count-by-account-updated` event
+/// fires (those only land on poll completion).
+#[tauri::command]
+fn get_unread_counts_by_account(
+    cache: State<'_, Cache>,
+) -> Result<std::collections::HashMap<String, u32>, NimbusError> {
+    cache.unread_counts_by_account().map_err(Into::into)
 }
 
 // ── Talk-join reminders (issue #123) ──────────────────────────
@@ -5865,6 +5889,7 @@ fn main() {
             check_mail_now,
             dismiss_talk_reminder,
             get_total_unread,
+            get_unread_counts_by_account,
             show_main_window_cmd,
             quit_app,
         ])

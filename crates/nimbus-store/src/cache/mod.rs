@@ -706,6 +706,36 @@ impl Cache {
         Ok(count as u32)
     }
 
+    /// Per-account unread INBOX count, keyed by `account_id`
+    /// (issue #115).  Used by the IconRail to paint a red badge
+    /// on the avatar of each account that has new mail.
+    /// Accounts with zero unread messages are *omitted* from the
+    /// map so the caller can `?? 0` without the row showing up
+    /// as "0 unread" in the UI.
+    pub fn unread_counts_by_account(
+        &self,
+    ) -> Result<std::collections::HashMap<String, u32>, CacheError> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT account_id, COUNT(*) FROM messages
+             WHERE folder = 'INBOX' AND is_read = 0
+             GROUP BY account_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let id: String = r.get(0)?;
+            let n: i64 = r.get(1)?;
+            Ok((id, n as u32))
+        })?;
+        let mut out = std::collections::HashMap::new();
+        for r in rows {
+            let (id, n) = r?;
+            if n > 0 {
+                out.insert(id, n);
+            }
+        }
+        Ok(out)
+    }
+
     // ── Message bodies ──────────────────────────────────────────
 
     /// Upsert a cached message body alongside its envelope.

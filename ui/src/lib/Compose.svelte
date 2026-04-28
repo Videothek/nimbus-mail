@@ -40,6 +40,11 @@
     display_name: string
     email: string
     signature?: string | null
+    /** Optional human's full name for outbound From: (#115).
+     *  When set, outgoing mail goes out as
+     *  `"Person Name" <email>`; when null we fall back to the
+     *  account's display_name. */
+    person_name?: string | null
   }
   /** Slim calendar summary — matches the Rust `CalendarSummary` Tauri
       return shape. We pass the full list to `EventEditor` so the user
@@ -140,6 +145,21 @@
     accounts.find((a) => a.id === fromAccountId) ?? accounts[0],
   )
   const fromAddress = $derived(fromAccount?.email ?? '')
+  /** RFC-5322 From: header value, including the human's full
+   *  name when set on the account.  Falls back to the bare
+   *  email when neither `person_name` nor `display_name` is
+   *  populated.  Quotes the name to keep characters like
+   *  commas / periods from breaking the header parser on the
+   *  receiving side. */
+  const fromHeader = $derived.by(() => {
+    if (!fromAccount) return fromAddress
+    const name = (fromAccount.person_name ?? fromAccount.display_name ?? '').trim()
+    if (!name) return fromAddress
+    // Escape any internal quotes so the surrounding pair stays
+    // balanced even if the user typed a `"` in their name.
+    const escaped = name.replace(/"/g, '\\"')
+    return `"${escaped}" <${fromAddress}>`
+  })
 
   // ── Form state ──────────────────────────────────────────────
   // Seeded from `initial` (reply / forward / "share this file" entry
@@ -650,7 +670,7 @@
       await invoke('save_draft', {
         accountId: src?.accountId ?? fromAccountId,
         email: {
-          from: fromAddress,
+          from: fromHeader,
           to: splitAddrs(to),
           cc: splitAddrs(cc),
           bcc: splitAddrs(bcc),
@@ -903,7 +923,7 @@
       await invoke('send_email', {
         accountId: fromAccountId,
         email: {
-          from: fromAddress,
+          from: fromHeader,
           to: toList,
           cc: splitAddrs(cc),
           bcc: splitAddrs(bcc),
@@ -1210,7 +1230,7 @@
           </select>
         {:else}
           <span id="compose-from" class="text-sm text-surface-700 dark:text-surface-300">
-            {fromAccount?.display_name || ''} &lt;{fromAddress}&gt;
+            {(fromAccount?.person_name ?? fromAccount?.display_name) || ''} &lt;{fromAddress}&gt;
           </span>
         {/if}
       </div>
