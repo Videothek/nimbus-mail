@@ -650,14 +650,14 @@
 <div class="h-full flex bg-surface-50 dark:bg-surface-900">
   <!-- ── Groups / mailing lists sidebar (#133, #113) ──────── -->
   <aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100/60 dark:bg-surface-800/40 flex flex-col">
-    <div class="p-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
+    <div class="p-3 border-b border-surface-200 dark:border-surface-700">
       <span class="text-xs font-semibold uppercase tracking-wider text-surface-500">Groups</span>
+    </div>
+    <div class="px-3 pt-3">
       <button
-        class="w-5 h-5 rounded-md flex items-center justify-center text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700"
-        title="New group"
-        aria-label="New group"
+        class="btn w-full preset-filled-primary-500 text-sm"
         onclick={() => void createGroup()}
-      >+</button>
+      >+ New group</button>
     </div>
     <div class="flex-1 overflow-y-auto px-2 py-2 space-y-1">
       <!-- "All" pseudo-row clears the filter. -->
