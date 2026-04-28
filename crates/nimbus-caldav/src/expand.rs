@@ -179,7 +179,7 @@ fn fmt_ical_utc(dt: DateTime<Utc>) -> String {
 /// Pre-flight fix-up for RRULE strings before we hand them to the
 /// `rrule` crate.
 ///
-/// Two real-world quirks motivate this:
+/// Three real-world quirks motivate this:
 ///
 /// - **UNTIL without `Z`.** Nextcloud's auto-generated birthday
 ///   calendar (`contact-birthdays`) emits rules like
@@ -190,14 +190,17 @@ fn fmt_ical_utc(dt: DateTime<Utc>) -> String {
 ///   append `Z` to any bare date-time `UNTIL` so it matches the UTC
 ///   `DTSTART` we emit.
 ///
+/// - **Date-only UNTIL against UTC DTSTART.** Same birthday calendar,
+///   different shape — `FREQ=YEARLY;UNTIL=20261231`. The `rrule`
+///   crate reads a bare 8-char date as floating-local, then refuses
+///   it because our DTSTART is UTC ("Allowed timezones for UNTIL with
+///   the given start date timezone are: ["UTC"]"). We expand the date
+///   to end-of-day UTC (`T235959Z`) — semantically the same window
+///   end, just in the timezone the parser will accept.
+///
 /// - **Case mangling.** Some servers echo lowercase parameter names
 ///   (`until=…`). We normalise the parameter name while we're here so
 ///   the UNTIL fix-up catches both cases.
-///
-/// Date-only `UNTIL` values (8 chars, `YYYYMMDD`) are left alone — the
-/// `rrule` crate handles those against an all-day DTSTART, and we
-/// never emit an all-day DTSTART today (the cache stores UTC
-/// timestamps).
 fn normalise_rrule(rule: &str) -> String {
     rule.split(';')
         .map(|part| {
@@ -215,6 +218,13 @@ fn normalise_rrule(rule: &str) -> String {
                 && !value.ends_with('z')
             {
                 return format!("UNTIL={value}Z");
+            }
+            // 8-char `YYYYMMDD` date-only — promote to end-of-day UTC
+            // so the UNTIL form matches our UTC DTSTART.  Bytes-only
+            // ASCII-digit check keeps the test cheap and avoids
+            // pulling in `chrono` parse paths just to validate.
+            if value.len() == 8 && value.bytes().all(|b| b.is_ascii_digit()) {
+                return format!("UNTIL={value}T235959Z");
             }
             part.to_string()
         })
@@ -465,11 +475,13 @@ mod tests {
             normalise_rrule("freq=YEARLY;until=20261231T235959"),
             "freq=YEARLY;UNTIL=20261231T235959Z"
         );
-        // Date-only UNTIL left alone (belongs with an all-day DTSTART
-        // which we don't emit today).
+        // Date-only UNTIL is promoted to end-of-day UTC so the UNTIL
+        // form matches the UTC DTSTART we always emit (Nextcloud's
+        // contact-birthdays calendar emits this shape and would
+        // otherwise be rejected by the rrule crate's TZ matching).
         assert_eq!(
             normalise_rrule("FREQ=YEARLY;UNTIL=20261231"),
-            "FREQ=YEARLY;UNTIL=20261231"
+            "FREQ=YEARLY;UNTIL=20261231T235959Z"
         );
         // Unrelated parts preserved verbatim.
         assert_eq!(
@@ -498,6 +510,29 @@ mod tests {
             Utc.with_ymd_and_hms(2028, 1, 1, 0, 0, 0).unwrap(),
         );
         // 2024, 2025, 2026, 2027 → 4 birthdays inside the window.
+        assert_eq!(out.len(), 4);
+    }
+
+    #[test]
+    fn yearly_birthday_rrule_with_date_only_until_expands() {
+        // Same regression as the date-time case, different shape:
+        // Nextcloud's contact-birthdays sometimes emits an 8-char
+        // YYYYMMDD UNTIL.  The rrule crate refused this against a
+        // UTC DTSTART before we promoted UNTIL to end-of-day UTC.
+        let start = Utc.with_ymd_and_hms(2024, 6, 15, 0, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2024, 6, 15, 23, 59, 59).unwrap();
+        let m = master(
+            "birthdays::nick",
+            start,
+            end,
+            Some("FREQ=YEARLY;UNTIL=20301231"),
+        );
+        let out = expand_event(
+            &m,
+            &[],
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2028, 1, 1, 0, 0, 0).unwrap(),
+        );
         assert_eq!(out.len(), 4);
     }
 
