@@ -432,6 +432,34 @@
       `add_talk_participant` when we sync recipients back into the
       room on Send. */
   let talkRoomToken: string | null = null
+  /** Tracks the room's current public/private state so the
+      after-send sync can downgrade to private without an extra
+      round-trip when every recipient turned out internal. */
+  let talkRoomIsPublic: boolean = false
+  /** In-session cache of "is this address an internal NC user?"
+      so a recipient typed in both To and Cc only costs a single
+      sharees lookup.  `null` value = looked up, no match. */
+  type InternalUserHit = { user_id: string; display_name: string }
+  const internalLookup = new Map<string, InternalUserHit | null>()
+  async function resolveInternal(
+    ncId: string,
+    addr: string,
+  ): Promise<InternalUserHit | null> {
+    const key = addr.toLowerCase()
+    if (internalLookup.has(key)) return internalLookup.get(key) ?? null
+    try {
+      const m = await invoke<InternalUserHit | null>('find_nextcloud_user_by_email', {
+        ncId,
+        email: addr,
+      })
+      internalLookup.set(key, m ?? null)
+      return m ?? null
+    } catch (e) {
+      console.warn('find_nextcloud_user_by_email failed for', addr, e)
+      internalLookup.set(key, null)
+      return null
+    }
+  }
   /** Lower-cased bare addresses we've already POSTed to Talk's
       participant endpoint, so the post-save sync skips them. */
   const talkRoomParticipants = new Set<string>()
@@ -581,9 +609,15 @@
       // `pendingTalkParticipants` so `send()` can flush the lot once
       // the mail actually goes out.
       participants: [],
+      // #124: mint as public so externals can join via the link in
+      // the body.  The send-time sync downgrades to private once we
+      // confirm every recipient is an internal NC user (mirrors
+      // EventEditor's policy — same UX in both surfaces).
+      roomType: 3,
     })
     createdTalkLink = { name: room.display_name, url: room.web_url }
     talkRoomToken = room.token
+    talkRoomIsPublic = true
     for (const p of dedupd) {
       const k = p.value.toLowerCase()
       if (!talkRoomParticipants.has(k) && !pendingTalkParticipants.some((x) => bareAddr(x).toLowerCase() === k)) {
@@ -905,13 +939,62 @@
         const ncId = ncAccountId
         const room = talkRoomToken
         const seen = new Set<string>()
-        const participantsToAdd: { kind: 'email'; value: string }[] = []
+        const participantsToAdd: (
+          | { kind: 'email'; value: string }
+          | { kind: 'user'; value: string }
+        )[] = []
+        // #124: resolve each recipient against the connected NC
+        // server so internal users land in the room as themselves
+        // (`users` source) instead of as email-guests.  Tracks
+        // whether every recipient turned out internal so we can
+        // downgrade the room to private below.
+        let allInternal = true
+        // The sender (Talk-room creator) is implicitly the
+        // room's owner — NC adds them automatically.  Skip any
+        // recipient whose address resolves to *one of the user's
+        // own identities* so the organiser doesn't land in the
+        // room twice (once as the auto-owner, once as a guest).
+        // Sources we consider as "the user":
+        //   - every configured mail-account address (covers the
+        //     "I sent from a different alias than my NC profile"
+        //     case),
+        //   - the NC profile email for the room's owning account
+        //     (Sabre's principal CUA — the canonical "who am I"
+        //     on the server).
+        // Lower-cased and deduped so the lookup is a single Set
+        // hit per recipient.
+        const senderIdentities = new Set<string>()
+        for (const a of accounts) {
+          if (a.email) senderIdentities.add(a.email.toLowerCase())
+        }
+        if (ncAccountId) {
+          try {
+            const profileEmail = await invoke<string | null>(
+              'get_nextcloud_user_email',
+              { ncId: ncAccountId },
+            )
+            if (profileEmail) senderIdentities.add(profileEmail.toLowerCase())
+          } catch (e) {
+            // Soft-fail — we still have the mail-account
+            // identities to filter with.
+            console.warn('get_nextcloud_user_email failed', e)
+          }
+        }
         for (const raw of [...splitAddrs(to), ...splitAddrs(cc)]) {
           const addr = bareAddr(raw)
           if (!addr) continue
           const key = addr.toLowerCase()
           if (seen.has(key) || talkRoomParticipants.has(key)) continue
+          if (senderIdentities.has(key)) continue
           seen.add(key)
+          if (ncId) {
+            const match = await resolveInternal(ncId, addr)
+            if (match) {
+              participantsToAdd.push({ kind: 'user', value: match.user_id })
+              continue
+            }
+            allInternal = false
+          }
           participantsToAdd.push({ kind: 'email', value: addr })
         }
         if (ncId && participantsToAdd.length > 0) {
@@ -927,6 +1010,22 @@
           } catch (e) {
             console.warn('add_talk_participants after send failed', e)
             error = `Sent, but Talk invites couldn't be delivered: ${formatError(e)}`
+          }
+          // Downgrade to private when every invited recipient is
+          // internal — the externals-only public-link affordance is
+          // moot at that point and matching EventEditor's policy
+          // keeps the two surfaces' Talk-room behaviour consistent.
+          if (allInternal && talkRoomIsPublic) {
+            try {
+              await invoke('set_talk_room_public', {
+                ncId,
+                roomToken: room,
+                public: false,
+              })
+              talkRoomIsPublic = false
+            } catch (e) {
+              console.warn('set_talk_room_public(false) failed', e)
+            }
           }
         }
       }

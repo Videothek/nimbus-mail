@@ -315,13 +315,41 @@
     lastScrollKey = key
   })
 
-  /** Display name preference for an attendee chip: CN if given,
-   *  else the local-part of the email so a list of bare emails
-   *  doesn't fill the panel with redundant "@domain" suffixes. */
+  /** Display name preference for an attendee chip: "You" when
+   *  the row matches one of the user's configured mail account
+   *  identities (the address the invite landed on), CN if
+   *  given, else the local-part of the email so a list of bare
+   *  emails doesn't fill the panel with redundant "@domain"
+   *  suffixes. */
   function attendeeName(a: InviteAttendee): string {
+    if (userIdentities.has(a.email.toLowerCase())) return 'You'
     if (a.common_name && a.common_name.trim()) return a.common_name.trim()
     const at = a.email.indexOf('@')
     return at > 0 ? a.email.slice(0, at) : a.email
+  }
+
+  /** Optimistic PARTSTAT overrides keyed by lower-cased email,
+   *  applied on top of the static `invite.attendees` snapshot
+   *  so the user's chip flips to their just-picked response
+   *  the moment the RSVP IPC succeeds — without waiting for a
+   *  CalDAV round-trip + resync to land a fresh `invite` prop. */
+  let attendeeStatusOverrides = $state<Map<string, string>>(new Map())
+  function effectiveStatus(a: InviteAttendee): string {
+    // 1) In-session override — set when the user clicks Accept /
+    //    Tentative / Decline.
+    const override = attendeeStatusOverrides.get(a.email.toLowerCase())
+    if (override) return override.toUpperCase()
+    // 2) Persisted PARTSTAT from `respondedAs`, which the mount
+    //    effect hydrates from the cached calendar event (and the
+    //    fallback `rsvp_responses` table).  This keeps the user's
+    //    own chip stamped with their answer when they reopen the
+    //    invite later — without it, the chip would reset to the
+    //    static `invite.attendees` PARTSTAT (typically NEEDS-
+    //    ACTION on the original REQUEST body).
+    if (respondedAs && userIdentities.has(a.email.toLowerCase())) {
+      return respondedAs
+    }
+    return (a.status ?? 'NEEDS-ACTION').toUpperCase()
   }
   /** `HH:MM` from an ISO timestamp, in local time — matches the
    *  display the rest of the card uses for `timeRange`. */
@@ -394,7 +422,7 @@
    *  same alphabet used by the RSVP dropdown in EventEditor so
    *  the visual language carries across the app. */
   function attendeeStatusEmoji(a: InviteAttendee): string {
-    const s = (a.status ?? 'NEEDS-ACTION').toUpperCase()
+    const s = effectiveStatus(a)
     if (s === 'ACCEPTED') return '✅'
     if (s === 'DECLINED') return '❌'
     if (s === 'TENTATIVE') return '❓'
@@ -726,6 +754,32 @@
       })
       respondedAs = partstat
       onresponded?.(partstat)
+      // Optimistically flip the user's row in the attendee chip
+      // strip so the emoji reflects the just-picked response
+      // without waiting for a fresh `invite` prop to land.
+      // Keyed by the resolved attendee email if we have one, else
+      // every userIdentities entry (covers aliases / address
+      // variants so the right row matches whichever address NC
+      // has on the ATTENDEE line).
+      const next = new Map(attendeeStatusOverrides)
+      const targets = attendeeHint
+        ? [attendeeHint.toLowerCase()]
+        : Array.from(userIdentities)
+      for (const t of targets) next.set(t, partstat)
+      attendeeStatusOverrides = next
+      // Drop the per-day events cache so the day preview re-fetches
+      // and immediately reflects the just-recorded RSVP — the
+      // proposed slot's "is this on my calendar?" detection and
+      // the matched event's PARTSTAT visual both depend on
+      // `previewEvents`.  Reset the auto-scroll key so the
+      // viewport snaps back to the proposed slot like a fresh
+      // open (otherwise the user would have to scroll manually
+      // to see the new "✉ invite" treatment land).
+      previewEventsByDate = new Map()
+      lastScrollKey = null
+      if (detailsOpen) {
+        void loadPreviewForDate(previewDate)
+      }
     } catch (e) {
       error = formatError(e) || 'Failed to record RSVP'
     } finally {
@@ -926,7 +980,7 @@
             {#each invite.attendees as a (a.email)}
               <span
                 class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs bg-surface-200 dark:bg-surface-700"
-                title={a.email + (a.status ? ` — ${a.status.toLowerCase()}` : '')}
+                title={a.email + ` — ${effectiveStatus(a).toLowerCase()}`}
               >
                 <span class="text-[11px] leading-none shrink-0" aria-hidden="true">{attendeeStatusEmoji(a)}</span>
                 <span class="truncate max-w-[180px]">{attendeeName(a)}</span>
