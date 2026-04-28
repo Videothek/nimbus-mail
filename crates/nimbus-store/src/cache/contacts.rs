@@ -295,7 +295,7 @@ impl Cache {
                     "SELECT id, nextcloud_account_id, display_name, emails_json,
                             phones_json, organization, photo_mime,
                             title, birthday, note, addresses_json, urls_json,
-                            categories_json
+                            categories_json, addressbook
                      FROM contacts
                      WHERE nextcloud_account_id = ?1
                        AND COALESCE(kind, '') != 'group'
@@ -308,7 +308,7 @@ impl Cache {
                     "SELECT id, nextcloud_account_id, display_name, emails_json,
                             phones_json, organization, photo_mime,
                             title, birthday, note, addresses_json, urls_json,
-                            categories_json
+                            categories_json, addressbook
                      FROM contacts
                      WHERE COALESCE(kind, '') != 'group'
                      ORDER BY display_name COLLATE NOCASE",
@@ -366,7 +366,7 @@ impl Cache {
             "SELECT id, nextcloud_account_id, display_name, emails_json,
                     phones_json, organization, photo_mime,
                     title, birthday, note, addresses_json, urls_json,
-                    categories_json
+                    categories_json, addressbook
              FROM contacts
              WHERE emails_json != '[]'
                AND COALESCE(kind, '') != 'group'
@@ -505,6 +505,45 @@ impl Cache {
             ],
         )?;
         Ok(())
+    }
+
+    /// One-shot backfill for the `categories_json` column —
+    /// callers pass a closure that can extract CATEGORIES out
+    /// of a cached `vcard_raw`.  Rows that already have a
+    /// non-`'[]'` categories list are skipped, so subsequent
+    /// calls are O(matched) and the IPC paths can call this
+    /// idempotently every render without paying for already-
+    /// hydrated rows.
+    pub fn backfill_categories<F>(&self, parse: F) -> Result<u32, CacheError>
+    where
+        F: Fn(&str) -> Vec<String>,
+    {
+        let conn = self.pool.get()?;
+        let pairs: Vec<(String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT id, vcard_raw FROM contacts
+                 WHERE COALESCE(categories_json, '[]') = '[]'
+                   AND vcard_raw LIKE '%CATEGORIES%'",
+            )?;
+            stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut updated = 0u32;
+        for (id, raw) in pairs {
+            let cats = parse(&raw);
+            if cats.is_empty() {
+                continue;
+            }
+            let json = serde_json::to_string(&cats).unwrap_or_else(|_| "[]".into());
+            conn.execute(
+                "UPDATE contacts SET categories_json = ?1 WHERE id = ?2",
+                params![json, id],
+            )?;
+            updated += 1;
+        }
+        Ok(updated)
     }
 
     // ── Categories / Kontaktgruppen (#133 redesign) ─────────────
@@ -824,9 +863,11 @@ fn row_to_contact_no_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Contact> {
     let addresses_json: String = r.get(10)?;
     let urls_json: String = r.get(11)?;
     let categories_json: String = r.get(12)?;
+    let addressbook: String = r.get(13)?;
     Ok(Contact {
         id: r.get(0)?,
         nextcloud_account_id: r.get(1)?,
+        addressbook,
         display_name: r.get(2)?,
         email: decode_emails(&emails_json),
         phone: decode_phones(&phones_json),

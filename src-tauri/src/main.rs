@@ -1833,7 +1833,7 @@ async fn create_contact(
         .upsert_single_contact(&nc_id, &addressbook_name, &row)
         .map_err(NimbusError::from)?;
 
-    Ok(row_to_contact(&nc_id, &row))
+    Ok(row_to_contact(&nc_id, &addressbook_name, &row))
 }
 
 /// Replace an existing contact on the server with the form's new
@@ -1931,7 +1931,7 @@ async fn update_contact(
         .upsert_single_contact(&handle.nextcloud_account_id, &handle.addressbook, &row)
         .map_err(NimbusError::from)?;
 
-    Ok(row_to_contact(&handle.nextcloud_account_id, &row))
+    Ok(row_to_contact(&handle.nextcloud_account_id, &handle.addressbook, &row))
 }
 
 /// Delete a contact from the server and the local cache. The
@@ -1979,10 +1979,20 @@ struct ContactCategoryView {
 
 /// Distinct CATEGORIES across every cached contact, with the
 /// per-row "use as mailing list" overlay applied.
+///
+/// First call after the v17 → v18 migration backfills the
+/// `categories_json` column from the cached `vcard_raw` for
+/// every row whose tag list is still empty.  Idempotent —
+/// once a row has a non-empty `categories_json` it's skipped.
 #[tauri::command]
 fn list_contact_categories(
     cache: State<'_, Cache>,
 ) -> Result<Vec<ContactCategoryView>, NimbusError> {
+    let _ = cache.backfill_categories(|raw| {
+        nimbus_carddav::parse_vcard(raw)
+            .map(|p| p.categories)
+            .unwrap_or_default()
+    });
     let cats = cache.list_contact_categories().map_err(NimbusError::from)?;
     let suppressed = cache
         .get_mailing_list_suppressed()
@@ -4477,10 +4487,11 @@ fn parsed_to_row(
 /// `Contact`. The composite id has to match the one the store
 /// uses internally (`{nc_account_id}::{vcard_uid}`) so the next
 /// `get_contacts` call returns the same record.
-fn row_to_contact(nc_account_id: &str, row: &ContactRow) -> Contact {
+fn row_to_contact(nc_account_id: &str, addressbook: &str, row: &ContactRow) -> Contact {
     Contact {
         id: format!("{nc_account_id}::{}", row.vcard_uid),
         nextcloud_account_id: nc_account_id.to_string(),
+        addressbook: addressbook.to_string(),
         display_name: row.display_name.clone(),
         email: row.emails.clone(),
         phone: row.phones.clone(),
