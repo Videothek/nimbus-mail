@@ -2270,11 +2270,25 @@ async fn list_mailing_lists(
         let contacts = cache
             .list_contacts_with_category(&name)
             .unwrap_or_default();
-        let members = contacts
+        // Drop members that have no email — a category-derived
+        // mailing list is only useful as a sending target, and
+        // a row with empty email would just be noise (and
+        // would expand to an unaddressable entry in compose
+        // autocomplete).  Contacts without email still show
+        // up in the Contacts tab under their Contact Group;
+        // they only get hidden here in the mailing-list view.
+        let members: Vec<MailingListMemberView> = contacts
             .into_iter()
-            .map(|c| MailingListMemberView {
-                display_name: c.display_name,
-                email: c.email.into_iter().next().map(|e| e.value).unwrap_or_default(),
+            .filter_map(|c| {
+                let email = c.email.into_iter().next().map(|e| e.value).unwrap_or_default();
+                if email.is_empty() {
+                    None
+                } else {
+                    Some(MailingListMemberView {
+                        display_name: c.display_name,
+                        email,
+                    })
+                }
             })
             .collect();
         out.push(MailingListView {
