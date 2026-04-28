@@ -583,6 +583,13 @@ pub struct Contact {
     /// the wire.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
+    /// `CATEGORIES` tag list (RFC 6350 §6.7.1) — what NC's
+    /// Contacts UI calls "Kontaktgruppen" and what iOS shows
+    /// as Groups.  Free-form strings; the contacts UI treats
+    /// distinct values aggregated across all cached cards as
+    /// the live "groups" list (#133 redesign).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
 }
 
 /// One contact group / mailing list (vCard `KIND:group`,

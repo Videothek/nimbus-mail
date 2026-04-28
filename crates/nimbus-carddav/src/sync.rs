@@ -91,6 +91,9 @@ pub struct RawContact {
     /// against other vCards.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub member_uids: Vec<String>,
+    /// `CATEGORIES` tag list (RFC 6350 §6.7.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
 }
 
 /// Result of one sync round: what to upsert, what to delete, and the
@@ -402,6 +405,7 @@ fn parse_multiget_response(
         vcard_raw,
         kind: parsed.kind,
         member_uids: parsed.members,
+        categories: parsed.categories,
     }))
 }
 

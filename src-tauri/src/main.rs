@@ -1748,6 +1748,7 @@ fn raw_contact_to_row(c: &RawContact) -> ContactRow {
         vcard_raw: c.vcard_raw.clone(),
         kind: c.kind.clone(),
         member_uids: c.member_uids.clone(),
+        categories: c.categories.clone(),
     }
 }
 
@@ -3994,6 +3995,7 @@ fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
         urls: input.urls.clone().unwrap_or_default(),
         kind: String::new(),
         members: Vec::new(),
+        categories: Vec::new(),
     }
 }
 
@@ -4050,6 +4052,7 @@ fn parsed_to_row(
         vcard_raw,
         kind: parsed.kind.clone(),
         member_uids: parsed.members.clone(),
+        categories: parsed.categories.clone(),
     }
 }
 
@@ -4072,7 +4075,8 @@ fn row_to_contact(nc_account_id: &str, row: &ContactRow) -> Contact {
         note: row.note.clone(),
         addresses: row.addresses.clone(),
         urls: row.urls.clone(),
-        kind: String::new(),
+        kind: row.kind.clone(),
+        categories: row.categories.clone(),
     }
 }
 

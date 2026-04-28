@@ -675,6 +675,27 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE contacts ADD COLUMN group_emoji TEXT;
     ALTER TABLE contacts ADD COLUMN group_hidden INTEGER NOT NULL DEFAULT 0;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v17 → v18: CATEGORIES (Kontaktgruppen) on contacts (#133
+    // redesign).  Comma-separated tags on each vCard — what NC's
+    // Contacts UI calls "Kontaktgruppen" and what iOS shows as
+    // Groups.  Stored as JSON so adding/removing one tag stays
+    // a single column rewrite.
+    //
+    // Plus a `mailing_list_settings` table for per-row local
+    // overlays (the per-row hide-from-autocomplete swatch on
+    // the new Mailing Lists tab).  Keyed by the unified
+    // mailing-list id (`cat:<name>` / `group:<id>` /
+    // `team:<id>` / `list:<vcard-uid>`) so all four sources
+    // share one settings table.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE contacts ADD COLUMN categories_json TEXT NOT NULL DEFAULT '[]';
+    CREATE TABLE IF NOT EXISTS mailing_list_settings (
+        id                       TEXT PRIMARY KEY,
+        hidden_from_autocomplete INTEGER NOT NULL DEFAULT 0
+    );
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
