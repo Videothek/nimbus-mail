@@ -676,6 +676,52 @@
     return false
   }
 
+  /** Pull the first plausible meeting URL out of `URL`,
+   *  `LOCATION`, or `DESCRIPTION` — same matcher as the
+   *  backend's `extract_meeting_url`, just inline so the camera
+   *  join button doesn't need an IPC round-trip per event.  Any
+   *  `http(s)://…` token wins; we don't try to whitelist
+   *  conferencing platforms because that bitrots quickly. */
+  function extractMeetingUrl(ev: CalendarEvent): string | null {
+    function fromField(s: string | null | undefined): string | null {
+      if (!s) return null
+      for (const tok of s.split(/\s+/)) {
+        const url = tok.replace(/^[<("'.,;]+|[>)"'.,;]+$/g, '')
+        if (url.startsWith('http://') || url.startsWith('https://')) return url
+      }
+      return null
+    }
+    return fromField(ev.url) ?? fromField(ev.location) ?? fromField(ev.description)
+  }
+  /** True when the current clock is within the ±5-minute join
+   *  window around the event's start, so the camera button only
+   *  appears when it's actually useful (5 min ahead = "drop in
+   *  early"; 5 min after = "I just joined late, where's the
+   *  link?").  Reactive on `now`, so the button auto-shows /
+   *  hides as time passes without needing an explicit refresh. */
+  const FIVE_MIN_MS = 5 * 60 * 1000
+  function inJoinWindow(ev: CalendarEvent): boolean {
+    const start = new Date(ev.start).getTime()
+    const t = now.getTime()
+    return t >= start - FIVE_MIN_MS && t <= start + FIVE_MIN_MS
+  }
+  /** Label rendered under the time line on each event block.
+   *  Replaces a URL-shaped LOCATION (or an empty LOCATION on
+   *  events whose URL/DESCRIPTION carry a meeting link) with
+   *  the word "Online" — clearer than a 200-character Zoom
+   *  URL crammed into a 110-pixel column.  Returns `null` when
+   *  the event has no useful location to surface, so the
+   *  caller can elide the line entirely. */
+  function displayLocation(ev: CalendarEvent): string | null {
+    const loc = (ev.location ?? '').trim()
+    if (loc) {
+      if (/^https?:\/\//i.test(loc)) return 'Online'
+      return loc
+    }
+    if (extractMeetingUrl(ev)) return 'Online'
+    return null
+  }
+
   async function reloadFromCache(windowStart: Date, windowEnd: Date) {
     // Collect cached calendars across every connected NC account so a
     // user with multiple Nextclouds sees everything overlaid on one
@@ -1397,7 +1443,9 @@
                     : p.heightPx >= 50
                       ? 2
                       : 1}
-                  {@const showLocationInline = p.event.location && p.heightPx > 80}
+                  {@const locationLabel = displayLocation(p.event)}
+                  {@const meetingUrl = extractMeetingUrl(p.event)}
+                  {@const showJoin = !!meetingUrl && inJoinWindow(p.event)}
                   <div
                     class="ev-block ev-timed absolute rounded-md text-[11px] overflow-hidden px-1.5 py-1 cursor-pointer leading-tight {userTentative(p.event) ? 'ev-tentative' : ''} {userDeclined(p.event) ? 'ev-declined' : ''}"
                     style="--ev-color: {eventColor(p.event)}; top: {p.topPx}px; height: {p.heightPx}px; left: calc({(p.lane / p.laneCount) * 100}% + 2px); width: calc({(1 / p.laneCount) * 100}% - 4px);"
@@ -1418,9 +1466,71 @@
                       <div class="opacity-90 truncate">
                         {fmtTime(p.event.start)} – {fmtTime(p.event.end)}
                       </div>
+                      {#if locationLabel}
+                        <!-- Location line — sits directly under
+                             the time so the "where" answer is
+                             always one glance below the "when".
+                             URL-shaped locations collapse to
+                             "Online" so a 200-character Zoom
+                             link doesn't trash a tight column.
+                             Pin glyph leads the line as a quick
+                             visual anchor (matches the convention
+                             used by Outlook, Apple Calendar). -->
+                        <div class="opacity-90 truncate flex items-center gap-1">
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            class="w-3 h-3 shrink-0"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 1 1 18 0z" />
+                            <circle cx="12" cy="10" r="3" />
+                          </svg>
+                          <span class="truncate">{locationLabel}</span>
+                        </div>
+                      {/if}
                     {/if}
-                    {#if showLocationInline}
-                      <div class="opacity-90 truncate">{p.event.location}</div>
+                    {#if showJoin}
+                      <!-- Join button — only visible during the
+                           ±5-minute window around the event's
+                           start.  Sits at the bottom-right corner
+                           so it doesn't crowd the title.  Stops
+                           propagation so a click on the camera
+                           opens the meeting URL instead of the
+                           event editor. -->
+                      <button
+                        type="button"
+                        class="absolute bottom-1 right-1 w-6 h-6 rounded-md flex items-center justify-center bg-primary-500 text-white shadow hover:bg-primary-600 z-10"
+                        title={`Join meeting (${meetingUrl})`}
+                        aria-label="Join meeting"
+                        onmousedown={(ev) => ev.stopPropagation()}
+                        onclick={(ev) => {
+                          ev.stopPropagation()
+                          void invoke('open_url', { url: meetingUrl }).catch((err) =>
+                            console.warn('open_url failed', err),
+                          )
+                        }}
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          class="w-3.5 h-3.5"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M23 7l-7 5 7 5V7z" />
+                          <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+                        </svg>
+                      </button>
                     {/if}
                   </div>
                 {/each}

@@ -81,6 +81,7 @@
     mail_html_white_background: boolean
     auto_advance_after_remove: boolean
     default_calendar_id: string | null
+    talk_reminder_enabled: boolean
   }
 
   let appSettings = $state<AppSettings>({
@@ -94,6 +95,7 @@
     mail_html_white_background: true,
     auto_advance_after_remove: true,
     default_calendar_id: null,
+    talk_reminder_enabled: true,
   })
 
   // Calendar list for the "default calendar" picker.  Loaded
@@ -480,6 +482,21 @@
             onchange={scheduleSave}
           />
           <span>Show desktop notifications for new mail</span>
+        </label>
+
+        <label class="flex items-center gap-2">
+          <input
+            type="checkbox"
+            class="checkbox"
+            bind:checked={appSettings.talk_reminder_enabled}
+            onchange={scheduleSave}
+          />
+          <span>
+            Notify me before meetings with a Talk room
+            <span class="block text-xs text-surface-500">
+              Lead time follows the event's own reminder.
+            </span>
+          </span>
         </label>
 
         <label class="flex items-center gap-2">
