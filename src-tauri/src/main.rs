@@ -1952,6 +1952,394 @@ async fn delete_contact(contact_id: String, cache: State<'_, Cache>) -> Result<(
     Ok(())
 }
 
+// ── Reserved Kontaktgruppe (#133 redesign) ────────────────────
+//
+// Manual mailing lists (KIND:group vCards) are auto-tagged with
+// this CATEGORY so iOS / Apple Contacts / NC Contacts surface
+// them in a dedicated "Mailing Lists" group.  The
+// `list_mailing_lists` IPC filters this exact name out of the
+// virtual-row derivation so we don't end up with a circular
+// "Mailing Lists" mailing list of mailing lists.
+const MAILING_LISTS_CATEGORY: &str = "Mailing Lists";
+
+// ── Categories / Kontaktgruppen (#133 redesign) ──────────────
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContactCategoryView {
+    /// CATEGORY name as written on the vCards.
+    name: String,
+    /// Number of cached contacts carrying this CATEGORY.
+    member_count: u32,
+    /// True when the user has flipped "Use as mailing list"
+    /// off on this category — drives both "no virtual row in
+    /// the Mailing Lists tab" and "no autocomplete suggestion".
+    use_as_mailing_list: bool,
+}
+
+/// Distinct CATEGORIES across every cached contact, with the
+/// per-row "use as mailing list" overlay applied.
+#[tauri::command]
+fn list_contact_categories(
+    cache: State<'_, Cache>,
+) -> Result<Vec<ContactCategoryView>, NimbusError> {
+    let cats = cache.list_contact_categories().map_err(NimbusError::from)?;
+    let suppressed = cache
+        .get_mailing_list_suppressed()
+        .map_err(NimbusError::from)?;
+    Ok(cats
+        .into_iter()
+        .filter(|(name, _)| name != MAILING_LISTS_CATEGORY)
+        .map(|(name, member_count)| {
+            let id = format!("cat:{name}");
+            ContactCategoryView {
+                use_as_mailing_list: !suppressed.contains(&id),
+                name,
+                member_count,
+            }
+        })
+        .collect())
+}
+
+/// Toggle "use as mailing list" for one Kontaktgruppe.
+#[tauri::command]
+fn set_category_use_as_mailing_list(
+    name: String,
+    enabled: bool,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let id = format!("cat:{name}");
+    cache
+        .set_mailing_list_suppressed(&id, !enabled)
+        .map_err(NimbusError::from)
+}
+
+/// Add a CATEGORIES tag to one contact's vCard, sync to the
+/// server.  Idempotent — a contact already in the category is
+/// left alone (no spurious PUT).
+#[tauri::command]
+async fn add_contact_to_category(
+    contact_id: String,
+    category: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    rewrite_contact_categories(&contact_id, &cache, |cats| {
+        if !cats.iter().any(|c| c == &category) {
+            cats.push(category.clone());
+            true
+        } else {
+            false
+        }
+    })
+    .await
+}
+
+/// Remove one CATEGORIES tag from a contact's vCard.
+#[tauri::command]
+async fn remove_contact_from_category(
+    contact_id: String,
+    category: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    rewrite_contact_categories(&contact_id, &cache, |cats| {
+        let before = cats.len();
+        cats.retain(|c| c != &category);
+        cats.len() != before
+    })
+    .await
+}
+
+/// Rename a category across every contact carrying it.  Loops
+/// each tagged contact, rewrites the CATEGORIES list, PUTs.
+/// Best-effort per-contact: a failure on one row logs and
+/// continues so a flaky network doesn't strand the rename
+/// half-applied (the next sync would heal anyway).
+#[tauri::command]
+async fn rename_contact_category(
+    old: String,
+    new: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let new = new.trim().to_string();
+    if new.is_empty() {
+        return Err(NimbusError::Other("new category name is empty".into()));
+    }
+    let contacts = cache
+        .list_contacts_with_category(&old)
+        .map_err(NimbusError::from)?;
+    for c in contacts {
+        if let Err(e) = rewrite_contact_categories_inner(&c.id, &cache, |cats| {
+            let mut changed = false;
+            for cat in cats.iter_mut() {
+                if cat == &old {
+                    *cat = new.clone();
+                    changed = true;
+                }
+            }
+            if !cats.iter().any(|c| c == &new) {
+                cats.push(new.clone());
+                changed = true;
+            }
+            cats.retain(|c| c != &old);
+            changed
+        })
+        .await
+        {
+            tracing::warn!("rename category on {}: {e}", c.id);
+        }
+    }
+    // Carry the suppressed flag over to the new id so the
+    // user's "use as mailing list" choice doesn't reset.
+    let suppressed = cache
+        .get_mailing_list_suppressed()
+        .map_err(NimbusError::from)?;
+    if suppressed.contains(&format!("cat:{old}")) {
+        cache
+            .set_mailing_list_suppressed(&format!("cat:{old}"), false)
+            .map_err(NimbusError::from)?;
+        cache
+            .set_mailing_list_suppressed(&format!("cat:{new}"), true)
+            .map_err(NimbusError::from)?;
+    }
+    Ok(())
+}
+
+/// Delete a category — strips the tag from every contact.  The
+/// underlying contacts are untouched, just no longer tagged.
+#[tauri::command]
+async fn delete_contact_category(
+    name: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    let contacts = cache
+        .list_contacts_with_category(&name)
+        .map_err(NimbusError::from)?;
+    for c in contacts {
+        if let Err(e) = rewrite_contact_categories_inner(&c.id, &cache, |cats| {
+            let before = cats.len();
+            cats.retain(|cc| cc != &name);
+            cats.len() != before
+        })
+        .await
+        {
+            tracing::warn!("delete category on {}: {e}", c.id);
+        }
+    }
+    Ok(())
+}
+
+/// Public wrapper that takes a `State<'_, Cache>` and forwards
+/// to the private inner — keeps the create/rename/delete IPCs
+/// tidy without making them all duplicate the cache extraction.
+async fn rewrite_contact_categories<F>(
+    contact_id: &str,
+    cache: &State<'_, Cache>,
+    f: F,
+) -> Result<(), NimbusError>
+where
+    F: FnOnce(&mut Vec<String>) -> bool,
+{
+    rewrite_contact_categories_inner(contact_id, cache, f).await
+}
+
+/// Pull the cached vCard for `contact_id`, mutate its
+/// CATEGORIES list via `f`, and PUT the rewritten body back to
+/// CardDAV.  Returns early when `f` reports no change so we
+/// don't burn a round-trip on a no-op.
+async fn rewrite_contact_categories_inner<F>(
+    contact_id: &str,
+    cache: &Cache,
+    f: F,
+) -> Result<(), NimbusError>
+where
+    F: FnOnce(&mut Vec<String>) -> bool,
+{
+    let handle = load_contact_handle(cache, contact_id)?;
+    let account = load_nextcloud_account(&handle.nextcloud_account_id)?;
+    let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
+    let mut parsed = match nimbus_carddav::parse_vcard(&handle.vcard_raw) {
+        Ok(p) => p,
+        Err(_) => ParsedVcard {
+            uid: handle.vcard_uid.clone(),
+            ..Default::default()
+        },
+    };
+    parsed.uid = handle.vcard_uid.clone();
+    let changed = f(&mut parsed.categories);
+    if !changed {
+        return Ok(());
+    }
+    let vcard = build_vcard(&parsed);
+    let outcome = carddav_update_contact(
+        &handle.href,
+        &account.username,
+        &app_password,
+        &handle.etag,
+        &vcard,
+    )
+    .await?;
+    let row = parsed_to_row(&outcome.href, &outcome.etag, &handle.vcard_uid, &parsed, vcard);
+    cache
+        .upsert_single_contact(&handle.nextcloud_account_id, &handle.addressbook, &row)
+        .map_err(NimbusError::from)?;
+    Ok(())
+}
+
+// ── Unified mailing lists (#133 redesign) ─────────────────────
+//
+// Single IPC the Mailing Lists tab + AddressAutocomplete read
+// from.  Combines four sources into one flat list:
+//   * `cat:<name>`  — a Kontaktgruppe (CATEGORY tag) with
+//     `use_as_mailing_list = true`.
+//   * `group:<id>`  — an OCS user group.
+//   * `team:<id>`   — a Circles / Teams entry.
+//   * `list:<uid>`  — a manual KIND:group vCard.
+// The reserved `Mailing Lists` category is filtered out so the
+// auto-tag we put on every manual list doesn't generate a
+// circular row.
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MailingListView {
+    /// Unified id — see source-prefix list above.
+    id: String,
+    /// `category` | `nc-group` | `team` | `manual`.  Drives the
+    /// pill colour + the CRUD affordances.
+    source: String,
+    name: String,
+    members: Vec<MailingListMemberView>,
+    /// Local-only flag — when true the row is suppressed from
+    /// AddressAutocomplete.  Categories use the same flag for
+    /// the "Use as mailing list" toggle (off → suppressed).
+    hidden_from_autocomplete: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MailingListMemberView {
+    display_name: String,
+    email: String,
+}
+
+/// Build the unified mailing-list view across every source.
+/// Read-heavy but cheap — categories are aggregated in one
+/// SQL pass and the NC group / team list reuses the existing
+/// list_nextcloud_groups path.
+#[tauri::command]
+async fn list_mailing_lists(
+    cache: State<'_, Cache>,
+) -> Result<Vec<MailingListView>, NimbusError> {
+    let suppressed = cache
+        .get_mailing_list_suppressed()
+        .map_err(NimbusError::from)?;
+    let mut out: Vec<MailingListView> = Vec::new();
+
+    // 1. Categories.  Skip the reserved one we use as a holder
+    // for KIND:group vCards.
+    let cats = cache.list_contact_categories().map_err(NimbusError::from)?;
+    for (name, _count) in cats {
+        if name == MAILING_LISTS_CATEGORY {
+            continue;
+        }
+        let id = format!("cat:{name}");
+        // "Use as mailing list" off => suppressed => omitted
+        // from the Mailing Lists tab AND from autocomplete.
+        if suppressed.contains(&id) {
+            continue;
+        }
+        let contacts = cache
+            .list_contacts_with_category(&name)
+            .unwrap_or_default();
+        let members = contacts
+            .into_iter()
+            .map(|c| MailingListMemberView {
+                display_name: c.display_name,
+                email: c.email.into_iter().next().map(|e| e.value).unwrap_or_default(),
+            })
+            .collect();
+        out.push(MailingListView {
+            id,
+            source: "category".to_string(),
+            name,
+            members,
+            hidden_from_autocomplete: false,
+        });
+    }
+
+    // 2. Manual KIND:group vCards.  These already auto-tag the
+    // reserved category so they show up in the Mailing Lists
+    // Kontaktgruppe in NC; here we render them directly.
+    if let Ok(groups) = cache.list_contact_groups() {
+        for g in groups {
+            let id = format!("list:{}", g.id);
+            let suppressed_row = suppressed.contains(&id);
+            let resolved = cache
+                .resolve_group_members(&g.nextcloud_account_id, &g.member_uids)
+                .unwrap_or_default();
+            let members = resolved
+                .into_iter()
+                .map(|(_id, name, email)| MailingListMemberView {
+                    display_name: name,
+                    email,
+                })
+                .collect();
+            out.push(MailingListView {
+                id,
+                source: "manual".to_string(),
+                name: g.display_name,
+                members,
+                hidden_from_autocomplete: suppressed_row,
+            });
+        }
+    }
+
+    // 3. NC user groups + Teams.  Pulled live via the existing
+    // OCS path.  We don't cache these on disk yet — they're
+    // typically a handful per server and refresh on every list.
+    let nc_groups = list_nextcloud_groups(cache).await.unwrap_or_default();
+    for g in nc_groups {
+        let id = format!("{}:{}", g.source, g.id.trim_start_matches("group:").trim_start_matches("team:"));
+        let suppressed_row = suppressed.contains(&id);
+        let members = g
+            .members
+            .into_iter()
+            .map(|m| MailingListMemberView {
+                display_name: m.display_name,
+                email: m.email,
+            })
+            .collect();
+        out.push(MailingListView {
+            id,
+            source: if g.source == "team" {
+                "team".to_string()
+            } else {
+                "nc-group".to_string()
+            },
+            name: g.display_name,
+            members,
+            hidden_from_autocomplete: suppressed_row,
+        });
+    }
+
+    Ok(out)
+}
+
+/// Toggle the local hide-from-autocomplete flag for one
+/// mailing-list row.  Used by the per-row swatch on
+/// non-category rows (manual / NC group / team) — categories
+/// use `set_category_use_as_mailing_list` which writes to the
+/// same table under the `cat:` id space.
+#[tauri::command]
+fn set_mailing_list_hidden(
+    id: String,
+    hidden: bool,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    cache
+        .set_mailing_list_suppressed(&id, hidden)
+        .map_err(NimbusError::from)
+}
+
 // ── Contact groups / mailing lists (#133, #113) ───────────────
 //
 // Groups are stored on the server as plain `KIND:group` vCards.
@@ -2053,6 +2441,13 @@ async fn create_contact_group(
                 }
             })
             .collect(),
+        // Auto-tag manual mailing lists with the reserved
+        // CATEGORY so iOS / NC Contacts surface them in a
+        // dedicated Kontaktgruppe.  The list_mailing_lists IPC
+        // filters this name out of the virtual-row derivation
+        // so we don't end up with a circular "Mailing Lists"
+        // mailing list of mailing lists.
+        categories: vec![MAILING_LISTS_CATEGORY.to_string()],
         ..Default::default()
     };
     let vcard = build_vcard(&parsed);
@@ -6596,6 +6991,14 @@ fn main() {
             set_contact_group_hidden,
             set_contact_group_emoji,
             list_nextcloud_groups,
+            list_contact_categories,
+            set_category_use_as_mailing_list,
+            add_contact_to_category,
+            remove_contact_from_category,
+            rename_contact_category,
+            delete_contact_category,
+            list_mailing_lists,
+            set_mailing_list_hidden,
             list_nextcloud_addressbooks,
             list_nextcloud_calendars,
             sync_nextcloud_calendars,
