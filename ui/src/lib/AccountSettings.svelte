@@ -67,6 +67,26 @@
   }
   let { onclose, onaddaccount, onappprefschanged }: Props = $props()
 
+  // ── Category navigation (#131) ──────────────────────────────
+  // Settings used to be one long scroll; #131 split it into the
+  // categories users actually look for.  The nav lives in a
+  // left column and `activeCategory` gates which section block
+  // renders so each panel stays focused.
+  type SettingsCategory = 'general' | 'design' | 'mail' | 'calendar' | 'nextcloud'
+  let activeCategory = $state<SettingsCategory>('general')
+  interface CategoryEntry {
+    id: SettingsCategory
+    label: string
+    icon: string
+  }
+  const CATEGORIES: CategoryEntry[] = [
+    { id: 'general', label: 'General', icon: '⚙️' },
+    { id: 'design', label: 'Design', icon: '🎨' },
+    { id: 'mail', label: 'E-Mail', icon: '📧' },
+    { id: 'calendar', label: 'Calendar', icon: '📅' },
+    { id: 'nextcloud', label: 'Nextcloud', icon: '☁️' },
+  ]
+
   // ── State ───────────────────────────────────────────────────
   let accounts = $state<Account[]>([])
   let loading = $state(true)
@@ -478,14 +498,46 @@
     </button>
   </div>
 
-  <!-- Content -->
-  <div class="flex-1 overflow-y-auto p-6 max-w-2xl mx-auto w-full">
+  <!-- Content — split into a category nav (left) + active panel
+       (right) per #131.  The nav is sticky to the top of the
+       scroll container so it stays visible as the right pane
+       scrolls inside its own column. -->
+  <div class="flex-1 overflow-hidden flex">
+    <!-- Category nav.  Single source-of-truth list, keeps order
+         identical between mobile-collapse + desktop layouts when
+         that comes. -->
+    <nav class="w-48 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100/60 dark:bg-surface-800/40 overflow-y-auto p-3">
+      <ul class="space-y-1">
+        {#each CATEGORIES as cat (cat.id)}
+          {@const active = activeCategory === cat.id}
+          <li>
+            <button
+              type="button"
+              class="w-full text-left px-3 py-2 rounded-md text-sm flex items-center gap-2 transition-colors {active
+                ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
+                : 'hover:bg-surface-200 dark:hover:bg-surface-700 text-surface-700 dark:text-surface-200'}"
+              onclick={() => (activeCategory = cat.id)}
+              aria-current={active ? 'page' : undefined}
+            >
+              <span aria-hidden="true">{cat.icon}</span>
+              <span>{cat.label}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    </nav>
+
+    <!-- Active category's panel — scrolls independently of the
+         nav so long sections (the account list) don't push the
+         nav off-screen. -->
+    <div class="flex-1 overflow-y-auto p-6 max-w-3xl w-full">
+    {#if activeCategory === 'general'}
     <!-- App Preferences (Issue #16) — always visible, independent
          of per-account loading state so the user can tweak tray /
          sync / notification behaviour even before adding an account. -->
     <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg mb-6">
       <div class="flex items-center justify-between mb-3">
-        <h2 class="text-base font-semibold">App Preferences</h2>
+        <h2 class="text-base font-semibold">General</h2>
         <div class="flex items-center gap-2">
           {#if prefsSaveStatus === 'saving'}
             <span class="text-xs text-surface-400">Saving…</span>
@@ -519,6 +571,52 @@
           <input
             type="checkbox"
             class="checkbox"
+            bind:checked={appSettings.start_minimized}
+            onchange={scheduleSave}
+          />
+          <span>Start minimized to tray</span>
+        </label>
+
+        <label class="flex items-center gap-2">
+          <input
+            type="checkbox"
+            class="checkbox"
+            bind:checked={appSettings.auto_advance_after_remove}
+            onchange={scheduleSave}
+          />
+          <span>After delete / archive, open the next message automatically</span>
+        </label>
+      </div>
+    </div>
+    {/if}
+
+    {#if activeCategory === 'mail'}
+    <!-- Mail-specific preferences: sync cadence + new-mail
+         toast.  Account list is rendered by the gated section
+         further down. -->
+    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg mb-6">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-base font-semibold">Mail preferences</h2>
+        <div class="flex items-center gap-2">
+          {#if prefsSaveStatus === 'saving'}
+            <span class="text-xs text-surface-400">Saving…</span>
+          {:else if prefsSaveStatus === 'saved'}
+            <span class="text-xs text-success-500">Saved</span>
+          {/if}
+          <button
+            class="btn btn-sm preset-outlined-primary-500"
+            disabled={checkNowBusy}
+            onclick={runCheckMailNow}
+          >
+            {checkNowBusy ? 'Checking…' : 'Check Mail Now'}
+          </button>
+        </div>
+      </div>
+      <div class="space-y-2 text-sm">
+        <label class="flex items-center gap-2">
+          <input
+            type="checkbox"
+            class="checkbox"
             bind:checked={appSettings.background_sync_enabled}
             onchange={scheduleSave}
           />
@@ -548,7 +646,24 @@
           />
           <span>Show desktop notifications for new mail</span>
         </label>
+      </div>
+    </div>
+    {/if}
 
+    {#if activeCategory === 'calendar'}
+    <!-- Calendar preferences: default calendar + Talk-room
+         reminder toggle.  Both belong here because they're
+         CalDAV / event-level concerns, not mail-app behaviour. -->
+    <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg mb-6">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-base font-semibold">Calendar preferences</h2>
+        {#if prefsSaveStatus === 'saving'}
+          <span class="text-xs text-surface-400">Saving…</span>
+        {:else if prefsSaveStatus === 'saved'}
+          <span class="text-xs text-success-500">Saved</span>
+        {/if}
+      </div>
+      <div class="space-y-2 text-sm">
         <label class="flex items-center gap-2">
           <input
             type="checkbox"
@@ -564,32 +679,11 @@
           </span>
         </label>
 
-        <label class="flex items-center gap-2">
-          <input
-            type="checkbox"
-            class="checkbox"
-            bind:checked={appSettings.start_minimized}
-            onchange={scheduleSave}
-          />
-          <span>Start minimized to tray</span>
-        </label>
-
-        <label class="flex items-center gap-2">
-          <input
-            type="checkbox"
-            class="checkbox"
-            bind:checked={appSettings.auto_advance_after_remove}
-            onchange={scheduleSave}
-          />
-          <span>After delete / archive, open the next message automatically</span>
-        </label>
-
         <!-- Default calendar.  Used by the EventEditor as the
              pre-selected calendar in create-mode, and by the
              RSVP card as the default destination for accepted
              invites.  Hidden when no Nextcloud calendars are
-             cached yet (the user hasn't connected NC, or the
-             initial sync hasn't run). -->
+             cached yet. -->
         {#if calendarsForPicker.length > 0}
           <label class="flex items-center gap-2 pt-2">
             <span class="shrink-0">Default calendar</span>
@@ -607,7 +701,9 @@
         {/if}
       </div>
     </div>
+    {/if}
 
+    {#if activeCategory === 'design'}
     <!-- Appearance (Issue #17) — theme + light/dark mode picker.
          Changes apply live via `onThemeChange` so the user sees the
          result before navigating away from settings. -->
@@ -690,7 +786,9 @@
         </div>
       </div>
     </div>
+    {/if}
 
+    {#if activeCategory === 'mail'}
     {#if loading}
       <p class="text-surface-500 text-center py-8">Loading accounts...</p>
 
@@ -898,10 +996,11 @@
         </button>
       </div>
     {/if}
+    {/if}
 
-    <!-- Nextcloud section (always shown, independent of mail accounts) -->
-    <div class="mt-10 pt-6 border-t border-surface-200 dark:border-surface-700">
-      <NextcloudSettings />
+    {#if activeCategory === 'nextcloud'}
+    <NextcloudSettings />
+    {/if}
     </div>
   </div>
 </div>
