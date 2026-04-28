@@ -786,8 +786,16 @@
       {#each categories as c (c.name)}
         {@const sel = selectedScope === `category:${c.name}`}
         {@const dragOver = dragHoverCategory === c.name}
-        <button
-          class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
+        <!-- Container is a div, not a button, so the inline
+             "Use as mailing list" swatch can stay a real
+             <button> — nested <button> would otherwise trip
+             the HTML parser's repair pass.  We add
+             role="button" + tabindex + keyboard handler so the
+             a11y story matches a regular button. -->
+        <div
+          role="button"
+          tabindex="0"
+          class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors cursor-pointer
                  {sel
                    ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
                    : 'hover:bg-surface-200 dark:hover:bg-surface-700'}
@@ -817,6 +825,12 @@
             if (id) void addContactIdToCategory(id, c.name)
           }}
           onclick={() => (selectedScope = `category:${c.name}`)}
+          onkeydown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              selectedScope = `category:${c.name}`
+            }
+          }}
         >
           <span class="w-6 text-center">{(c.name || '?').slice(0, 1).toUpperCase()}</span>
           <span class="flex-1 truncate">{c.name}</span>
@@ -839,7 +853,7 @@
             }}
           ></button>
           <span class="text-xs text-surface-500">{c.memberCount}</span>
-        </button>
+        </div>
       {/each}
       {#if categories.length === 0}
         <p class="px-3 py-2 text-xs text-surface-500 italic">
