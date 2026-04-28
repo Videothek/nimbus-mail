@@ -976,19 +976,7 @@
           }}
         >
           <span class="w-6 text-center">{(c.name || '?').slice(0, 1).toUpperCase()}</span>
-          <span class="flex-1 truncate flex items-center gap-1">
-            <span class="truncate">{c.name}</span>
-            {#if !c.useAsMailingList}
-              <!-- Subtle hint that this Contact Group is set
-                   to "Don't use as mailing list" — without it
-                   the toggle in the three-dot menu has no
-                   visual feedback in the contacts sidebar. -->
-              <span
-                class="text-[10px] uppercase tracking-wider px-1 py-px rounded bg-surface-300 dark:bg-surface-600 text-surface-500 shrink-0"
-                title="Not used as a mailing list"
-              >solo</span>
-            {/if}
-          </span>
+          <span class="flex-1 truncate">{c.name}</span>
           <span class="text-xs text-surface-500 mr-1">{c.memberCount}</span>
           <!-- Three-dot menu: rename, delete, toggle "use as
                mailing list".  Replaces the previous inline
@@ -1017,12 +1005,6 @@
                 tabindex="-1"
                 onkeydown={(e) => { if (e.key === 'Escape') openMenuFor = null }}
               >
-                <button
-                  class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
-                  onclick={() => { openMenuFor = null; void toggleCategoryAsList(c.name, c.useAsMailingList) }}
-                >
-                  {c.useAsMailingList ? '✓ ' : ''}Use as mailing list
-                </button>
                 <button
                   class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
                   onclick={() => { openMenuFor = null; void renameCategory(c.name) }}
@@ -1087,7 +1069,8 @@
           </div>
           {#if openMenuFor === `ml:${ml.id}`}
             <div
-              class="absolute right-1 top-9 z-30 w-56 py-1 rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
+              class="z-30 w-56 py-1 rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
+              style="position: fixed; top: {menuTop}px; left: {menuLeft}px;"
               onclick={(e) => e.stopPropagation()}
               role="menu"
               tabindex="-1"
@@ -1097,17 +1080,19 @@
                 <span class="px-1 py-px rounded {pillCls}">{pillText}</span>
               </div>
               {#if ml.source === 'category'}
+                <!-- Categories use the dedicated "Use as mailing
+                     list" flag (under the same `mailing_list_
+                     settings` row keyed by `cat:<name>`); we
+                     present it with the same wording as the
+                     hide toggle on Manual / Team rows so the
+                     menu reads consistently across sources. -->
                 <button
                   class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
                   onclick={() => {
                     openMenuFor = null
-                    // The "Use as mailing list" toggle on a
-                    // category is the ONLY way it can leave the
-                    // list — so flipping it off here removes
-                    // the row.
                     void toggleCategoryAsList(ml.name, true)
                   }}
-                >Don't use as mailing list</button>
+                >Hide from autocomplete</button>
               {:else}
                 <button
                   class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
