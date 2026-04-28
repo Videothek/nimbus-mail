@@ -575,6 +575,49 @@ pub struct Contact {
     /// Free-form note (vCard `NOTE`). Single multi-line string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// vCard `KIND` (RFC 6350 §6.1.4) — `"group"` for a mailing-
+    /// list / group card, empty for an individual.  The IPC
+    /// surface filters group cards out of the regular contact
+    /// list and exposes them through dedicated group commands
+    /// (#133 / #113), so this field is mostly informational on
+    /// the wire.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+}
+
+/// One contact group / mailing list (vCard `KIND:group`,
+/// RFC 6350 §6.1.4 + §6.6.5).  Stored as a regular vCard in the
+/// owning address book — no separate CardDAV endpoint or
+/// server-side mail expansion involved.  Members are referenced
+/// by UID URI (`urn:uuid:<uid>`) the same way Apple Contacts and
+/// Nextcloud Contacts do.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContactGroup {
+    /// Composite app-side id — same shape as `Contact.id`
+    /// (`{nc_account}::{addressbook_path}::{uid}`) so frontend
+    /// callers can route through the existing per-account
+    /// resolvers.
+    pub id: String,
+    pub nextcloud_account_id: String,
+    /// Group display name (vCard `FN`).
+    pub display_name: String,
+    /// Bare VEVENT-style UIDs of the contacts in this group.
+    /// Resolved against the contacts cache lazily — a group
+    /// surviving the deletion of one of its members is normal
+    /// (the membership row just dangles until the user prunes).
+    #[serde(default)]
+    pub member_uids: Vec<String>,
+    /// Optional emoji shown in place of the initials avatar in
+    /// the contacts sidebar.  Populated locally; never written
+    /// back to the vCard since RFC 6350 has no equivalent slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<String>,
+    /// Local-only flag — `true` removes the group from the
+    /// contacts sidebar AND from address-autocomplete results.
+    /// Mirrors the calendar `hidden` toggle so users with many
+    /// imported NC groups can declutter without deleting.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 /// One postal address from a vCard `ADR` property.

@@ -133,14 +133,185 @@
   // in the new-contact form doesn't re-hit the server.
   let addressbooksByAccount = $state<Record<string, AddressbookSummary[]>>({})
 
+  // ── Contact groups / mailing lists (#133, #113) ───────────────
+  interface ContactGroupView {
+    id: string
+    nextcloudAccountId: string
+    displayName: string
+    memberUids: string[]
+    members: { id: string; displayName: string; email: string }[]
+    emoji: string | null
+    hidden: boolean
+  }
+  let groups = $state<ContactGroupView[]>([])
+  /** Currently-active filter: `'all'` shows every contact in the
+   *  middle list; a group id filters the list to that group's
+   *  members.  Hidden groups are excluded from the sidebar so
+   *  they don't appear here either. */
+  let selectedGroupId = $state<string | 'all'>('all')
+  /** Drag state for the "drop a contact onto a group to add it"
+   *  flow.  Holds the contact's vcard UID (bare, no
+   *  `urn:uuid:`) so the group update IPC can append it to the
+   *  member list. */
+  let draggedContactUid = $state<string | null>(null)
+  let dragHoverGroupId = $state<string | null>(null)
+  /** Visible groups — hidden ones are filtered out so they
+   *  don't clutter the sidebar.  Hidden groups can still be
+   *  un-hidden through a settings panel later; for now hidden =
+   *  invisible everywhere except the contacts edit flow when a
+   *  contact happens to be a member. */
+  const visibleGroups = $derived(groups.filter((g) => !g.hidden))
+  /** Bare UID of the currently-selected contact's vcard, used
+   *  when dragging starts.  Composite ids look like `nc::uid`
+   *  so we split on `::`. */
+  function bareUidOf(c: Contact): string {
+    const segs = c.id.split('::')
+    return segs[1] ?? c.id
+  }
+  async function loadGroups() {
+    try {
+      groups = await invoke<ContactGroupView[]>('list_contact_groups')
+      groups.sort((a, b) =>
+        a.displayName.localeCompare(b.displayName, undefined, {
+          sensitivity: 'base',
+        }),
+      )
+    } catch (e) {
+      console.warn('list_contact_groups failed', e)
+    }
+  }
+  async function createGroup() {
+    const name = prompt('Group name', '')?.trim()
+    if (!name) return
+    if (accounts.length === 0) return
+    // Default to the first NC account + first non-hidden
+    // addressbook on it — same heuristic create-contact uses.
+    const ncId = accounts[0].id
+    let books = addressbooksByAccount[ncId]
+    if (!books) {
+      try {
+        books = await invoke<AddressbookSummary[]>(
+          'list_nextcloud_addressbooks',
+          { ncId },
+        )
+        addressbooksByAccount[ncId] = books
+      } catch (e) {
+        formError = formatError(e) || 'Failed to list addressbooks'
+        return
+      }
+    }
+    const book = books[0]
+    if (!book) return
+    try {
+      const created = await invoke<ContactGroupView>('create_contact_group', {
+        ncId,
+        addressbookUrl: book.path,
+        addressbookName: book.name,
+        displayName: name,
+        memberUids: [],
+      })
+      groups = [...groups, created].sort((a, b) =>
+        a.displayName.localeCompare(b.displayName, undefined, {
+          sensitivity: 'base',
+        }),
+      )
+      selectedGroupId = created.id
+    } catch (e) {
+      formError = formatError(e) || 'Failed to create group'
+    }
+  }
+  async function renameGroup(g: ContactGroupView) {
+    const next = prompt('Rename group', g.displayName)?.trim()
+    if (!next || next === g.displayName) return
+    try {
+      const updated = await invoke<ContactGroupView>('update_contact_group', {
+        groupId: g.id,
+        displayName: next,
+        memberUids: null,
+      })
+      groups = groups.map((x) => (x.id === g.id ? updated : x))
+    } catch (e) {
+      formError = formatError(e) || 'Failed to rename group'
+    }
+  }
+  async function deleteGroup(g: ContactGroupView) {
+    if (!confirm(`Delete the group "${g.displayName}"? Members are not affected.`)) return
+    try {
+      await invoke('delete_contact_group', { groupId: g.id })
+      groups = groups.filter((x) => x.id !== g.id)
+      if (selectedGroupId === g.id) selectedGroupId = 'all'
+    } catch (e) {
+      formError = formatError(e) || 'Failed to delete group'
+    }
+  }
+  async function setGroupEmoji(g: ContactGroupView) {
+    const next = prompt('Emoji (leave blank to clear)', g.emoji ?? '')
+    if (next === null) return
+    const v = next.trim()
+    try {
+      await invoke('set_contact_group_emoji', {
+        groupId: g.id,
+        emoji: v || null,
+      })
+      groups = groups.map((x) => (x.id === g.id ? { ...x, emoji: v || null } : x))
+    } catch (e) {
+      formError = formatError(e) || 'Failed to update emoji'
+    }
+  }
+  async function toggleGroupHidden(g: ContactGroupView) {
+    const next = !g.hidden
+    try {
+      await invoke('set_contact_group_hidden', { groupId: g.id, hidden: next })
+      groups = groups.map((x) => (x.id === g.id ? { ...x, hidden: next } : x))
+    } catch (e) {
+      formError = formatError(e) || 'Failed to update hidden state'
+    }
+  }
+  async function addContactToGroup(g: ContactGroupView, contactUid: string) {
+    if (g.memberUids.includes(contactUid)) return
+    const nextMembers = [...g.memberUids, contactUid]
+    try {
+      const updated = await invoke<ContactGroupView>('update_contact_group', {
+        groupId: g.id,
+        displayName: null,
+        memberUids: nextMembers,
+      })
+      groups = groups.map((x) => (x.id === g.id ? updated : x))
+    } catch (e) {
+      formError = formatError(e) || 'Failed to add member'
+    }
+  }
+  async function removeContactFromGroup(g: ContactGroupView, contactUid: string) {
+    const nextMembers = g.memberUids.filter((u) => u !== contactUid)
+    if (nextMembers.length === g.memberUids.length) return
+    try {
+      const updated = await invoke<ContactGroupView>('update_contact_group', {
+        groupId: g.id,
+        displayName: null,
+        memberUids: nextMembers,
+      })
+      groups = groups.map((x) => (x.id === g.id ? updated : x))
+    } catch (e) {
+      formError = formatError(e) || 'Failed to remove member'
+    }
+  }
+
   // Naive free-text filter over the loaded list. Server-side search
   // isn't needed at this scale (addressbooks are usually hundreds,
   // not thousands, of contacts).
   let query = $state('')
   const filteredContacts = $derived.by(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return contacts
-    return contacts.filter(
+    let scope = contacts
+    if (selectedGroupId !== 'all') {
+      // Filter to the selected group's members.  Match by bare
+      // vcard UID against the contact's composite id segment.
+      const g = groups.find((x) => x.id === selectedGroupId)
+      const uids = new Set(g?.memberUids ?? [])
+      scope = contacts.filter((c) => uids.has(bareUidOf(c)))
+    }
+    if (!q) return scope
+    return scope.filter(
       (c) =>
         c.display_name.toLowerCase().includes(q) ||
         c.email.some((e) => e.value.toLowerCase().includes(q)) ||
@@ -184,6 +355,7 @@
     contacts.sort((a, b) =>
       a.display_name.localeCompare(b.display_name, undefined, { sensitivity: 'base' }),
     )
+    await loadGroups()
   }
 
   async function syncInBackground() {
@@ -476,6 +648,83 @@
 </script>
 
 <div class="h-full flex bg-surface-50 dark:bg-surface-900">
+  <!-- ── Groups / mailing lists sidebar (#133, #113) ──────── -->
+  <aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100/60 dark:bg-surface-800/40 flex flex-col">
+    <div class="p-3 border-b border-surface-200 dark:border-surface-700 flex items-center justify-between">
+      <span class="text-xs font-semibold uppercase tracking-wider text-surface-500">Groups</span>
+      <button
+        class="w-5 h-5 rounded-md flex items-center justify-center text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700"
+        title="New group"
+        aria-label="New group"
+        onclick={() => void createGroup()}
+      >+</button>
+    </div>
+    <div class="flex-1 overflow-y-auto px-2 py-2 space-y-1">
+      <!-- "All" pseudo-row clears the filter. -->
+      <button
+        class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors {selectedGroupId === 'all'
+          ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
+          : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => (selectedGroupId = 'all')}
+      >
+        <span class="w-6 text-center">👥</span>
+        <span class="flex-1 truncate">All contacts</span>
+        <span class="text-xs text-surface-500">{contacts.length}</span>
+      </button>
+      {#each visibleGroups as g (g.id)}
+        {@const active = selectedGroupId === g.id}
+        {@const dragOver = dragHoverGroupId === g.id}
+        <button
+          class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
+                 {active
+                   ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
+                   : 'hover:bg-surface-200 dark:hover:bg-surface-700'}
+                 {dragOver ? 'ring-2 ring-primary-500' : ''}"
+          oncontextmenu={(e) => {
+            e.preventDefault()
+            const action = prompt(
+              `"${g.displayName}" — type:\n  rename / emoji / hide / unhide / delete`,
+              '',
+            )?.trim()
+            if (action === 'rename') void renameGroup(g)
+            else if (action === 'emoji') void setGroupEmoji(g)
+            else if (action === 'hide' || action === 'unhide') void toggleGroupHidden(g)
+            else if (action === 'delete') void deleteGroup(g)
+          }}
+          ondragover={(e) => {
+            if (!draggedContactUid) return
+            e.preventDefault()
+            dragHoverGroupId = g.id
+          }}
+          ondragleave={() => {
+            if (dragHoverGroupId === g.id) dragHoverGroupId = null
+          }}
+          ondrop={(e) => {
+            e.preventDefault()
+            const uid = draggedContactUid
+            dragHoverGroupId = null
+            draggedContactUid = null
+            if (uid) void addContactToGroup(g, uid)
+          }}
+          onclick={() => (selectedGroupId = g.id)}
+        >
+          <span class="w-6 text-center">
+            {g.emoji && g.emoji.trim()
+              ? g.emoji
+              : (g.displayName || '?').slice(0, 1).toUpperCase()}
+          </span>
+          <span class="flex-1 truncate">{g.displayName}</span>
+          <span class="text-xs text-surface-500">{g.memberUids.length}</span>
+        </button>
+      {/each}
+      {#if visibleGroups.length === 0}
+        <p class="px-3 py-2 text-xs text-surface-500 italic">
+          No groups yet. Right-click an entry for rename / emoji / delete.
+        </p>
+      {/if}
+    </div>
+  </aside>
+
   <!-- ── Left: contact list ──────────────────────────────── -->
   <aside class="w-80 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col">
     <div class="p-3 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
@@ -521,6 +770,16 @@
               {selectedId === c.id
                 ? 'bg-primary-500/10 text-primary-500 font-medium'
                 : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            draggable="true"
+            ondragstart={(e) => {
+              draggedContactUid = bareUidOf(c)
+              e.dataTransfer?.setData('text/plain', c.display_name)
+              if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
+            }}
+            ondragend={() => {
+              draggedContactUid = null
+              dragHoverGroupId = null
+            }}
             onclick={() => selectContact(c.id)}
           >
             {#if photoSrc(c)}

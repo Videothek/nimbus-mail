@@ -80,6 +80,17 @@ pub struct RawContact {
     /// Raw vCard text — kept so we can re-parse without re-syncing
     /// if the model evolves later.
     pub vcard_raw: String,
+    /// vCard `KIND` (RFC 6350 §6.1.4) — `"group"` for a contact
+    /// group / mailing list, empty for individuals.  Forwarded
+    /// to the cache so the IPC layer can split groups out from
+    /// regular contacts (#133, #113).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// `MEMBER` URIs for `KIND:group` cards.  Preserved verbatim
+    /// so the resolver can match `urn:uuid:<uid>` references
+    /// against other vCards.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub member_uids: Vec<String>,
 }
 
 /// Result of one sync round: what to upsert, what to delete, and the
@@ -389,6 +400,8 @@ fn parse_multiget_response(
         addresses: parsed.addresses,
         urls: parsed.urls,
         vcard_raw,
+        kind: parsed.kind,
+        member_uids: parsed.members,
     }))
 }
 

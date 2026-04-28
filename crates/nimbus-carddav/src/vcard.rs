@@ -38,6 +38,16 @@ pub struct ParsedVcard {
     pub note: Option<String>,
     pub photo_mime: Option<String>,
     pub photo_data: Option<Vec<u8>>,
+    /// `KIND` property (RFC 6350 §6.1.4).  Lower-cased, empty
+    /// when absent.  We currently care about `"group"` so the
+    /// store can treat group cards as a separate kind, leaving
+    /// individual contacts unaffected.
+    pub kind: String,
+    /// `MEMBER` property values for `KIND:group` cards (RFC
+    /// 6350 §6.6.5).  We preserve the URI as written
+    /// (`urn:uuid:<uid>` / `mailto:<addr>`) and let callers
+    /// resolve them to other vCards.  Empty for non-group cards.
+    pub members: Vec<String>,
 }
 
 /// One vCard `ADR` property. Mirrors `nimbus_core::models::ContactAddress`
@@ -96,6 +106,8 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
     let mut note: Option<String> = None;
     let mut photo_mime: Option<String> = None;
     let mut photo_data: Option<Vec<u8>> = None;
+    let mut kind: String = String::new();
+    let mut members: Vec<String> = Vec::new();
 
     for prop in &card.properties {
         let name = prop.name.to_ascii_uppercase();
@@ -202,6 +214,18 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
                     photo_data = Some(bytes);
                 }
             }
+            "KIND" | "X-ADDRESSBOOKSERVER-KIND" => {
+                // X-ADDRESSBOOKSERVER-KIND is Apple's
+                // pre-vCard-4.0 spelling that NC Contacts also
+                // round-trips for backwards compat — accept either.
+                kind = value.trim().to_ascii_lowercase();
+            }
+            "MEMBER" | "X-ADDRESSBOOKSERVER-MEMBER" => {
+                let v = value.trim().to_string();
+                if !v.is_empty() && !members.contains(&v) {
+                    members.push(v);
+                }
+            }
             _ => {}
         }
     }
@@ -233,6 +257,8 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
         note,
         photo_mime,
         photo_data,
+        kind,
+        members,
     })
 }
 
@@ -436,6 +462,27 @@ pub fn build_vcard(card: &ParsedVcard) -> String {
         // line-folded so it stays under 75 octets per physical line.
         let b64 = BASE64.encode(bytes);
         push_line(&mut out, &format!("PHOTO:data:{mime};base64,{b64}"));
+    }
+    // KIND + MEMBER for group cards (#133 / #113).  We emit both
+    // the RFC 6350 spelling and Apple's `X-ADDRESSBOOKSERVER-…`
+    // legacy prefixed form so older clients (Apple Contacts up
+    // through 14.x, NC's mobile companion) still recognise the
+    // group on round-trip.  Non-group cards skip both lines.
+    if !card.kind.is_empty() {
+        push_line(&mut out, &format!("KIND:{}", escape_value(&card.kind)));
+        if card.kind.eq_ignore_ascii_case("group") {
+            push_line(
+                &mut out,
+                &format!("X-ADDRESSBOOKSERVER-KIND:{}", escape_value(&card.kind)),
+            );
+            for m in &card.members {
+                push_line(&mut out, &format!("MEMBER:{}", escape_value(m)));
+                push_line(
+                    &mut out,
+                    &format!("X-ADDRESSBOOKSERVER-MEMBER:{}", escape_value(m)),
+                );
+            }
+        }
     }
     out.push_str("END:VCARD\r\n");
     out

@@ -658,6 +658,23 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE accounts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE accounts ADD COLUMN person_name TEXT;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v16 → v17: contact groups / mailing lists (#133, #113).
+    //
+    // Groups live as plain vCards with `KIND:group` and `MEMBER:`
+    // properties — we just need to flag them in the cache and
+    // carry the member UID list alongside the regular contact
+    // fields.  `group_emoji` and `group_hidden` are local-only
+    // (no vCard equivalent) and only meaningful for rows where
+    // `kind = 'group'`; we keep them on every contact row to
+    // avoid a separate table.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE contacts ADD COLUMN kind TEXT NOT NULL DEFAULT '';
+    ALTER TABLE contacts ADD COLUMN member_uids_json TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE contacts ADD COLUMN group_emoji TEXT;
+    ALTER TABLE contacts ADD COLUMN group_hidden INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
