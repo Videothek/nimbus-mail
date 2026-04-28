@@ -3804,6 +3804,8 @@ fn input_to_parsed(uid: &str, input: &ContactInput) -> ParsedVcard {
             })
             .unwrap_or_default(),
         urls: input.urls.clone().unwrap_or_default(),
+        kind: String::new(),
+        members: Vec::new(),
     }
 }
 
