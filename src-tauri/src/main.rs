@@ -2262,11 +2262,13 @@ async fn list_mailing_lists(
             continue;
         }
         let id = format!("cat:{name}");
-        // "Use as mailing list" off => suppressed => omitted
-        // from the Mailing Lists tab AND from autocomplete.
-        if suppressed.contains(&id) {
-            continue;
-        }
+        // Category rows stay in the Lists tab regardless of
+        // the hide flag, so the user can toggle them back on
+        // from the same swatch they used to turn them off.
+        // The autocomplete client-side filter is what actually
+        // suppresses suggestions; the row carries the flag so
+        // the UI can render it greyed-out.
+        let hidden_from_autocomplete = suppressed.contains(&id);
         let contacts = cache
             .list_contacts_with_category(&name)
             .unwrap_or_default();
@@ -2296,7 +2298,7 @@ async fn list_mailing_lists(
             source: "category".to_string(),
             name,
             members,
-            hidden_from_autocomplete: false,
+            hidden_from_autocomplete,
         });
     }
 
