@@ -11,6 +11,7 @@
   import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
   import { enable as autostartEnable, disable as autostartDisable, isEnabled as autostartIsEnabled } from '@tauri-apps/plugin-autostart'
   import NextcloudSettings from './NextcloudSettings.svelte'
+  import EmojiPicker from './EmojiPicker.svelte'
   import {
     STOCK_THEMES,
     applyTheme,
@@ -531,10 +532,9 @@
     }
   })
 
-  /** Persist the emoji avatar (#115).  Empty string clears it
-   *  back to the initials fallback in the IconRail. */
-  async function onEmojiChange(account: Account, raw: string) {
-    const next = raw.trim() || null
+  /** Persist the emoji avatar (#115).  `null` clears it back to
+   *  the initials fallback in the IconRail. */
+  async function onEmojiChange(account: Account, next: string | null) {
     account.emoji = next
     try {
       await invoke('update_account', { account: { ...account, emoji: next } })
@@ -542,6 +542,17 @@
       console.warn('failed to save account emoji', e)
     }
   }
+  /** Which account currently has its emoji picker popover open. */
+  let emojiPickerForAccount = $state<string | null>(null)
+  $effect(() => {
+    if (!emojiPickerForAccount) return
+    const onDoc = () => (emojiPickerForAccount = null)
+    const handle = setTimeout(() => document.addEventListener('mousedown', onDoc), 0)
+    return () => {
+      clearTimeout(handle)
+      document.removeEventListener('mousedown', onDoc)
+    }
+  })
 
   /** Persist the sender (person) name (#115). */
   async function onPersonNameChange(account: Account, raw: string) {
@@ -1058,16 +1069,36 @@
             <!-- Identity fields: emoji avatar + person name (#115). -->
             <div class="mt-4 pt-4 border-t border-surface-200 dark:border-surface-700 grid grid-cols-[auto_1fr] gap-3 items-center">
               <label class="text-sm font-medium" for="emoji-{account.id}">Avatar emoji</label>
-              <input
-                id="emoji-{account.id}"
-                type="text"
-                maxlength="4"
-                placeholder="📨"
-                value={account.emoji ?? ''}
-                onchange={(e) => void onEmojiChange(account, (e.currentTarget as HTMLInputElement).value)}
-                class="input text-lg text-center w-16 px-2 py-1 rounded-md"
-                aria-label="Account emoji avatar"
-              />
+              <div class="relative">
+                <button
+                  id="emoji-{account.id}"
+                  type="button"
+                  class="input text-lg text-center w-16 px-2 py-1 rounded-md hover:bg-surface-200 dark:hover:bg-surface-700"
+                  aria-label="Account emoji avatar"
+                  onclick={(e) => {
+                    e.stopPropagation()
+                    emojiPickerForAccount = emojiPickerForAccount === account.id ? null : account.id
+                  }}
+                >{account.emoji || '📨'}</button>
+                {#if emojiPickerForAccount === account.id}
+                  <div
+                    class="absolute left-0 top-full mt-1 z-50"
+                    role="menu"
+                    tabindex="-1"
+                    onclick={(e) => e.stopPropagation()}
+                    onmousedown={(e) => e.stopPropagation()}
+                    onkeydown={(e) => { if (e.key === 'Escape') emojiPickerForAccount = null }}
+                  >
+                    <EmojiPicker
+                      value={account.emoji ?? null}
+                      onpick={(emoji) => {
+                        emojiPickerForAccount = null
+                        void onEmojiChange(account, emoji)
+                      }}
+                    />
+                  </div>
+                {/if}
+              </div>
               <label class="text-sm font-medium" for="person-{account.id}">Sender name</label>
               <input
                 id="person-{account.id}"
