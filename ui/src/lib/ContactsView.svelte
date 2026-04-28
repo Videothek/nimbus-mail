@@ -843,25 +843,39 @@
         aria-label="Back"
         onclick={onclose}
       >&larr;</button>
-      <h2 class="text-base font-semibold flex-1 truncate">Contacts</h2>
+      <h2 class="text-base font-semibold flex-1 truncate">
+        {activeTab === 'contacts' ? 'Contacts' : 'Mailing lists'}
+      </h2>
       {#if syncing}
         <span class="text-[10px] text-surface-500">Syncing…</span>
       {/if}
     </div>
+    <!-- Tab strip.  Buttons explicitly stop propagation +
+         set activeTab on a separate handler so any pending
+         document-level click-outside listener can't race the
+         state update on the first transition. -->
     <div class="px-3 pt-2 flex gap-1">
       <button
         type="button"
         class="flex-1 px-2 py-2 text-sm rounded-md transition-colors {activeTab === 'contacts'
           ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
           : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
-        onclick={() => (activeTab = 'contacts')}
+        onclick={(e) => {
+          e.stopPropagation()
+          activeTab = 'contacts'
+          openMenuFor = null
+        }}
       >Contacts</button>
       <button
         type="button"
         class="flex-1 px-2 py-2 text-sm rounded-md transition-colors {activeTab === 'lists'
           ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
           : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
-        onclick={() => (activeTab = 'lists')}
+        onclick={(e) => {
+          e.stopPropagation()
+          activeTab = 'lists'
+          openMenuFor = null
+        }}
       >Lists</button>
     </div>
     {#if activeTab === 'contacts'}
