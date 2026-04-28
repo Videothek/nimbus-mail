@@ -544,6 +544,19 @@
   }
   /** Which account currently has its emoji picker popover open. */
   let emojiPickerForAccount = $state<string | null>(null)
+  /** Which account currently has its folder-icon-rule draft
+   *  picker open (separate from the avatar picker — both can
+   *  coexist on the same account row). */
+  let iconDraftPickerFor = $state<string | null>(null)
+  $effect(() => {
+    if (!iconDraftPickerFor) return
+    const onDoc = () => (iconDraftPickerFor = null)
+    const handle = setTimeout(() => document.addEventListener('mousedown', onDoc), 0)
+    return () => {
+      clearTimeout(handle)
+      document.removeEventListener('mousedown', onDoc)
+    }
+  })
   $effect(() => {
     if (!emojiPickerForAccount) return
     const onDoc = () => (emojiPickerForAccount = null)
@@ -1171,14 +1184,36 @@
 
               {#if iconDrafts[account.id]}
                 <div class="flex gap-2 items-center">
-                  <input
-                    type="text"
-                    maxlength="4"
-                    placeholder="🏦"
-                    bind:value={iconDrafts[account.id].icon}
-                    class="input text-lg text-center w-14 px-2 py-1 rounded-md"
-                    aria-label="Icon"
-                  />
+                  <div class="relative">
+                    <button
+                      type="button"
+                      class="input text-lg text-center w-14 px-2 py-1 rounded-md hover:bg-surface-200 dark:hover:bg-surface-700"
+                      aria-label="Icon"
+                      onclick={(e) => {
+                        e.stopPropagation()
+                        iconDraftPickerFor = iconDraftPickerFor === account.id ? null : account.id
+                      }}
+                    >{iconDrafts[account.id].icon || '🏦'}</button>
+                    {#if iconDraftPickerFor === account.id}
+                      <div
+                        class="absolute left-0 top-full mt-1 z-50"
+                        role="menu"
+                        tabindex="-1"
+                        onclick={(e) => e.stopPropagation()}
+                        onmousedown={(e) => e.stopPropagation()}
+                        onkeydown={(e) => { if (e.key === 'Escape') iconDraftPickerFor = null }}
+                      >
+                        <EmojiPicker
+                          value={iconDrafts[account.id].icon || null}
+                          allowClear={false}
+                          onpick={(emoji) => {
+                            iconDrafts[account.id].icon = emoji ?? ''
+                            iconDraftPickerFor = null
+                          }}
+                        />
+                      </div>
+                    {/if}
+                  </div>
                   <input
                     type="text"
                     placeholder="bank"
