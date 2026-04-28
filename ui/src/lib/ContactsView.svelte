@@ -1225,6 +1225,13 @@
                 selectedListId = ml.id
               }
             }}
+            oncontextmenu={(e) => {
+              if (ml.source === 'team') return
+              e.preventDefault()
+              menuTop = e.clientY
+              menuLeft = e.clientX
+              openMenuFor = `ml:${ml.id}`
+            }}
           >
             <!-- Left swatch toggles hide-from-autocomplete, mirroring
                  the calendar sidebar's mute swatch. Filled = used in
