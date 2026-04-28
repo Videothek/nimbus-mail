@@ -179,10 +179,8 @@
    *  named function fixes the binding and gives the menu
    *  cleanup a single place to live. */
   function selectTab(t: ContactsTab) {
-    console.log('[contacts] selectTab', t, 'previously', activeTab)
     openMenuFor = null
     activeTab = t
-    console.log('[contacts] selectTab → after assign', activeTab)
   }
   /** Selected mailing list on the Lists tab — the middle
    *  column shows its members. */
@@ -218,18 +216,15 @@
     document.addEventListener('mousedown', onDoc)
     return () => document.removeEventListener('mousedown', onDoc)
   })
-  /** Mailing-list rows filtered by the search query, partitioned
-   *  by source so each section can render its own header. */
-  const filteredMailingLists = $derived.by(() => {
-    const q = listsQuery.trim().toLowerCase()
-    const all = q
-      ? mailingLists.filter((m) => m.name.toLowerCase().includes(q))
-      : mailingLists
-    return {
-      manual: all.filter((m) => m.source === 'manual'),
-      category: all.filter((m) => m.source === 'category'),
-      team: all.filter((m) => m.source === 'team'),
-    }
+  /** Mailing-list rows partitioned by source so each section
+   *  can render its own header.  No search filter here — the
+   *  Lists tab's search box was moved to the right pane (it
+   *  filters members of the selected list, not lists
+   *  themselves), so this derived just splits by source. */
+  const filteredMailingLists = $derived({
+    manual: mailingLists.filter((m) => m.source === 'manual'),
+    category: mailingLists.filter((m) => m.source === 'category'),
+    team: mailingLists.filter((m) => m.source === 'team'),
   })
   const selectedList = $derived(
     selectedListId ? mailingLists.find((m) => m.id === selectedListId) ?? null : null,
@@ -865,9 +860,6 @@
          set activeTab on a separate handler so any pending
          document-level click-outside listener can't race the
          state update on the first transition. -->
-    <div class="px-3 pt-1 text-[10px] text-error-500 font-mono">
-      tab={activeTab}
-    </div>
     <div class="px-3 pt-2 flex gap-1">
       <button
         type="button"
