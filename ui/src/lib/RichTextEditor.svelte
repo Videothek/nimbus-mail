@@ -29,6 +29,7 @@
   import TableHeader from '@tiptap/extension-table-header'
   import Mention from '@tiptap/extension-mention'
   import type { Range } from '@tiptap/core'
+  import EmojiPicker from './EmojiPicker.svelte'
 
   /**
    * Imperative handle the parent gets via `onready`. Tiptap is
@@ -899,26 +900,8 @@
 
   let showEmojiPicker = $state(false)
 
-  /** Curated set the emoji popup shows.  Keeping this small and
-   *  hand-picked beats a full-Unicode picker for the email-compose
-   *  use case — most users want a familiar handful, and the popup
-   *  fits in one screen of grid without paging. */
-  const EMOJI_SET = [
-    '😀','😃','😄','😁','😆','😅','😂','🤣',
-    '😊','😇','🙂','🙃','😉','😌','😍','🥰',
-    '😘','😋','😛','😝','😜','🤪','😎','🤓',
-    '🥳','😏','😒','😔','😢','😭','😤','😡',
-    '😱','😳','🥵','🥶','😴','🤔','🤨','🙄',
-    '👍','👎','👌','✌️','🤞','🤟','🤘','👏',
-    '🙌','🤝','🙏','💪','✍️','👈','👉','👆',
-    '❤️','🧡','💛','💚','💙','💜','🤎','🖤',
-    '💔','❣️','💕','💖','💯','✅','❌','⚠️',
-    '❓','❗','💡','🎉','🎊','⭐','🌟','✨',
-    '🔥','💥','📌','📎','📋','📝','📅','🕐',
-    '🔔','📞','📧','📤','📥','💾','🗑','📁',
-  ]
-
-  function insertEmoji(e: string) {
+  function insertEmoji(e: string | null) {
+    if (!e) return
     cmd().insertContent(e).run()
     showEmojiPicker = false
   }
@@ -1412,22 +1395,13 @@
           </button>
           {#if showEmojiPicker}
             <div
-              class="absolute left-0 top-full mt-1 z-50 p-2 bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-md shadow-lg w-72"
+              class="absolute left-0 top-full mt-1 z-50"
               role="menu"
               tabindex="-1"
               onclick={(e) => e.stopPropagation()}
               onkeydown={(e) => e.key === 'Escape' && (showEmojiPicker = false)}
             >
-              <div class="grid grid-cols-8 gap-0.5 max-h-72 overflow-y-auto">
-                {#each EMOJI_SET as e}
-                  <button
-                    type="button"
-                    class="w-8 h-8 flex items-center justify-center text-lg rounded-md hover:bg-surface-200 dark:hover:bg-surface-800"
-                    title={e}
-                    onclick={() => insertEmoji(e)}
-                  >{e}</button>
-                {/each}
-              </div>
+              <EmojiPicker allowClear={false} onpick={(e) => insertEmoji(e)} />
             </div>
           {/if}
         </div>
