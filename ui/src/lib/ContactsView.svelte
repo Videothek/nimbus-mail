@@ -206,6 +206,36 @@
    *  cuts off menus that pop past the sidebar's edge. */
   let menuTop = $state(0)
   let menuLeft = $state(0)
+  /** Inline rename state for a mailing-list row.  When set, the
+   *  matching row's name span renders an `<input>` instead. */
+  let renamingListId = $state<string | null>(null)
+  let renameValue = $state('')
+  /** Anchor + open state for the per-row emoji picker popover. */
+  let emojiPickerFor = $state<string | null>(null)
+  let emojiPickerTop = $state(0)
+  let emojiPickerLeft = $state(0)
+  /** Curated emoji set for the mailing-list picker.  Skews
+   *  towards labels, groups, and communication so the most
+   *  useful pictograms show up first.  Same shape as the
+   *  RichTextEditor picker. */
+  const MAILING_LIST_EMOJIS = [
+    '🏷️','📨','📬','📭','📮','📧','✉️','📩',
+    '👥','👨‍👩‍👧','🧑‍💼','🧑‍🤝‍🧑','🤝','💬','📣','📢',
+    '⭐','🌟','✨','💡','🎯','🚀','🔥','💯',
+    '❤️','🧡','💛','💚','💙','💜','🩷','🤍',
+    '✅','📌','📎','📋','📝','📅','🗂️','🗃️',
+    '🏠','🏢','🏫','🎓','💼','🛒','🍽️','🎉',
+    '🐶','🐱','🦊','🐻','🐼','🐯','🦁','🐸',
+  ]
+  $effect(() => {
+    if (!emojiPickerFor) return
+    const onDoc = () => (emojiPickerFor = null)
+    const handle = setTimeout(() => document.addEventListener('mousedown', onDoc), 0)
+    return () => {
+      clearTimeout(handle)
+      document.removeEventListener('mousedown', onDoc)
+    }
+  })
   // Close any open three-dot menu when the user clicks
   // anywhere outside one — same idiom we use elsewhere for
   // popover dismissal.  The menu's own `onclick` calls
@@ -553,54 +583,50 @@
     }
   }
 
-  async function renameMailingList(ml: MailingListView) {
-    const next = window.prompt('Rename mailing list', ml.name)?.trim()
+  function startRenameMailingList(ml: MailingListView) {
+    renamingListId = ml.id
+    renameValue = ml.name
+  }
+
+  async function commitRenameMailingList(ml: MailingListView) {
+    const next = renameValue.trim()
+    renamingListId = null
     if (!next || next === ml.name) return
     try {
       await invoke('rename_mailing_list', { id: ml.id, newName: next })
-      // Renaming a category changes the row's id (cat:<old> →
-      // cat:<new>); refetch is the cleanest way to pick up the
-      // new id while keeping the per-row state in sync.
-      mailingLists = await invoke<MailingListView[]>('list_mailing_lists')
+      // Category renames change the row's id (cat:<old> →
+      // cat:<new>); refetch picks up the new id while keeping
+      // per-row settings in sync.  Manual lists keep their id.
       if (ml.source === 'category') {
-        // Categories drive the Contact Groups list too.
+        if (selectedListId === ml.id) selectedListId = `cat:${next}`
+        mailingLists = await invoke<MailingListView[]>('list_mailing_lists')
         await reloadContacts()
-        if (ml.id === `cat:${ml.name}` && selectedListId === ml.id) {
-          selectedListId = `cat:${next}`
-        }
-      } else if (selectedListId === ml.id) {
-        // Manual list keeps its id (it's `list:<vcardUid>`).
+      } else {
+        mailingLists = mailingLists.map((m) =>
+          m.id === ml.id ? { ...m, name: next } : m,
+        )
       }
     } catch (e) {
       formError = formatError(e) || 'Failed to rename mailing list'
     }
   }
 
-  async function changeMailingListEmoji(ml: MailingListView) {
-    const next = window.prompt('Emoji for this mailing list (single character)', ml.emoji ?? '')
-    if (next === null) return
-    const trimmed = next.trim()
+  function openEmojiPickerFor(ml: MailingListView, anchor: HTMLElement) {
+    const r = anchor.getBoundingClientRect()
+    emojiPickerTop = r.bottom + 4
+    emojiPickerLeft = r.left
+    emojiPickerFor = ml.id
+  }
+
+  async function pickMailingListEmoji(ml: MailingListView, emoji: string | null) {
+    emojiPickerFor = null
     try {
-      await invoke('set_mailing_list_emoji', {
-        id: ml.id,
-        emoji: trimmed || null,
-      })
+      await invoke('set_mailing_list_emoji', { id: ml.id, emoji })
       mailingLists = mailingLists.map((m) =>
-        m.id === ml.id ? { ...m, emoji: trimmed || null } : m,
+        m.id === ml.id ? { ...m, emoji } : m,
       )
     } catch (e) {
       formError = formatError(e) || 'Failed to set emoji'
-    }
-  }
-
-  async function clearMailingListEmoji(ml: MailingListView) {
-    try {
-      await invoke('set_mailing_list_emoji', { id: ml.id, emoji: null })
-      mailingLists = mailingLists.map((m) =>
-        m.id === ml.id ? { ...m, emoji: null } : m,
-      )
-    } catch (e) {
-      formError = formatError(e) || 'Failed to clear emoji'
     }
   }
 
@@ -1191,7 +1217,29 @@
               }}
             ></button>
             <span class="w-5 text-center">{ml.emoji || sourceIcon}</span>
-            <span class="flex-1 truncate {hidden ? 'text-surface-400 dark:text-surface-500' : ''}">{ml.name}</span>
+            {#if renamingListId === ml.id}
+              <!-- svelte-ignore a11y_autofocus -->
+              <input
+                type="text"
+                class="input flex-1 text-sm px-2 py-0.5 rounded min-w-0"
+                bind:value={renameValue}
+                autofocus
+                onclick={(e) => e.stopPropagation()}
+                onkeydown={(e) => {
+                  e.stopPropagation()
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void commitRenameMailingList(ml)
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    renamingListId = null
+                  }
+                }}
+                onblur={() => void commitRenameMailingList(ml)}
+              />
+            {:else}
+              <span class="flex-1 truncate {hidden ? 'text-surface-400 dark:text-surface-500' : ''}">{ml.name}</span>
+            {/if}
             <span class="text-xs text-surface-500">{ml.members.filter((m) => m.email).length}</span>
             {#if ml.source !== 'team'}
               <button
@@ -1219,16 +1267,23 @@
             >
               <button
                 class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
-                onclick={() => { openMenuFor = null; void renameMailingList(ml) }}
+                onclick={() => { openMenuFor = null; startRenameMailingList(ml) }}
               >Rename</button>
               <button
                 class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
-                onclick={() => { openMenuFor = null; void changeMailingListEmoji(ml) }}
+                onclick={(e) => {
+                  // Anchor the picker to the row, not the menu
+                  // item — the menu closes immediately so its
+                  // bounding rect is gone by the time we render.
+                  const row = (e.currentTarget as HTMLElement).closest('.relative') as HTMLElement | null
+                  openMenuFor = null
+                  if (row) openEmojiPickerFor(ml, row)
+                }}
               >{ml.emoji ? 'Change emoji' : 'Set emoji'}</button>
               {#if ml.emoji}
                 <button
                   class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
-                  onclick={() => { openMenuFor = null; void clearMailingListEmoji(ml) }}
+                  onclick={() => { openMenuFor = null; void pickMailingListEmoji(ml, null) }}
                 >Remove emoji</button>
               {/if}
               {#if ml.source === 'manual'}
@@ -1236,6 +1291,35 @@
                   class="w-full text-left px-3 py-2 hover:bg-error-500/10 text-error-500"
                   onclick={() => { openMenuFor = null; void deleteManualMailingList(ml.id, ml.name) }}
                 >Delete</button>
+              {/if}
+            </div>
+          {/if}
+          {#if emojiPickerFor === ml.id}
+            <div
+              class="z-40 p-2 bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-md shadow-lg w-72"
+              style="position: fixed; top: {emojiPickerTop}px; left: {emojiPickerLeft}px;"
+              role="menu"
+              tabindex="-1"
+              onclick={(e) => e.stopPropagation()}
+              onmousedown={(e) => e.stopPropagation()}
+              onkeydown={(e) => { if (e.key === 'Escape') emojiPickerFor = null }}
+            >
+              <div class="grid grid-cols-8 gap-0.5 max-h-72 overflow-y-auto">
+                {#each MAILING_LIST_EMOJIS as e (e)}
+                  <button
+                    type="button"
+                    class="w-8 h-8 flex items-center justify-center text-lg rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 {ml.emoji === e ? 'bg-primary-500/15 ring-1 ring-primary-500' : ''}"
+                    title={e}
+                    onclick={() => void pickMailingListEmoji(ml, e)}
+                  >{e}</button>
+                {/each}
+              </div>
+              {#if ml.emoji}
+                <button
+                  type="button"
+                  class="mt-2 w-full text-xs text-surface-500 hover:text-error-500"
+                  onclick={() => void pickMailingListEmoji(ml, null)}
+                >Remove emoji</button>
               {/if}
             </div>
           {/if}
