@@ -67,6 +67,27 @@
     color: string | null
     last_synced_at: string | null
     hidden?: boolean
+    /** Layer-2 visibility — set from the calendar sidebar's
+     *  swatch toggle.  Muted calendars stay in the picker
+     *  (the user might still want to drop the accepted event
+     *  there), but their events are excluded from the day
+     *  preview so the "what's already on my day" view matches
+     *  what the user actually has visible in CalendarView. */
+    muted?: boolean
+  }
+  /** Slim mirror of the Rust `CalendarEvent` — we only consume
+   *  the fields needed to lay the preview out (id for calendar
+   *  lookup + key, start/end for positioning, summary for the
+   *  hover title). */
+  interface PreviewEvent {
+    id: string
+    summary: string
+    start: string
+    end: string
+    /** Attendee list — used to detect the current user's
+     *  PARTSTAT so we can render existing events with the
+     *  same tentative/declined treatment as the agenda grid. */
+    attendees?: InviteAttendee[] | null
   }
   let calendars = $state<CalendarRow[]>([])
   let selectedCalendarId = $state<string | null>(null)
@@ -80,6 +101,305 @@
    *  matching account for; backend falls back to NC profile
    *  email + mail-account list. */
   let attendeeHint = $state<string | null>(null)
+
+  /** Lower-cased email addresses identifying the current user.
+   *  Loaded from the configured mail accounts on mount and
+   *  used to find the user's own ATTENDEE row in any preview
+   *  event so we can apply the same tentative / declined
+   *  visuals the agenda grid uses. */
+  let userIdentities = $state<Set<string>>(new Set())
+  $effect(() => {
+    void invoke<{ email: string }[]>('get_accounts')
+      .then((rows) => {
+        const set = new Set<string>()
+        for (const r of rows) if (r.email) set.add(r.email.toLowerCase())
+        userIdentities = set
+      })
+      .catch(() => {})
+  })
+
+  /** Return the user's PARTSTAT on an existing preview event,
+   *  or `null` if the event has no attendee row matching the
+   *  user — matches the semantics of CalendarView's
+   *  `userPartstatIs`. */
+  function userPartstatOn(ev: PreviewEvent): string | null {
+    if (userIdentities.size === 0) return null
+    for (const a of ev.attendees ?? []) {
+      if (userIdentities.has(a.email.toLowerCase())) {
+        return (a.status ?? '').toUpperCase() || null
+      }
+    }
+    return null
+  }
+
+  // ── "More info" details panel ──────────────────────────────
+  // Expanded view: read-only attendee chips + a one-day mini
+  // preview showing what else is on the user's calendar(s) for
+  // the proposed slot.  Loaded lazily on first expand so the
+  // card stays cheap when the user just wants to Accept and
+  // move on.
+  let detailsOpen = $state(false)
+  let previewLoading = $state(false)
+  let previewError = $state('')
+  /** Currently-displayed day in the preview.  Initialised to
+   *  the invite's local day on first open; the prev/next day
+   *  arrows mutate this without changing the invite itself. */
+  let previewDate = $state<Date>(new Date(invite.start))
+  /** Events keyed by `YYYY-MM-DD` so navigating back to a
+   *  previously-loaded day is instant — IPC + expansion only
+   *  hits the cache the first time the user lands on a date. */
+  let previewEventsByDate = $state<Map<string, PreviewEvent[]>>(new Map())
+  function dayKey(d: Date): string {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+  let previewEvents = $derived(previewEventsByDate.get(dayKey(previewDate)) ?? [])
+  let previewLoaded = $derived(previewEventsByDate.has(dayKey(previewDate)))
+
+  /** Map calendar id → row, for colour + display-name lookup
+   *  in the preview block.  `eventCalendarId(ev.id)` recovers
+   *  the calendar id from the composite event id. */
+  const calendarsById = $derived.by(() => {
+    const m = new Map<string, CalendarRow>()
+    for (const c of calendars) m.set(c.id, c)
+    return m
+  })
+  function eventCalendarId(id: string): string {
+    return id.split('::').slice(0, 2).join('::')
+  }
+
+  async function loadPreviewForDate(d: Date) {
+    const key = dayKey(d)
+    if (previewEventsByDate.has(key) || previewLoading) return
+    previewLoading = true
+    previewError = ''
+    try {
+      const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+      const dayEnd = new Date(dayStart)
+      dayEnd.setDate(dayEnd.getDate() + 1)
+      const activeIds = calendars
+        .filter((c) => !c.hidden && !c.muted)
+        .map((c) => c.id)
+      const ev =
+        activeIds.length === 0
+          ? []
+          : await invoke<PreviewEvent[]>('get_cached_events', {
+              calendarIds: activeIds,
+              rangeStart: dayStart.toISOString(),
+              rangeEnd: dayEnd.toISOString(),
+            })
+      // Re-bind so Svelte's reactivity picks up the new entry.
+      const next = new Map(previewEventsByDate)
+      next.set(key, ev)
+      previewEventsByDate = next
+    } catch (e) {
+      previewError = formatError(e) || 'Failed to load calendar preview'
+    } finally {
+      previewLoading = false
+    }
+  }
+
+  function toggleDetails() {
+    detailsOpen = !detailsOpen
+    if (detailsOpen && !previewLoaded) void loadPreviewForDate(previewDate)
+  }
+  function shiftPreviewDay(deltaDays: number) {
+    const next = new Date(
+      previewDate.getFullYear(),
+      previewDate.getMonth(),
+      previewDate.getDate() + deltaDays,
+    )
+    previewDate = next
+    if (!previewEventsByDate.has(dayKey(next))) void loadPreviewForDate(next)
+  }
+
+  // ── Mini day-grid layout ───────────────────────────────────
+  // Full 24-hour grid, vertically scrollable.  The viewport caps
+  // height at ~9 hours so the panel stays compact, and on first
+  // expand we auto-scroll the proposed slot near the top of the
+  // viewport — keeps overlapping events visible without forcing
+  // the user to hunt for the meeting in question.
+  const HOUR_PX = 32
+  const PREVIEW_VIEWPORT_PX = 280
+  const PREVIEW_TOTAL_PX = 24 * HOUR_PX
+
+  /** Local-midnight of the currently-displayed day. */
+  let previewDayStart = $derived(
+    new Date(
+      previewDate.getFullYear(),
+      previewDate.getMonth(),
+      previewDate.getDate(),
+    ),
+  )
+  let previewDayEnd = $derived.by(() => {
+    const d = new Date(previewDayStart)
+    d.setDate(d.getDate() + 1)
+    return d
+  })
+  function minutesFromDayStart(iso: string, dayStart: Date): number {
+    return (new Date(iso).getTime() - dayStart.getTime()) / 60000
+  }
+  /** Top + height (px) on the full-day axis, clamped to the
+   *  visible 24h window of `previewDayStart`.  Events that
+   *  spill in from the previous day clamp to top:0, and events
+   *  that bleed past midnight clamp to the bottom — instead of
+   *  silently dropping. */
+  function blockGeometry(
+    startISO: string,
+    endISO: string,
+  ): { top: number; height: number } | null {
+    const s = Math.max(0, minutesFromDayStart(startISO, previewDayStart))
+    const e = Math.min(
+      24 * 60,
+      minutesFromDayStart(endISO, previewDayStart),
+    )
+    if (e <= s) return null
+    return {
+      top: (s / 60) * HOUR_PX,
+      height: ((e - s) / 60) * HOUR_PX,
+    }
+  }
+  /** True iff the invite's slot intersects the day currently
+   *  being previewed.  When the user has navigated to a
+   *  different day with the arrows, the proposed slot is
+   *  hidden because it doesn't belong on that day. */
+  let proposedOnPreviewedDay = $derived.by(() => {
+    const start = new Date(invite.start).getTime()
+    const end = new Date(invite.end).getTime()
+    return (
+      end > previewDayStart.getTime() && start < previewDayEnd.getTime()
+    )
+  })
+
+  /** Localised "Wed, Apr 29" label for the day currently
+   *  shown in the preview — drives the centre label between
+   *  the prev/next day arrows. */
+  let previewDayLabel = $derived(
+    previewDate.toLocaleDateString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    }),
+  )
+
+  // Auto-scroll the preview to the proposed slot the first time
+  // the user opens the details panel, then once again whenever
+  // they navigate to a different invite (different uid).  Avoids
+  // both (a) opening on the 00:00–08:00 dead zone and (b)
+  // re-snapping if the user manually scrolls within the panel.
+  let previewScrollEl: HTMLDivElement | undefined = $state()
+  // Track the (uid, day) pair we last auto-scrolled for so
+  // arrow-day-navigation re-centers the viewport on the new
+  // day's "interesting hours" (proposed slot if present, else
+  // 08:00 as a sensible default), but doesn't fight the user
+  // if they manually scroll within a day.
+  let lastScrollKey = $state<string | null>(null)
+  $effect(() => {
+    if (!detailsOpen) {
+      lastScrollKey = null
+      return
+    }
+    if (!previewScrollEl) return
+    const key = `${invite.uid}|${dayKey(previewDate)}`
+    if (lastScrollKey === key) return
+    let targetMin: number
+    if (proposedOnPreviewedDay) {
+      targetMin = Math.max(
+        0,
+        minutesFromDayStart(invite.start, previewDayStart),
+      )
+    } else {
+      targetMin = 8 * 60
+    }
+    const target = Math.max(0, (targetMin / 60) * HOUR_PX - HOUR_PX)
+    previewScrollEl.scrollTop = target
+    lastScrollKey = key
+  })
+
+  /** Display name preference for an attendee chip: CN if given,
+   *  else the local-part of the email so a list of bare emails
+   *  doesn't fill the panel with redundant "@domain" suffixes. */
+  function attendeeName(a: InviteAttendee): string {
+    if (a.common_name && a.common_name.trim()) return a.common_name.trim()
+    const at = a.email.indexOf('@')
+    return at > 0 ? a.email.slice(0, at) : a.email
+  }
+  /** `HH:MM` from an ISO timestamp, in local time — matches the
+   *  display the rest of the card uses for `timeRange`. */
+  function fmtClock(iso: string): string {
+    return new Date(iso).toLocaleTimeString(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  }
+  let proposedRangeLabel = $derived(`${fmtClock(invite.start)}–${fmtClock(invite.end)}`)
+
+  /** Build an inline style string for an existing event block
+   *  using the calendar's identity colour, mirroring the
+   *  agenda grid's `.ev-block` palette so the previews share
+   *  visual language with the main calendar.  Inline (not
+   *  scoped CSS) to keep the styling immune to compound-class
+   *  scoping edge cases. */
+  function existingEventStyle(colour: string, status: string | null): string {
+    const c = colour
+    const s = (status ?? '').toUpperCase()
+    if (s === 'DECLINED') {
+      return [
+        `background: transparent`,
+        `border: 1.5px solid ${c}`,
+        `color: ${c}`,
+        `text-decoration: line-through`,
+        `opacity: 0.85`,
+      ].join('; ')
+    }
+    const base = [
+      `background-color: color-mix(in srgb, ${c} 22%, transparent)`,
+      `border: 1px solid color-mix(in srgb, ${c} 45%, transparent)`,
+      `box-shadow: inset 3px 0 0 0 ${c}`,
+      `color: ${c}`,
+      `padding-left: 8px`,
+    ]
+    if (s === 'TENTATIVE') {
+      base.push(
+        `background-image: repeating-linear-gradient(45deg, transparent 0, transparent 6px, color-mix(in srgb, ${c} 35%, transparent) 6px, color-mix(in srgb, ${c} 35%, transparent) 8px)`,
+      )
+    }
+    return base.join('; ')
+  }
+
+  /** Recover the bare VEVENT UID from a composite calendar
+   *  event id (`{nc_id}::{cal_path}::{uid}` or
+   *  `{…}::{uid}::occ::{epoch}`).  Used to detect whether the
+   *  proposed invite already lives on one of the user's
+   *  calendars. */
+  function eventUid(id: string): string {
+    const parts = id.split('::')
+    return parts[2] ?? ''
+  }
+  /** When the proposed event is *already* on a visible
+   *  calendar (e.g. the user accepted earlier), pull that row
+   *  out of the preview list so we can render the proposed
+   *  slot in its real calendar colour + PARTSTAT visual
+   *  instead of the generic "primary outline" placeholder. */
+  let matchedExistingEvent = $derived(
+    previewEvents.find((ev) => eventUid(ev.id) === invite.uid) ?? null,
+  )
+  let proposedExistsInCalendar = $derived(matchedExistingEvent !== null)
+  let proposedCalendarColor = $derived(
+    matchedExistingEvent
+      ? (calendarsById.get(eventCalendarId(matchedExistingEvent.id))?.color ?? '#2bb0ed')
+      : null,
+  )
+
+  /** Emoji indicator for an attendee's PARTSTAT — matches the
+   *  same alphabet used by the RSVP dropdown in EventEditor so
+   *  the visual language carries across the app. */
+  function attendeeStatusEmoji(a: InviteAttendee): string {
+    const s = (a.status ?? 'NEEDS-ACTION').toUpperCase()
+    if (s === 'ACCEPTED') return '✅'
+    if (s === 'DECLINED') return '❌'
+    if (s === 'TENTATIVE') return '❓'
+    return '❔'
+  }
 
   // Fetch calendars + the user's default-calendar setting on
   // mount.  Both go through Tauri.  We don't gate the card on
@@ -485,6 +805,10 @@
     <p class="text-xs text-red-500 mt-2">{error}</p>
   {/if}
 
+  <!-- RSVP action area — placed above the "More info" /
+       day-preview block so the answer affordance stays at the
+       top of the card and the user can reply without scrolling
+       past the (optional, expandable) details panel. -->
   {#if isCancel}
     <!-- CANCEL flavour.  The organiser dropped the meeting; we
          offer a single button to remove the local copy.  Once
@@ -571,5 +895,221 @@
       </button>
     </div>
   {/if}
+
+  <!-- "More info" toggle.  Cheap to render closed — the
+       attendee chip list and the day-preview grid only mount
+       when the user opens the panel, and the events for the
+       grid are fetched lazily on first expand. -->
+  <button
+    type="button"
+    class="mt-2 inline-flex items-center gap-1 text-xs text-primary-600 dark:text-primary-300 hover:text-primary-700 dark:hover:text-primary-200"
+    onclick={toggleDetails}
+    aria-expanded={detailsOpen}
+  >
+    <span class="transition-transform inline-block {detailsOpen ? 'rotate-90' : ''}">▸</span>
+    {detailsOpen ? 'Hide details' : 'More info'}
+  </button>
+
+  {#if detailsOpen}
+    <div class="mt-3 pt-3 border-t border-surface-300/40 dark:border-surface-600/40 space-y-3">
+      <!-- Attendee chips — read-only mirror of EventEditor's
+           chip list, but stripped of the photo + edit affordances
+           so the panel stays compact.  Status dot encodes the
+           PARTSTAT at a glance: green=accepted, amber=tentative,
+           red=declined, grey=no response. -->
+      {#if invite.attendees.length > 0}
+        <div>
+          <div class="text-[10px] uppercase tracking-wider text-surface-500 mb-1.5">
+            Attendees ({invite.attendees.length})
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            {#each invite.attendees as a (a.email)}
+              <span
+                class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs bg-surface-200 dark:bg-surface-700"
+                title={a.email + (a.status ? ` — ${a.status.toLowerCase()}` : '')}
+              >
+                <span class="text-[11px] leading-none shrink-0" aria-hidden="true">{attendeeStatusEmoji(a)}</span>
+                <span class="truncate max-w-[180px]">{attendeeName(a)}</span>
+              </span>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      <!-- Day preview grid.  Full 24h axis with even hour-row
+           spacing (CSS grid), scrollable, with prev/next-day
+           arrows around a centred date label.  Events render on
+           top via an absolutely-positioned overlay so they can
+           span arbitrary minutes inside an hour cell. -->
+      <div>
+        <div class="text-[10px] uppercase tracking-wider text-surface-500 mb-1.5">Your day</div>
+        <!-- Day navigation: ◀ <date> ▶ — keeps the date as the
+             visual anchor between the arrows so the user reads
+             a clear "where am I" line at a glance. -->
+        <div class="flex items-center justify-center gap-2 mb-2 text-xs">
+          <button
+            type="button"
+            class="w-7 h-7 rounded-md flex items-center justify-center border border-surface-300 dark:border-surface-600 bg-surface-100 dark:bg-surface-800 text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 hover:border-surface-400 dark:hover:border-surface-500 transition-colors"
+            aria-label="Previous day"
+            title="Previous day"
+            onclick={() => shiftPreviewDay(-1)}
+          >‹</button>
+          <span class="font-medium text-surface-700 dark:text-surface-200 min-w-[120px] text-center">
+            {previewDayLabel}
+          </span>
+          <button
+            type="button"
+            class="w-7 h-7 rounded-md flex items-center justify-center border border-surface-300 dark:border-surface-600 bg-surface-100 dark:bg-surface-800 text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 hover:border-surface-400 dark:hover:border-surface-500 transition-colors"
+            aria-label="Next day"
+            title="Next day"
+            onclick={() => shiftPreviewDay(1)}
+          >›</button>
+        </div>
+
+        {#if previewLoading && !previewLoaded}
+          <p class="text-xs text-surface-500 italic">Loading…</p>
+        {:else if previewError}
+          <p class="text-xs text-red-500">{previewError}</p>
+        {:else}
+          {@const proposedGeom = proposedOnPreviewedDay ? blockGeometry(invite.start, invite.end) : null}
+          <div
+            bind:this={previewScrollEl}
+            class="relative rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50/60 dark:bg-surface-900/40 overflow-y-auto"
+            style="max-height: {PREVIEW_VIEWPORT_PX}px;"
+          >
+            <!-- Hour rows: 24 fixed-height grid rows guarantee
+                 perfectly even spacing regardless of how the
+                 absolute event overlay paints on top of them. -->
+            <div
+              class="relative grid"
+              style="grid-template-rows: repeat(24, {HOUR_PX}px); height: {PREVIEW_TOTAL_PX}px;"
+            >
+              {#each Array.from({ length: 24 }, (_, i) => i) as h (h)}
+                <div class="border-t border-surface-200/70 dark:border-surface-700/70 relative">
+                  <span class="absolute left-1 top-0.5 text-[9px] text-surface-400 leading-none">
+                    {String(h).padStart(2, '0')}:00
+                  </span>
+                </div>
+              {/each}
+
+              <!-- Event overlay layer: absolute children
+                   positioned against the grid container above. -->
+              <div class="absolute inset-0 pointer-events-none">
+                <!-- Existing events on the left half.  Each
+                     block carries the start–end time inline in
+                     the top-right corner if it's tall enough
+                     (≥28px), and always exposes the times via
+                     the hover tooltip. -->
+                {#each previewEvents as ev (ev.id)}
+                  {#if eventUid(ev.id) !== invite.uid}
+                    {@const g = blockGeometry(ev.start, ev.end)}
+                    {#if g}
+                      {@const cal = calendarsById.get(eventCalendarId(ev.id))}
+                      {@const colour = cal?.color ?? '#2bb0ed'}
+                      {@const range = `${fmtClock(ev.start)}–${fmtClock(ev.end)}`}
+                      {@const showInline = g.height >= 28}
+                      {@const partstat = userPartstatOn(ev)}
+                      <div
+                        class="absolute rounded-sm text-[10px] overflow-hidden pointer-events-auto"
+                        style="left: 36px; right: 50%; top: {g.top}px; height: {g.height}px; {existingEventStyle(colour, partstat)}"
+                        title={`${ev.summary || '(no title)'} — ${range}${cal ? ` · ${cal.display_name}` : ''}${partstat && partstat !== 'ACCEPTED' ? ` (${partstat.toLowerCase()})` : ''}`}
+                      >
+                        {#if showInline}
+                          <div class="truncate font-medium leading-tight pr-10">{ev.summary || '(no title)'}</div>
+                          <span
+                            class="absolute top-0.5 right-1 text-[9px] font-mono tabular-nums leading-none text-surface-500 dark:text-surface-400"
+                          >{range}</span>
+                        {:else}
+                          <div class="truncate leading-tight">{ev.summary || '(no title)'}</div>
+                        {/if}
+                      </div>
+                    {/if}
+                  {/if}
+                {/each}
+
+                <!-- Proposed event on the right half.  Inline
+                     styles only — no compound scoped classes —
+                     so the box is guaranteed to render with a
+                     visible border + fill regardless of CSS
+                     scoping quirks.  Two flavours:
+                     - already-on-calendar → calendar-coloured
+                       fill (or stripes / declined-border per
+                       the user's PARTSTAT)
+                     - not-on-calendar → primary dashed border
+                       + light primary tint to signal "what you
+                       would be adding". -->
+                {#if proposedGeom}
+                  {@const tooltip = proposedExistsInCalendar
+                    ? `${invite.summary || '(untitled)'} — from this invite (already on your calendar, ${respondedAs ? respondedAs.toLowerCase() : 'accepted'})`
+                    : `${invite.summary || '(untitled)'} — proposed`}
+                  {@const showInlineProp = proposedGeom.height >= 28}
+                  {#if proposedExistsInCalendar}
+                    {@const c = proposedCalendarColor ?? '#2bb0ed'}
+                    <!-- Existing-on-calendar branch: render in
+                         the matched calendar's identity colour
+                         (transparent fill + bordered + accent
+                         bar) and stamp an "✉ Invite" pill in the
+                         top-right corner so the user can
+                         immediately tell *this is the meeting
+                         the email is about*, distinguishing it
+                         from any neighbouring event in the same
+                         calendar. -->
+                    <div
+                      class="absolute rounded-sm text-[10px] font-medium overflow-hidden pointer-events-auto ring-2 ring-primary-500/70"
+                      style="left: 50%; right: 4px; top: {proposedGeom.top}px; height: {proposedGeom.height}px; {existingEventStyle(c, respondedAs)}"
+                      title={tooltip}
+                    >
+                      {#if showInlineProp}
+                        <div class="truncate leading-tight pr-10">{invite.summary || '(untitled)'}</div>
+                        <span
+                          class="absolute top-0.5 right-1 text-[9px] font-mono tabular-nums leading-none text-surface-500 dark:text-surface-400"
+                        >{proposedRangeLabel}</span>
+                      {:else}
+                        <div class="truncate leading-tight">{invite.summary || '(untitled)'}</div>
+                      {/if}
+                      <!-- Invite badge — primary-tinted, sits at
+                           the bottom-right so it doesn't clash
+                           with the time pill on tall blocks and
+                           still surfaces on short ones. -->
+                      <span
+                        class="absolute bottom-0 right-0 text-[8px] uppercase tracking-wider font-bold px-1 py-px rounded-tl bg-primary-500 text-white leading-none"
+                        title="Matches this invite"
+                      >✉ invite</span>
+                    </div>
+                  {:else}
+                    <!-- Not-on-calendar branch: dashed primary
+                         border + light primary tint signals
+                         "this is what you would be adding". -->
+                    <div
+                      class="absolute rounded-sm text-[10px] font-medium border-2 border-dashed border-primary-500 bg-primary-500/15 text-primary-900 dark:text-primary-100 overflow-hidden pointer-events-auto"
+                      style="left: 50%; right: 4px; top: {proposedGeom.top}px; height: {proposedGeom.height}px;"
+                      title={tooltip}
+                    >
+                      {#if showInlineProp}
+                        <div class="truncate leading-tight px-1 pr-10">{invite.summary || '(untitled)'}</div>
+                        <span
+                          class="absolute top-0.5 right-1 text-[9px] font-mono tabular-nums leading-none text-surface-500 dark:text-surface-400"
+                        >{proposedRangeLabel}</span>
+                      {:else}
+                        <div class="truncate leading-tight px-1">{invite.summary || '(untitled)'}</div>
+                      {/if}
+                    </div>
+                  {/if}
+                {/if}
+
+                {#if previewEvents.length === 0 && previewLoaded && !proposedGeom}
+                  <div class="absolute inset-0 flex items-center justify-center text-[11px] text-surface-400 italic">
+                    Nothing on this day
+                  </div>
+                {/if}
+              </div>
+            </div>
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
 </div>
 {/if}
+

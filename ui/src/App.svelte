@@ -657,6 +657,18 @@
   }
   const isDraftsFolder = $derived(isDraftsFolderName(selectedFolder))
 
+  /** Same heuristic for the Sent folder — used to suppress the
+   *  RSVP card on outbound invites the user themselves sent
+   *  (you don't reply to your own meeting requests).  Same
+   *  caveat as the Drafts hint: name-based until the backend
+   *  surfaces `\Sent` special-use through the API. */
+  const SENT_NAME_HINTS = ['sent', 'sent items', 'gesendet', 'envoyés', 'envoyes', 'inviati', 'enviados']
+  function isSentFolderName(name: string): boolean {
+    const lower = name.toLowerCase()
+    return SENT_NAME_HINTS.some((h) => lower.includes(h))
+  }
+  const isSentFolder = $derived(isSentFolderName(selectedFolder))
+
   /** Open a draft from the Drafts folder back in Compose for editing.
    *  Mirrors the reply/forward entry points but additionally:
    *    - downloads every attachment's bytes so the user can re-send
@@ -945,6 +957,7 @@
         onforward={onForward}
         oncreatetalk={onCreateTalkFromMail}
         isDraftsFolder={isDraftsFolder}
+        isSentFolder={isSentFolder}
         oneditdraft={onEditDraft}
         onmessageremoved={onMessageRemoved}
       />
