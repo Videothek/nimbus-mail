@@ -70,6 +70,7 @@
     name: string
     members: { displayName: string; email: string }[]
     hiddenFromAutocomplete: boolean
+    emoji: string | null
   }
   let suggestions = $state<Suggestion[]>([])
   let open = $state(false)
@@ -335,7 +336,7 @@
               : m.source === 'team'
                 ? 'bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200'
                 : 'bg-success-500/20 text-success-600 dark:text-success-300'}
-            {@const icon = m.source === 'category' ? '🏷️' : m.source === 'team' ? '⚡' : '📨'}
+            {@const icon = m.emoji || (m.source === 'category' ? '🏷️' : m.source === 'team' ? '⚡' : '📨')}
             <div class="w-8 h-8 rounded-full bg-primary-500/20 text-primary-600 dark:text-primary-300
                         flex items-center justify-center text-base font-semibold flex-shrink-0">
               {icon}

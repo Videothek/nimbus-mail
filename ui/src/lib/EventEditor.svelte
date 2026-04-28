@@ -496,6 +496,7 @@
     name: string
     members: { displayName: string; email: string }[]
     hiddenFromAutocomplete: boolean
+    emoji: string | null
   }
   type Suggestion =
     | { kind: 'contact'; contact: Contact }
@@ -1521,7 +1522,7 @@
                     </div>
                   {:else}
                     {@const list = s.list}
-                    {@const icon = list.source === 'team' ? '⚡' : list.source === 'manual' ? '📨' : '🏷️'}
+                    {@const icon = list.emoji || (list.source === 'team' ? '⚡' : list.source === 'manual' ? '📨' : '🏷️')}
                     {@const memberCount = list.members.filter((m) => m.email).length}
                     <div class="w-8 h-8 rounded-full bg-primary-500/15 text-primary-600 dark:text-primary-300 flex items-center justify-center text-base flex-shrink-0">
                       {icon}
