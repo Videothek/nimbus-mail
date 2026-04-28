@@ -152,6 +152,7 @@
     name: string
     members: { displayName: string; email: string }[]
     hiddenFromAutocomplete: boolean
+    emoji: string | null
   }
   type ContactsTab = 'contacts' | 'lists'
   let activeTab = $state<ContactsTab>('contacts')
@@ -549,6 +550,57 @@
       )
     } catch (e) {
       formError = formatError(e) || 'Failed to toggle hide flag'
+    }
+  }
+
+  async function renameMailingList(ml: MailingListView) {
+    const next = window.prompt('Rename mailing list', ml.name)?.trim()
+    if (!next || next === ml.name) return
+    try {
+      await invoke('rename_mailing_list', { id: ml.id, newName: next })
+      // Renaming a category changes the row's id (cat:<old> →
+      // cat:<new>); refetch is the cleanest way to pick up the
+      // new id while keeping the per-row state in sync.
+      mailingLists = await invoke<MailingListView[]>('list_mailing_lists')
+      if (ml.source === 'category') {
+        // Categories drive the Contact Groups list too.
+        await reloadContacts()
+        if (ml.id === `cat:${ml.name}` && selectedListId === ml.id) {
+          selectedListId = `cat:${next}`
+        }
+      } else if (selectedListId === ml.id) {
+        // Manual list keeps its id (it's `list:<vcardUid>`).
+      }
+    } catch (e) {
+      formError = formatError(e) || 'Failed to rename mailing list'
+    }
+  }
+
+  async function changeMailingListEmoji(ml: MailingListView) {
+    const next = window.prompt('Emoji for this mailing list (single character)', ml.emoji ?? '')
+    if (next === null) return
+    const trimmed = next.trim()
+    try {
+      await invoke('set_mailing_list_emoji', {
+        id: ml.id,
+        emoji: trimmed || null,
+      })
+      mailingLists = mailingLists.map((m) =>
+        m.id === ml.id ? { ...m, emoji: trimmed || null } : m,
+      )
+    } catch (e) {
+      formError = formatError(e) || 'Failed to set emoji'
+    }
+  }
+
+  async function clearMailingListEmoji(ml: MailingListView) {
+    try {
+      await invoke('set_mailing_list_emoji', { id: ml.id, emoji: null })
+      mailingLists = mailingLists.map((m) =>
+        m.id === ml.id ? { ...m, emoji: null } : m,
+      )
+    } catch (e) {
+      formError = formatError(e) || 'Failed to clear emoji'
     }
   }
 
@@ -1138,10 +1190,10 @@
                 }
               }}
             ></button>
-            <span class="w-5 text-center">{sourceIcon}</span>
+            <span class="w-5 text-center">{ml.emoji || sourceIcon}</span>
             <span class="flex-1 truncate {hidden ? 'text-surface-400 dark:text-surface-500' : ''}">{ml.name}</span>
             <span class="text-xs text-surface-500">{ml.members.filter((m) => m.email).length}</span>
-            {#if ml.source === 'manual'}
+            {#if ml.source !== 'team'}
               <button
                 class="w-5 h-5 rounded text-surface-500 hover:bg-surface-300 dark:hover:bg-surface-600 leading-none shrink-0"
                 title="More actions"
@@ -1156,7 +1208,7 @@
               >⋯</button>
             {/if}
           </div>
-          {#if openMenuFor === `ml:${ml.id}` && ml.source === 'manual'}
+          {#if openMenuFor === `ml:${ml.id}` && ml.source !== 'team'}
             <div
               class="z-30 w-56 py-1 rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
               style="position: fixed; top: {menuTop}px; left: {menuLeft}px;"
@@ -1166,9 +1218,25 @@
               onkeydown={(e) => { if (e.key === 'Escape') openMenuFor = null }}
             >
               <button
-                class="w-full text-left px-3 py-2 hover:bg-error-500/10 text-error-500"
-                onclick={() => { openMenuFor = null; void deleteManualMailingList(ml.id, ml.name) }}
-              >Delete</button>
+                class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
+                onclick={() => { openMenuFor = null; void renameMailingList(ml) }}
+              >Rename</button>
+              <button
+                class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
+                onclick={() => { openMenuFor = null; void changeMailingListEmoji(ml) }}
+              >{ml.emoji ? 'Change emoji' : 'Set emoji'}</button>
+              {#if ml.emoji}
+                <button
+                  class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
+                  onclick={() => { openMenuFor = null; void clearMailingListEmoji(ml) }}
+                >Remove emoji</button>
+              {/if}
+              {#if ml.source === 'manual'}
+                <button
+                  class="w-full text-left px-3 py-2 hover:bg-error-500/10 text-error-500"
+                  onclick={() => { openMenuFor = null; void deleteManualMailingList(ml.id, ml.name) }}
+                >Delete</button>
+              {/if}
             </div>
           {/if}
         </div>
