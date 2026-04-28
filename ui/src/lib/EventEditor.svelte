@@ -490,15 +490,35 @@
   // suggestion adds the contact directly to the role bucket
   // instead of stuffing its address into a comma-separated
   // string.
+  interface MailingListSuggestion {
+    id: string
+    source: 'category' | 'team' | 'manual'
+    name: string
+    members: { displayName: string; email: string }[]
+    hiddenFromAutocomplete: boolean
+  }
+  type Suggestion =
+    | { kind: 'contact'; contact: Contact }
+    | { kind: 'list'; list: MailingListSuggestion }
   let activeSuggestionRole = $state<Role | null>(null)
-  let dropdownSuggestions = $state<Contact[]>([])
+  let dropdownSuggestions = $state<Suggestion[]>([])
   let activeIndex = $state(0)
   const SEARCH_DEBOUNCE_MS = 150
   const SUGGESTION_LIMIT = 8
   let searchDebounce: number | null = null
+  /** Mailing lists (categories + manual KIND:group + Teams),
+   *  fetched once and filtered client-side on every keystroke.
+   *  Hidden-from-autocomplete rows stay out of the dropdown. */
+  let allLists = $state<MailingListSuggestion[]>([])
+  void invoke<MailingListSuggestion[]>('list_mailing_lists')
+    .then((rows) => {
+      allLists = rows.filter((m) => !m.hiddenFromAutocomplete)
+    })
+    .catch((e) => console.warn('list_mailing_lists failed', e))
 
   function runSuggestionSearch(role: Role, query: string) {
-    if (query.trim().length < 2) {
+    const q = query.trim()
+    if (q.length < 2) {
       dropdownSuggestions = []
       activeSuggestionRole = null
       return
@@ -507,15 +527,22 @@
     searchDebounce = window.setTimeout(async () => {
       try {
         const rows = await invoke<Contact[]>('search_contacts', {
-          query,
+          query: q,
           limit: SUGGESTION_LIMIT,
         })
         // Stale-response guard: only commit if this role is
         // still the focused one.
-        if (activeSuggestionRole === role) {
-          dropdownSuggestions = rows
-          activeIndex = 0
-        }
+        if (activeSuggestionRole !== role) return
+        const ql = q.toLowerCase()
+        const listHits = allLists
+          .filter((m) => m.name.toLowerCase().includes(ql))
+          .slice(0, SUGGESTION_LIMIT)
+        const merged: Suggestion[] = [
+          ...listHits.map((m) => ({ kind: 'list' as const, list: m })),
+          ...rows.map((c) => ({ kind: 'contact' as const, contact: c })),
+        ]
+        dropdownSuggestions = merged.slice(0, SUGGESTION_LIMIT)
+        activeIndex = 0
       } catch (e) {
         console.warn('search_contacts failed', e)
         dropdownSuggestions = []
@@ -523,40 +550,61 @@
     }, SEARCH_DEBOUNCE_MS)
   }
 
-  /** Add a contact directly to a role bucket via the
-   *  suggestion dropdown.  Skips if the email is already in
-   *  any bucket. */
-  function pickSuggestion(role: Role, c: Contact) {
-    const addr = primaryEmail(c)
-    if (!addr) return
-    const exists = [...requiredAttendees, ...optionalAttendees, ...chairAttendees].some(
-      (a) => a.email.toLowerCase() === addr.toLowerCase(),
-    )
-    // Always clear the input + close the dropdown — even when
-    // the contact's already added, so the user gets clear
-    // feedback ("nothing happened, but the field reset").
+  function clearSuggestionInput(role: Role) {
     if (role === 'REQ-PARTICIPANT') requiredInput = ''
     else if (role === 'OPT-PARTICIPANT') optionalInput = ''
     else chairInput = ''
     activeSuggestionRole = null
     dropdownSuggestions = []
-    if (exists) return
-    const att: EventAttendee = {
-      email: addr,
-      common_name: c.display_name || null,
-      role,
-    }
+  }
+
+  function appendAttendees(role: Role, atts: EventAttendee[]) {
+    if (atts.length === 0) return
     if (role === 'REQ-PARTICIPANT') {
-      requiredAttendees = [...requiredAttendees, att]
+      requiredAttendees = [...requiredAttendees, ...atts]
     } else if (role === 'OPT-PARTICIPANT') {
-      optionalAttendees = [...optionalAttendees, att]
+      optionalAttendees = [...optionalAttendees, ...atts]
     } else {
-      chairAttendees = [...chairAttendees, att]
+      chairAttendees = [...chairAttendees, ...atts]
     }
-    // Mirror into the by-email cache so the chip avatar
-    // resolves immediately (don't wait for the cache reload).
-    contactsByEmail.set(addr.toLowerCase(), c)
-    contactsByEmail = new Map(contactsByEmail)
+  }
+
+  /** Add a contact or mailing list directly to a role bucket
+   *  via the suggestion dropdown.  Skips entries already in
+   *  any bucket; lists expand member-by-member. */
+  function pickSuggestion(role: Role, s: Suggestion) {
+    if (s.kind === 'contact') {
+      const c = s.contact
+      const addr = primaryEmail(c)
+      clearSuggestionInput(role)
+      if (!addr) return
+      const exists = [...requiredAttendees, ...optionalAttendees, ...chairAttendees].some(
+        (a) => a.email.toLowerCase() === addr.toLowerCase(),
+      )
+      if (exists) return
+      appendAttendees(role, [{ email: addr, common_name: c.display_name || null, role }])
+      // Mirror into the by-email cache so the chip avatar
+      // resolves immediately (don't wait for the cache reload).
+      contactsByEmail.set(addr.toLowerCase(), c)
+      contactsByEmail = new Map(contactsByEmail)
+    } else {
+      const list = s.list
+      clearSuggestionInput(role)
+      const seen = new Set(
+        [...requiredAttendees, ...optionalAttendees, ...chairAttendees].map((a) =>
+          a.email.toLowerCase(),
+        ),
+      )
+      const adds: EventAttendee[] = []
+      for (const m of list.members) {
+        if (!m.email) continue
+        const key = m.email.toLowerCase()
+        if (seen.has(key)) continue
+        seen.add(key)
+        adds.push({ email: m.email, common_name: m.displayName || null, role })
+      }
+      appendAttendees(role, adds)
+    }
   }
 
   /** Parse a single piece into an attendee with the given role.
@@ -1436,8 +1484,7 @@
               class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-700 rounded-md shadow-lg"
               role="listbox"
             >
-              {#each dropdownSuggestions as c, i (c.id)}
-                {@const url = photoUrl(c)}
+              {#each dropdownSuggestions as s, i (s.kind === 'contact' ? s.contact.id : s.list.id)}
                 <li
                   role="option"
                   aria-selected={i === activeIndex}
@@ -1446,29 +1493,46 @@
                     : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
                   onmousedown={(e) => {
                     e.preventDefault()
-                    pickSuggestion(role, c)
+                    pickSuggestion(role, s)
                   }}
                   onmouseenter={() => (activeIndex = i)}
                 >
-                  {#if url}
-                    <img
-                      src={url}
-                      alt=""
-                      loading="lazy"
-                      class="w-8 h-8 rounded-full object-cover flex-shrink-0"
-                    />
+                  {#if s.kind === 'contact'}
+                    {@const c = s.contact}
+                    {@const url = photoUrl(c)}
+                    {#if url}
+                      <img
+                        src={url}
+                        alt=""
+                        loading="lazy"
+                        class="w-8 h-8 rounded-full object-cover flex-shrink-0"
+                      />
+                    {:else}
+                      <div class="w-8 h-8 rounded-full bg-surface-300 dark:bg-surface-700 flex items-center justify-center text-xs font-semibold flex-shrink-0">
+                        {initials(c.display_name)}
+                      </div>
+                    {/if}
+                    <div class="flex-1 min-w-0">
+                      <p class="font-medium truncate">{c.display_name}</p>
+                      <p class="text-xs text-surface-500 truncate">
+                        {primaryEmail(c)}
+                        {#if c.organization}· {c.organization}{/if}
+                      </p>
+                    </div>
                   {:else}
-                    <div class="w-8 h-8 rounded-full bg-surface-300 dark:bg-surface-700 flex items-center justify-center text-xs font-semibold flex-shrink-0">
-                      {initials(c.display_name)}
+                    {@const list = s.list}
+                    {@const icon = list.source === 'team' ? '⚡' : list.source === 'manual' ? '📨' : '🏷️'}
+                    {@const memberCount = list.members.filter((m) => m.email).length}
+                    <div class="w-8 h-8 rounded-full bg-primary-500/15 text-primary-600 dark:text-primary-300 flex items-center justify-center text-base flex-shrink-0">
+                      {icon}
+                    </div>
+                    <div class="flex-1 min-w-0">
+                      <p class="font-medium truncate">{list.name}</p>
+                      <p class="text-xs text-surface-500 truncate">
+                        {memberCount} member{memberCount === 1 ? '' : 's'} · {list.source}
+                      </p>
                     </div>
                   {/if}
-                  <div class="flex-1 min-w-0">
-                    <p class="font-medium truncate">{c.display_name}</p>
-                    <p class="text-xs text-surface-500 truncate">
-                      {primaryEmail(c)}
-                      {#if c.organization}· {c.organization}{/if}
-                    </p>
-                  </div>
                 </li>
               {/each}
             </ul>
