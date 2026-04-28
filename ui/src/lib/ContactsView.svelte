@@ -173,6 +173,43 @@
    *  since the IPC takes the composite id, not the bare UID. */
   let draggedContactId = $state<string | null>(null)
   let dragHoverCategory = $state<string | null>(null)
+  /** Selected mailing list on the Lists tab — the middle
+   *  column shows its members. */
+  let selectedListId = $state<string | null>(null)
+  /** Free-text filter for the Lists tab sidebar. */
+  let listsQuery = $state('')
+  /** Which row's three-dot menu is open (Lists tab + Contacts
+   *  tab Kontaktgruppen).  String id keys keep the lookup
+   *  cheap and let one popover replace another by simply
+   *  reassigning. */
+  let openMenuFor = $state<string | null>(null)
+  // Close any open three-dot menu when the user clicks
+  // anywhere outside one — same idiom we use elsewhere for
+  // popover dismissal.  The menu's own `onclick` calls
+  // `e.stopPropagation()` so item picks don't immediately
+  // close before their handler fires.
+  $effect(() => {
+    if (!openMenuFor) return
+    const onDoc = () => (openMenuFor = null)
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  })
+  /** Mailing-list rows filtered by the search query, partitioned
+   *  by source so each section can render its own header. */
+  const filteredMailingLists = $derived.by(() => {
+    const q = listsQuery.trim().toLowerCase()
+    const all = q
+      ? mailingLists.filter((m) => m.name.toLowerCase().includes(q))
+      : mailingLists
+    return {
+      manual: all.filter((m) => m.source === 'manual'),
+      category: all.filter((m) => m.source === 'category'),
+      team: all.filter((m) => m.source === 'team'),
+    }
+  })
+  const selectedList = $derived(
+    selectedListId ? mailingLists.find((m) => m.id === selectedListId) ?? null : null,
+  )
 
   async function loadSidebarData() {
     // Addressbooks: list per NC account, dedupe by composite
@@ -375,11 +412,12 @@
     const q = query.trim().toLowerCase()
     let scope = contacts
     if (selectedScope.startsWith('addressbook:')) {
-      const path = selectedScope.slice('addressbook:'.length)
-      // Each cached contact carries its CardDAV addressbook
-      // path; comparing equality is the strict version of
-      // "show me only this book's entries".
-      scope = contacts.filter((c) => c.addressbook === path)
+      const name = selectedScope.slice('addressbook:'.length)
+      // The cache stores the addressbook *name* (the last
+      // segment of the CardDAV URL — e.g. "contacts") as each
+      // contact's `addressbook` value, so filtering compares
+      // names, not full URLs.
+      scope = contacts.filter((c) => c.addressbook === name)
     } else if (selectedScope.startsWith('category:')) {
       const name = selectedScope.slice('category:'.length)
       scope = contacts.filter((c) => c.categories?.includes(name))
@@ -855,31 +893,173 @@
         >
           <span class="w-6 text-center">{(c.name || '?').slice(0, 1).toUpperCase()}</span>
           <span class="flex-1 truncate">{c.name}</span>
-          <!-- Per-row "Use as mailing list" swatch — filled
-               primary when on, empty outline when off.  Click
-               toggles WITHOUT propagating to the row's main
-               click handler. -->
-          <button
-            class="w-3 h-3 rounded-sm shrink-0 border transition-colors cursor-pointer mr-1"
-            style={c.useAsMailingList
-              ? `background-color: var(--color-primary-500); border-color: var(--color-primary-500);`
-              : `background-color: transparent; border-color: var(--color-surface-400);`}
-            title={c.useAsMailingList
-              ? 'Currently usable as a mailing list (click to disable)'
-              : 'Currently NOT usable as a mailing list (click to enable)'}
-            aria-label="Toggle use as mailing list"
-            onclick={(e) => {
-              e.stopPropagation()
-              void toggleCategoryAsList(c.name, c.useAsMailingList)
-            }}
-          ></button>
-          <span class="text-xs text-surface-500">{c.memberCount}</span>
+          <span class="text-xs text-surface-500 mr-1">{c.memberCount}</span>
+          <!-- Three-dot menu: rename, delete, toggle "use as
+               mailing list".  Replaces the previous inline
+               swatch — clearer for first-time users since the
+               actions read as labelled words rather than a
+               coloured square. -->
+          <div class="relative shrink-0">
+            <button
+              class="w-5 h-5 rounded text-surface-500 hover:bg-surface-300 dark:hover:bg-surface-600 leading-none"
+              title="More actions"
+              aria-label="Kontaktgruppe actions"
+              onclick={(e) => {
+                e.stopPropagation()
+                openMenuFor = openMenuFor === `cat:${c.name}` ? null : `cat:${c.name}`
+              }}
+            >⋯</button>
+            {#if openMenuFor === `cat:${c.name}`}
+              <div
+                class="absolute right-0 top-6 z-30 w-56 py-1 rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
+                onclick={(e) => e.stopPropagation()}
+                role="menu"
+                tabindex="-1"
+                onkeydown={(e) => { if (e.key === 'Escape') openMenuFor = null }}
+              >
+                <button
+                  class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
+                  onclick={() => { openMenuFor = null; void toggleCategoryAsList(c.name, c.useAsMailingList) }}
+                >
+                  {c.useAsMailingList ? '✓ ' : ''}Use as mailing list
+                </button>
+                <button
+                  class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
+                  onclick={() => { openMenuFor = null; void renameCategory(c.name) }}
+                >Rename…</button>
+                <button
+                  class="w-full text-left px-3 py-2 hover:bg-error-500/10 text-error-500"
+                  onclick={() => { openMenuFor = null; void deleteCategory(c.name) }}
+                >Delete</button>
+              </div>
+            {/if}
+          </div>
         </div>
       {/each}
       {#if categories.length === 0}
         <p class="px-3 py-2 text-xs text-surface-500 italic">
           No Kontaktgruppen yet. Click <span class="font-semibold">+</span> to
           create one — drag contacts onto it after to tag them.
+        </p>
+      {/if}
+    </div>
+    {:else}
+    <!-- Lists tab — sidebar shows Manual / Categories /
+         Teams sections, each with a three-dot menu per row.
+         Search field at the top filters across all sections. -->
+    <div class="px-3 pt-3 flex flex-col gap-2">
+      <input
+        type="search"
+        class="input"
+        placeholder="Search lists"
+        bind:value={listsQuery}
+      />
+      <button
+        class="btn preset-filled-primary-500 text-sm"
+        onclick={() => void createManualMailingList()}
+      >+ New mailing list</button>
+    </div>
+    <div class="flex-1 overflow-y-auto px-2 py-3 space-y-1">
+      {#snippet listRow(ml: MailingListView, sourceIcon: string, pillCls: string, pillText: string)}
+        {@const sel = selectedListId === ml.id}
+        <div class="relative">
+          <div
+            role="button"
+            tabindex="0"
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm cursor-pointer transition-colors {sel
+              ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
+              : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            onclick={() => (selectedListId = ml.id)}
+            onkeydown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                selectedListId = ml.id
+              }
+            }}
+          >
+            <span class="w-6 text-center">{sourceIcon}</span>
+            <span class="flex-1 truncate">{ml.name}</span>
+            <span class="text-xs text-surface-500">{ml.members.filter((m) => m.email).length}</span>
+            <button
+              class="w-5 h-5 rounded text-surface-500 hover:bg-surface-300 dark:hover:bg-surface-600 leading-none shrink-0"
+              title="More actions"
+              aria-label="Mailing list actions"
+              onclick={(e) => {
+                e.stopPropagation()
+                openMenuFor = openMenuFor === `ml:${ml.id}` ? null : `ml:${ml.id}`
+              }}
+            >⋯</button>
+          </div>
+          {#if openMenuFor === `ml:${ml.id}`}
+            <div
+              class="absolute right-1 top-9 z-30 w-56 py-1 rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
+              onclick={(e) => e.stopPropagation()}
+              role="menu"
+              tabindex="-1"
+              onkeydown={(e) => { if (e.key === 'Escape') openMenuFor = null }}
+            >
+              <div class="px-3 py-1 text-[10px] uppercase tracking-wider text-surface-500">
+                <span class="px-1 py-px rounded {pillCls}">{pillText}</span>
+              </div>
+              {#if ml.source === 'category'}
+                <button
+                  class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
+                  onclick={() => {
+                    openMenuFor = null
+                    // The "Use as mailing list" toggle on a
+                    // category is the ONLY way it can leave the
+                    // list — so flipping it off here removes
+                    // the row.
+                    void toggleCategoryAsList(ml.name, true)
+                  }}
+                >Don't use as mailing list</button>
+              {:else}
+                <button
+                  class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
+                  onclick={() => {
+                    openMenuFor = null
+                    void toggleMailingListHidden(ml.id, ml.hiddenFromAutocomplete)
+                  }}
+                >
+                  {ml.hiddenFromAutocomplete
+                    ? 'Show in autocomplete'
+                    : 'Hide from autocomplete'}
+                </button>
+              {/if}
+              {#if ml.source === 'manual'}
+                <button
+                  class="w-full text-left px-3 py-2 hover:bg-error-500/10 text-error-500"
+                  onclick={() => { openMenuFor = null; void deleteManualMailingList(ml.id, ml.name) }}
+                >Delete</button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {/snippet}
+
+      {#if filteredMailingLists.manual.length > 0}
+        <div class="px-3 pt-1 pb-1 text-[10px] uppercase tracking-wider text-surface-500">Manual</div>
+        {#each filteredMailingLists.manual as ml (ml.id)}
+          {@render listRow(ml, '📨', 'bg-success-500/20 text-success-600 dark:text-success-300', 'manual')}
+        {/each}
+      {/if}
+      {#if filteredMailingLists.category.length > 0}
+        <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">Kontaktgruppen</div>
+        {#each filteredMailingLists.category as ml (ml.id)}
+          {@render listRow(ml, '🏷️', 'bg-primary-500/20 text-primary-600 dark:text-primary-300', 'category')}
+        {/each}
+      {/if}
+      {#if filteredMailingLists.team.length > 0}
+        <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">Teams</div>
+        {#each filteredMailingLists.team as ml (ml.id)}
+          {@render listRow(ml, '⚡', 'bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200', 'team')}
+        {/each}
+      {/if}
+      {#if mailingLists.length === 0}
+        <p class="px-3 py-2 text-xs text-surface-500 italic">
+          No mailing lists yet. Click <span class="font-semibold">+ New mailing list</span> for
+          a manual one, or tag contacts with a Kontaktgruppe and pick
+          "Use as mailing list" from its three-dot menu.
         </p>
       {/if}
     </div>
@@ -956,74 +1136,39 @@
       {/if}
     </div>
     {:else}
-    <!-- Mailing lists tab — virtual rows from categories
-         (auto-mirrored), manual KIND:group cards (CRUD), and
-         Teams (read-only).  Per-row hide swatch on non-category
-         sources; categories use their sidebar swatch instead. -->
-    <div class="p-3 flex flex-col gap-2">
-      <button
-        class="btn preset-filled-primary-500"
-        onclick={() => void createManualMailingList()}
-      >+ New mailing list</button>
-    </div>
-    <div class="flex-1 overflow-y-auto px-2 pb-3 space-y-1">
-      {#if mailingLists.length === 0}
-        <p class="px-3 py-2 text-xs text-surface-500 italic">
-          No mailing lists yet. Click <span class="font-semibold">+ New mailing list</span> to
-          create one, or tag contacts with a Kontaktgruppe and flip its
-          "Use as mailing list" swatch on.
-        </p>
-      {/if}
-      {#each mailingLists as ml (ml.id)}
-        {@const isManual = ml.source === 'manual'}
-        {@const isTeam = ml.source === 'team'}
-        {@const isCategory = ml.source === 'category'}
-        <div class="px-3 py-2 rounded-md hover:bg-surface-200 dark:hover:bg-surface-700">
-          <div class="flex items-center gap-2">
-            <span class="w-6 text-center">
-              {isCategory ? '🏷️' : isTeam ? '⚡' : '📨'}
-            </span>
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-2">
-                <span class="font-medium truncate">{ml.name}</span>
-                <span class="text-[10px] uppercase tracking-wider font-semibold px-1 py-px rounded
-                             {isCategory
-                               ? 'bg-primary-500/20 text-primary-600 dark:text-primary-300'
-                               : isTeam
-                                 ? 'bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200'
-                                 : 'bg-success-500/20 text-success-600 dark:text-success-300'}">
-                  {isCategory ? 'category' : isTeam ? 'team' : 'manual'}
-                </span>
-              </div>
-              <p class="text-xs text-surface-500 truncate">
-                {ml.members.filter((m) => m.email).length} member{ml.members.filter((m) => m.email).length === 1 ? '' : 's'} with email
-              </p>
-            </div>
-            {#if !isCategory}
-              <button
-                class="w-3 h-3 rounded-sm shrink-0 border transition-colors cursor-pointer"
-                style={ml.hiddenFromAutocomplete
-                  ? `background-color: transparent; border-color: var(--color-surface-400);`
-                  : `background-color: var(--color-primary-500); border-color: var(--color-primary-500);`}
-                title={ml.hiddenFromAutocomplete
-                  ? 'Currently hidden from autocomplete (click to show)'
-                  : 'Currently shown in autocomplete (click to hide)'}
-                aria-label="Toggle hidden from autocomplete"
-                onclick={() => void toggleMailingListHidden(ml.id, ml.hiddenFromAutocomplete)}
-              ></button>
-            {/if}
-            {#if isManual}
-              <button
-                class="text-xs text-surface-500 hover:text-error-500"
-                title="Delete mailing list"
-                aria-label="Delete mailing list"
-                onclick={() => void deleteManualMailingList(ml.id, ml.name)}
-              >×</button>
-            {/if}
-          </div>
+    <!-- Lists tab — middle column shows the SELECTED list's
+         members (or a hint if nothing's selected).  All
+         management (create / rename / hide / delete) happens
+         from the sidebar's three-dot menus. -->
+    {#if !selectedList}
+      <div class="flex-1 flex items-center justify-center text-surface-500 text-sm p-6 text-center">
+        Pick a mailing list on the left to see its members.
+      </div>
+    {:else}
+      <div class="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
+        <div class="flex items-center gap-2">
+          <h3 class="text-base font-semibold flex-1 truncate">{selectedList.name}</h3>
         </div>
-      {/each}
-    </div>
+        <p class="text-xs text-surface-500">
+          {selectedList.members.filter((m) => m.email).length} of {selectedList.members.length} member{selectedList.members.length === 1 ? '' : 's'} with an email
+        </p>
+        <div class="mt-2 space-y-1">
+          {#each selectedList.members as m, i (`${m.email}::${i}`)}
+            <div class="flex items-center gap-2 px-3 py-2 rounded-md bg-surface-200/40 dark:bg-surface-700/40">
+              <span class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 text-xs font-semibold flex items-center justify-center shrink-0">
+                {(m.displayName || m.email || '?').slice(0, 1).toUpperCase()}
+              </span>
+              <div class="flex-1 min-w-0">
+                <p class="font-medium truncate">{m.displayName || m.email || '(unnamed)'}</p>
+                <p class="text-xs text-surface-500 truncate">
+                  {m.email || '(no email)'}
+                </p>
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
     {/if}
   </aside>
 
