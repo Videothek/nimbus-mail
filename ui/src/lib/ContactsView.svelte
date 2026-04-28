@@ -342,12 +342,11 @@
       categories = categories.map((c) =>
         c.name === name ? { ...c, useAsMailingList: !currentlyOn } : c,
       )
-      // Mailing-lists view depends on this flag, refresh once.
-      try {
-        mailingLists = await invoke<MailingListView[]>('list_mailing_lists')
-      } catch (e) {
-        console.warn('list_mailing_lists refresh failed', e)
-      }
+      // Optimistic local update — refetching list_mailing_lists
+      // would round-trip OCS + Circles and stall the swatch.
+      mailingLists = mailingLists.map((m) =>
+        m.id === `cat:${name}` ? { ...m, hiddenFromAutocomplete: currentlyOn } : m,
+      )
     } catch (e) {
       formError = formatError(e) || 'Failed to toggle "Use as mailing list"'
     }
