@@ -1034,8 +1034,9 @@
          three-dot menu's fixed overlay on first click,
          leaving activeTab updated but visually stale. -->
     <div class="flex-1 overflow-y-auto px-2 py-3 space-y-1">
-      {#snippet listRow(ml: MailingListView, sourceIcon: string, pillCls: string, pillText: string)}
+      {#snippet listRow(ml: MailingListView, sourceIcon: string, _pillCls: string, _pillText: string)}
         {@const sel = selectedListId === ml.id}
+        {@const hidden = ml.hiddenFromAutocomplete}
         <div class="relative">
           <div
             role="button"
@@ -1051,23 +1052,41 @@
               }
             }}
           >
-            <span class="w-6 text-center">{sourceIcon}</span>
-            <span class="flex-1 truncate">{ml.name}</span>
-            <span class="text-xs text-surface-500">{ml.members.filter((m) => m.email).length}</span>
+            <!-- Left swatch toggles hide-from-autocomplete, mirroring
+                 the calendar sidebar's mute swatch. Filled = used in
+                 autocomplete, outlined = suppressed. -->
             <button
-              class="w-5 h-5 rounded text-surface-500 hover:bg-surface-300 dark:hover:bg-surface-600 leading-none shrink-0"
-              title="More actions"
-              aria-label="Mailing list actions"
+              class="w-3 h-3 rounded-sm shrink-0 border border-primary-500 transition-colors cursor-pointer {hidden ? 'bg-transparent' : 'bg-primary-500'}"
+              title={hidden ? 'Show in autocomplete' : 'Hide from autocomplete'}
+              aria-label={hidden ? 'Show in autocomplete' : 'Hide from autocomplete'}
               onclick={(e) => {
                 e.stopPropagation()
-                const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                menuTop = r.top
-                menuLeft = r.right + 6
-                openMenuFor = openMenuFor === `ml:${ml.id}` ? null : `ml:${ml.id}`
+                if (ml.source === 'category') {
+                  void toggleCategoryAsList(ml.name, !hidden)
+                } else {
+                  void toggleMailingListHidden(ml.id, hidden)
+                }
               }}
-            >⋯</button>
+            ></button>
+            <span class="w-5 text-center">{sourceIcon}</span>
+            <span class="flex-1 truncate {hidden ? 'text-surface-400 dark:text-surface-500' : ''}">{ml.name}</span>
+            <span class="text-xs text-surface-500">{ml.members.filter((m) => m.email).length}</span>
+            {#if ml.source === 'manual'}
+              <button
+                class="w-5 h-5 rounded text-surface-500 hover:bg-surface-300 dark:hover:bg-surface-600 leading-none shrink-0"
+                title="More actions"
+                aria-label="Mailing list actions"
+                onclick={(e) => {
+                  e.stopPropagation()
+                  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                  menuTop = r.top
+                  menuLeft = r.right + 6
+                  openMenuFor = openMenuFor === `ml:${ml.id}` ? null : `ml:${ml.id}`
+                }}
+              >⋯</button>
+            {/if}
           </div>
-          {#if openMenuFor === `ml:${ml.id}`}
+          {#if openMenuFor === `ml:${ml.id}` && ml.source === 'manual'}
             <div
               class="z-30 w-56 py-1 rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
               style="position: fixed; top: {menuTop}px; left: {menuLeft}px;"
@@ -1076,42 +1095,10 @@
               tabindex="-1"
               onkeydown={(e) => { if (e.key === 'Escape') openMenuFor = null }}
             >
-              <div class="px-3 py-1 text-[10px] uppercase tracking-wider text-surface-500">
-                <span class="px-1 py-px rounded {pillCls}">{pillText}</span>
-              </div>
-              {#if ml.source === 'category'}
-                <!-- Categories use the dedicated "Use as mailing
-                     list" flag (under the same `mailing_list_
-                     settings` row keyed by `cat:<name>`); we
-                     present it with the same wording as the
-                     hide toggle on Manual / Team rows so the
-                     menu reads consistently across sources. -->
-                <button
-                  class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
-                  onclick={() => {
-                    openMenuFor = null
-                    void toggleCategoryAsList(ml.name, true)
-                  }}
-                >Hide from autocomplete</button>
-              {:else}
-                <button
-                  class="w-full text-left px-3 py-2 hover:bg-surface-200 dark:hover:bg-surface-700"
-                  onclick={() => {
-                    openMenuFor = null
-                    void toggleMailingListHidden(ml.id, ml.hiddenFromAutocomplete)
-                  }}
-                >
-                  {ml.hiddenFromAutocomplete
-                    ? 'Show in autocomplete'
-                    : 'Hide from autocomplete'}
-                </button>
-              {/if}
-              {#if ml.source === 'manual'}
-                <button
-                  class="w-full text-left px-3 py-2 hover:bg-error-500/10 text-error-500"
-                  onclick={() => { openMenuFor = null; void deleteManualMailingList(ml.id, ml.name) }}
-                >Delete</button>
-              {/if}
+              <button
+                class="w-full text-left px-3 py-2 hover:bg-error-500/10 text-error-500"
+                onclick={() => { openMenuFor = null; void deleteManualMailingList(ml.id, ml.name) }}
+              >Delete</button>
             </div>
           {/if}
         </div>
