@@ -392,10 +392,25 @@
   }
 
   // ── Manual mailing list CRUD ──────────────────────────────
-  async function createManualMailingList() {
-    const name = prompt('New mailing list — name?')?.trim()
+  let newListForm = $state<{ name: string; emoji: string | null } | null>(null)
+  let newListBusy = $state(false)
+  let newListError = $state('')
+
+  function openNewMailingListForm() {
+    newListForm = { name: '', emoji: null }
+    newListError = ''
+  }
+
+  async function commitNewMailingList() {
+    if (!newListForm) return
+    const name = newListForm.name.trim()
     if (!name) return
-    if (accounts.length === 0) return
+    if (accounts.length === 0) {
+      newListError = 'No Nextcloud account is connected.'
+      return
+    }
+    newListBusy = true
+    newListError = ''
     const ncId = accounts[0].id
     let books = addressbooksByAccount[ncId]
     if (!books) {
@@ -406,27 +421,50 @@
         )
         addressbooksByAccount[ncId] = books
       } catch (e) {
-        formError = formatError(e) || 'Failed to list addressbooks'
+        newListError = formatError(e) || 'Failed to list addressbooks'
+        newListBusy = false
         return
       }
     }
     const book = books[0]
-    if (!book) return
+    if (!book) {
+      newListError = 'No addressbook available.'
+      newListBusy = false
+      return
+    }
+    const chosenEmoji = newListForm.emoji
     try {
-      await invoke('create_contact_group', {
+      const created = await invoke<{ id: string }>('create_contact_group', {
         ncId,
         addressbookUrl: book.path,
         addressbookName: book.name,
         displayName: name,
         memberUids: [],
       })
+      // Persist the chosen emoji against the unified
+      // mailing-list id (`list:<vcardUid>`).  Best-effort:
+      // failures here only mean the row falls back to its
+      // source icon, not that the create itself failed.
+      if (chosenEmoji && created?.id) {
+        try {
+          await invoke('set_mailing_list_emoji', {
+            id: `list:${created.id}`,
+            emoji: chosenEmoji,
+          })
+        } catch (e) {
+          console.warn('set_mailing_list_emoji failed', e)
+        }
+      }
       try {
         mailingLists = await invoke<MailingListView[]>('list_mailing_lists')
       } catch (e) {
         console.warn('list_mailing_lists refresh failed', e)
       }
+      newListForm = null
     } catch (e) {
-      formError = formatError(e) || 'Failed to create mailing list'
+      newListError = formatError(e) || 'Failed to create mailing list'
+    } finally {
+      newListBusy = false
     }
   }
   async function deleteManualMailingList(id: string, name: string) {
@@ -1261,6 +1299,7 @@
               class="z-30 w-56 py-1 rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
               style="position: fixed; top: {menuTop}px; left: {menuLeft}px;"
               onclick={(e) => e.stopPropagation()}
+              onmousedown={(e) => e.stopPropagation()}
               role="menu"
               tabindex="-1"
               onkeydown={(e) => { if (e.key === 'Escape') openMenuFor = null }}
@@ -1335,7 +1374,7 @@
           class="w-5 h-5 rounded-md flex items-center justify-center text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700"
           title="New mailing list"
           aria-label="New mailing list"
-          onclick={() => void createManualMailingList()}
+          onclick={() => openNewMailingListForm()}
         >+</button>
       </div>
       {#each filteredMailingLists.manual as ml (ml.id)}
@@ -1828,3 +1867,75 @@
     {/if}
   </main>
 </div>
+
+<!-- New mailing list modal — name + emoji avatar.  Mirrors the
+     calendar create modal's shape so the UX feels consistent. -->
+{#if newListForm}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onmousedown={(e) => { if (e.target === e.currentTarget) newListForm = null }}
+  >
+    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-96 max-w-full p-5">
+      <h3 class="text-base font-semibold mb-3">New mailing list</h3>
+
+      <label class="block text-xs text-surface-500 mb-1" for="new-ml-name">Name</label>
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        id="new-ml-name"
+        type="text"
+        class="input w-full text-sm px-2 py-1.5 rounded-md mb-3"
+        placeholder="Family, Team, Newsletter, …"
+        bind:value={newListForm.name}
+        disabled={newListBusy}
+        autofocus
+        onkeydown={(e) => {
+          if (e.key === 'Enter' && newListForm?.name.trim()) {
+            e.preventDefault()
+            void commitNewMailingList()
+          } else if (e.key === 'Escape') {
+            e.preventDefault()
+            newListForm = null
+          }
+        }}
+      />
+
+      <div class="text-xs text-surface-500 mb-1">Emoji (optional)</div>
+      <div class="grid grid-cols-8 gap-0.5 mb-4 max-h-48 overflow-y-auto p-1 border border-surface-200 dark:border-surface-700 rounded-md">
+        <button
+          type="button"
+          class="w-8 h-8 flex items-center justify-center text-xs rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 {newListForm.emoji === null ? 'bg-primary-500/15 ring-1 ring-primary-500' : ''}"
+          title="No emoji"
+          onclick={() => { newListForm!.emoji = null }}
+        >∅</button>
+        {#each MAILING_LIST_EMOJIS as e (e)}
+          <button
+            type="button"
+            class="w-8 h-8 flex items-center justify-center text-lg rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 {newListForm.emoji === e ? 'bg-primary-500/15 ring-1 ring-primary-500' : ''}"
+            title={e}
+            onclick={() => { newListForm!.emoji = e }}
+          >{e}</button>
+        {/each}
+      </div>
+
+      {#if newListError}
+        <p class="text-xs text-red-500 mb-3 wrap-break-word">{newListError}</p>
+      {/if}
+
+      <div class="flex justify-end gap-2">
+        <button
+          class="btn preset-outlined-surface-500"
+          disabled={newListBusy}
+          onclick={() => (newListForm = null)}
+        >Cancel</button>
+        <button
+          class="btn preset-filled-primary-500"
+          disabled={newListBusy || !newListForm.name.trim()}
+          onclick={() => void commitNewMailingList()}
+        >{newListBusy ? 'Creating…' : 'Create'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
