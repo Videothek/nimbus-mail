@@ -2239,6 +2239,16 @@ struct MailingListMemberView {
 async fn list_mailing_lists(
     cache: State<'_, Cache>,
 ) -> Result<Vec<MailingListView>, NimbusError> {
+    // Same lazy backfill list_contact_categories does — this
+    // IPC is the entry point the autocomplete uses on first
+    // launch, before the contacts UI was opened, so we have to
+    // rehydrate categories here too or the category-derived
+    // rows would surface with zero members.
+    let _ = cache.backfill_categories(|raw| {
+        nimbus_carddav::parse_vcard(raw)
+            .map(|p| p.categories)
+            .unwrap_or_default()
+    });
     let suppressed = cache
         .get_mailing_list_suppressed()
         .map_err(NimbusError::from)?;
