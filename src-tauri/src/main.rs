@@ -2204,6 +2204,194 @@ fn set_contact_group_emoji(
         .map_err(NimbusError::from)
 }
 
+// ── Nextcloud user groups + Teams (#133 follow-up) ────────────
+//
+// These are *identity / access* groups, separate from the vCard
+// `KIND:group` records above.  Members are NC user IDs
+// (provisioning-API speak), not vCard UIDs, so the contacts UI
+// renders them in their own read-only sections — Nimbus can't
+// add or remove members (admin task) but it can surface the
+// groups the user already belongs to and resolve their members
+// to email addresses for the Compose autocomplete.
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NextcloudGroupView {
+    /// Nextcloud account this group lives on.
+    nextcloud_account_id: String,
+    /// Group / circle identifier — used as the picker id; UNIQUE
+    /// per (`nextcloud_account_id`, `source`).
+    id: String,
+    /// `"group"` for OCS user groups, `"team"` for Circles /
+    /// Teams.  Rendered as a colored pill in the sidebar.
+    source: String,
+    display_name: String,
+    members: Vec<NextcloudGroupMemberView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NextcloudGroupMemberView {
+    user_id: String,
+    display_name: String,
+    /// Empty when the NC user has no email set in Personal info.
+    email: String,
+}
+
+/// Pull every NC user group and Circle / Team the user belongs
+/// to across every connected NC account, hydrating each with
+/// (display_name, email) per member.  Soft-fails per group so
+/// one restricted group doesn't block the rest.
+#[tauri::command]
+async fn list_nextcloud_groups(
+    cache: State<'_, Cache>,
+) -> Result<Vec<NextcloudGroupView>, NimbusError> {
+    let accounts = nextcloud_store::load_accounts().unwrap_or_default();
+    let mut out: Vec<NextcloudGroupView> = Vec::new();
+    let _ = cache; // currently unused; kept for parity / future caching
+    for acc in &accounts {
+        let app_password = match credentials::get_nextcloud_password(&acc.id) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("nc-groups: skipping {} ({e})", acc.id);
+                continue;
+            }
+        };
+        // OCS user groups -------------------------------------------------
+        let group_ids = match nimbus_nextcloud::fetch_my_groups(
+            &acc.server_url,
+            &acc.username,
+            &app_password,
+        )
+        .await
+        {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!("fetch_my_groups failed for {}: {e}", acc.id);
+                Vec::new()
+            }
+        };
+        for gid in group_ids {
+            let members = collect_group_members(&acc, &app_password, &gid).await;
+            out.push(NextcloudGroupView {
+                nextcloud_account_id: acc.id.clone(),
+                id: format!("group:{gid}"),
+                source: "group".to_string(),
+                display_name: gid,
+                members,
+            });
+        }
+        // Circles / Teams ------------------------------------------------
+        let circles = match nimbus_nextcloud::fetch_my_circles(
+            &acc.server_url,
+            &acc.username,
+            &app_password,
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("fetch_my_circles failed for {}: {e}", acc.id);
+                Vec::new()
+            }
+        };
+        for c in circles {
+            let mids = match nimbus_nextcloud::fetch_circle_member_ids(
+                &acc.server_url,
+                &acc.username,
+                &app_password,
+                &c.id,
+            )
+            .await
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!("circle-members failed: {e}");
+                    Vec::new()
+                }
+            };
+            let mut members = Vec::with_capacity(mids.len());
+            for uid in mids {
+                let prof = nimbus_nextcloud::fetch_user_profile(
+                    &acc.server_url,
+                    &acc.username,
+                    &app_password,
+                    &uid,
+                )
+                .await;
+                match prof {
+                    Ok(p) => members.push(NextcloudGroupMemberView {
+                        user_id: p.user_id,
+                        display_name: p.display_name,
+                        email: p.email.unwrap_or_default(),
+                    }),
+                    Err(_) => members.push(NextcloudGroupMemberView {
+                        user_id: uid.clone(),
+                        display_name: uid,
+                        email: String::new(),
+                    }),
+                }
+            }
+            out.push(NextcloudGroupView {
+                nextcloud_account_id: acc.id.clone(),
+                id: format!("team:{}", c.id),
+                source: "team".to_string(),
+                display_name: c.display_name,
+                members,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Resolve every NC user id in a group to a (display_name,
+/// email) tuple via the OCS user-profile endpoint.  Soft-fails
+/// individual lookups (a deleted user surfaces with their bare
+/// id and an empty email rather than failing the whole call).
+async fn collect_group_members(
+    acc: &NextcloudAccount,
+    app_password: &str,
+    group_id: &str,
+) -> Vec<NextcloudGroupMemberView> {
+    let ids = match nimbus_nextcloud::fetch_group_member_ids(
+        &acc.server_url,
+        &acc.username,
+        app_password,
+        group_id,
+    )
+    .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::warn!("fetch_group_member_ids({group_id}) failed: {e}");
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::with_capacity(ids.len());
+    for uid in ids {
+        let prof = nimbus_nextcloud::fetch_user_profile(
+            &acc.server_url,
+            &acc.username,
+            app_password,
+            &uid,
+        )
+        .await;
+        match prof {
+            Ok(p) => out.push(NextcloudGroupMemberView {
+                user_id: p.user_id,
+                display_name: p.display_name,
+                email: p.email.unwrap_or_default(),
+            }),
+            Err(_) => out.push(NextcloudGroupMemberView {
+                user_id: uid.clone(),
+                display_name: uid,
+                email: String::new(),
+            }),
+        }
+    }
+    out
+}
+
 /// A trimmed-down addressbook record for the UI's "save new contact
 /// to…" dropdown. We don't ship ctags or sync tokens — those are
 /// sync-layer bookkeeping the frontend has no business touching.
@@ -6403,6 +6591,7 @@ fn main() {
             delete_contact_group,
             set_contact_group_hidden,
             set_contact_group_emoji,
+            list_nextcloud_groups,
             list_nextcloud_addressbooks,
             list_nextcloud_calendars,
             sync_nextcloud_calendars,

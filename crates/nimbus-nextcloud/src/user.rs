@@ -199,6 +199,310 @@ pub async fn find_user_by_email(
     }))
 }
 
+// ─── User groups + Teams (#133) ──────────────────────────────
+//
+// Nextcloud surfaces three kinds of "group of people" the
+// contacts UI cares about:
+//   - vCard `KIND:group` records (handled in nimbus-carddav)
+//   - OCS user groups — the access-control groups under
+//     Settings → Users → Groups; members are NC user IDs.
+//   - Circles / Teams — the spreed-style team feature backed by
+//     the Circles app; members can be NC users, emails, or
+//     other circles.
+// Both OCS and Circles are read-only from Nimbus's perspective —
+// management lives in the Nextcloud admin UI / Files sidebar.
+
+#[derive(Debug, Deserialize)]
+struct GroupsListData {
+    groups: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroupMembersData {
+    users: Vec<String>,
+}
+
+/// Identity / access groups the authenticated user belongs to,
+/// fetched from `/ocs/v2.php/cloud/users/<user>/groups`.  This
+/// endpoint is permitted for the user themselves on every NC
+/// instance — no admin needed.
+pub async fn fetch_my_groups(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+) -> Result<Vec<String>, NimbusError> {
+    let server = client::normalize_server_url(server_url);
+    let url = format!(
+        "{server}/ocs/v2.php/cloud/users/{}/groups?format=json",
+        urlencoding(username),
+    );
+    let http = client::build()?;
+    let resp = http
+        .get(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("user-groups request failed: {e}")))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(NimbusError::Nextcloud(format!(
+            "user-groups returned HTTP {status}"
+        )));
+    }
+    let env: OcsEnvelope<GroupsListData> = resp
+        .json()
+        .await
+        .map_err(|e| NimbusError::Protocol(format!("user-groups bad JSON: {e}")))?;
+    Ok(env.ocs.data.groups)
+}
+
+/// Members of one NC user group.  Some servers restrict this
+/// to admins; we soft-fail (return an empty list) so the rest of
+/// the contacts UI still loads when the user isn't allowed to
+/// enumerate a group's roster.
+pub async fn fetch_group_member_ids(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    group_id: &str,
+) -> Result<Vec<String>, NimbusError> {
+    let server = client::normalize_server_url(server_url);
+    let url = format!(
+        "{server}/ocs/v2.php/cloud/groups/{}?format=json",
+        urlencoding(group_id),
+    );
+    let http = client::build()?;
+    let resp = http
+        .get(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("group-members request failed: {e}")))?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::NOT_FOUND {
+        // Permission-restricted or missing group — surface as an
+        // empty list, not an error, so the caller can move on.
+        return Ok(Vec::new());
+    }
+    if !status.is_success() {
+        return Err(NimbusError::Nextcloud(format!(
+            "group-members returned HTTP {status}"
+        )));
+    }
+    let env: OcsEnvelope<GroupMembersData> = resp
+        .json()
+        .await
+        .map_err(|e| NimbusError::Protocol(format!("group-members bad JSON: {e}")))?;
+    Ok(env.ocs.data.users)
+}
+
+#[derive(Debug, Deserialize)]
+struct UserProfileData {
+    #[serde(default)]
+    displayname: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NextcloudUserSummary {
+    pub user_id: String,
+    pub display_name: String,
+    pub email: Option<String>,
+}
+
+/// Profile lookup for a single NC user id.  Used to map the
+/// `users` list returned by `fetch_group_member_ids` to
+/// (display name, email) tuples for the contacts UI.
+pub async fn fetch_user_profile(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    target_user_id: &str,
+) -> Result<NextcloudUserSummary, NimbusError> {
+    let server = client::normalize_server_url(server_url);
+    let url = format!(
+        "{server}/ocs/v2.php/cloud/users/{}?format=json",
+        urlencoding(target_user_id),
+    );
+    let http = client::build()?;
+    let resp = http
+        .get(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("user-profile request failed: {e}")))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Ok(NextcloudUserSummary {
+            user_id: target_user_id.to_string(),
+            display_name: target_user_id.to_string(),
+            email: None,
+        });
+    }
+    let env: OcsEnvelope<UserProfileData> = resp
+        .json()
+        .await
+        .map_err(|e| NimbusError::Protocol(format!("user-profile bad JSON: {e}")))?;
+    Ok(NextcloudUserSummary {
+        user_id: target_user_id.to_string(),
+        display_name: env
+            .ocs
+            .data
+            .displayname
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| target_user_id.to_string()),
+        email: env.ocs.data.email.filter(|s| !s.trim().is_empty()),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct CirclesEnvelope {
+    ocs: CirclesOcs,
+}
+#[derive(Debug, Deserialize)]
+struct CirclesOcs {
+    #[serde(default)]
+    data: Vec<CircleData>,
+}
+#[derive(Debug, Deserialize)]
+struct CircleData {
+    #[serde(rename = "singleId", default)]
+    single_id: String,
+    #[serde(rename = "displayName", default)]
+    display_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NextcloudCircle {
+    pub id: String,
+    pub display_name: String,
+}
+
+/// Circles / Teams the authenticated user belongs to, via the
+/// Circles app's OCS API.  Returns an empty list (Ok) when the
+/// app isn't installed — the endpoint 404s, and the contacts
+/// UI just doesn't render a Teams section.
+pub async fn fetch_my_circles(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+) -> Result<Vec<NextcloudCircle>, NimbusError> {
+    let server = client::normalize_server_url(server_url);
+    let url = format!("{server}/ocs/v2.php/apps/circles/circles?format=json");
+    let http = client::build()?;
+    let resp = http
+        .get(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("circles request failed: {e}")))?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND
+        || status == reqwest::StatusCode::FORBIDDEN
+    {
+        return Ok(Vec::new());
+    }
+    if !status.is_success() {
+        return Err(NimbusError::Nextcloud(format!(
+            "circles returned HTTP {status}"
+        )));
+    }
+    let env: CirclesEnvelope = resp
+        .json()
+        .await
+        .map_err(|e| NimbusError::Protocol(format!("circles bad JSON: {e}")))?;
+    Ok(env
+        .ocs
+        .data
+        .into_iter()
+        .filter(|c| !c.single_id.is_empty())
+        .map(|c| NextcloudCircle {
+            id: c.single_id.clone(),
+            display_name: if c.display_name.is_empty() {
+                c.single_id
+            } else {
+                c.display_name
+            },
+        })
+        .collect())
+}
+
+#[derive(Debug, Deserialize)]
+struct CircleMembersEnvelope {
+    ocs: CircleMembersOcs,
+}
+#[derive(Debug, Deserialize)]
+struct CircleMembersOcs {
+    #[serde(default)]
+    data: Vec<CircleMemberData>,
+}
+#[derive(Debug, Deserialize)]
+struct CircleMemberData {
+    /// Internal user id when `userType == 1` (NC user).
+    #[serde(rename = "userId", default)]
+    user_id: String,
+    /// 1 = local NC user, others = email guest / contact / etc.
+    #[serde(rename = "userType", default)]
+    user_type: i32,
+}
+
+/// Member NC user IDs of a Circle / Team.  Returns only members
+/// whose `userType == 1` (local NC users) since email-only and
+/// contact-typed members don't round-trip through the same
+/// profile lookup.
+pub async fn fetch_circle_member_ids(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    circle_id: &str,
+) -> Result<Vec<String>, NimbusError> {
+    let server = client::normalize_server_url(server_url);
+    let url = format!(
+        "{server}/ocs/v2.php/apps/circles/circles/{}/members?format=json",
+        urlencoding(circle_id),
+    );
+    let http = client::build()?;
+    let resp = http
+        .get(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("circle members request failed: {e}")))?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND
+        || status == reqwest::StatusCode::FORBIDDEN
+    {
+        return Ok(Vec::new());
+    }
+    if !status.is_success() {
+        return Err(NimbusError::Nextcloud(format!(
+            "circle members returned HTTP {status}"
+        )));
+    }
+    let env: CircleMembersEnvelope = resp
+        .json()
+        .await
+        .map_err(|e| NimbusError::Protocol(format!("circle members bad JSON: {e}")))?;
+    Ok(env
+        .ocs
+        .data
+        .into_iter()
+        .filter(|m| m.user_type == 1 && !m.user_id.is_empty())
+        .map(|m| m.user_id)
+        .collect())
+}
+
 /// Minimal percent-encoding for the `search=` query parameter.
 /// We deliberately don't pull in `urlencoding` as a workspace
 /// dep just for one path — emails contain only a small set of
