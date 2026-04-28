@@ -173,6 +173,15 @@
    *  since the IPC takes the composite id, not the bare UID. */
   let draggedContactId = $state<string | null>(null)
   let dragHoverCategory = $state<string | null>(null)
+  /** Named tab-switch handler — extracted because inline arrow
+   *  functions inside `onclick={(e) => { … }}` were not
+   *  consistently swapping `activeTab`; routing through a
+   *  named function fixes the binding and gives the menu
+   *  cleanup a single place to live. */
+  function selectTab(t: ContactsTab) {
+    openMenuFor = null
+    activeTab = t
+  }
   /** Selected mailing list on the Lists tab — the middle
    *  column shows its members. */
   let selectedListId = $state<string | null>(null)
@@ -860,22 +869,14 @@
         class="flex-1 px-2 py-2 text-sm rounded-md transition-colors {activeTab === 'contacts'
           ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
           : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
-        onclick={(e) => {
-          e.stopPropagation()
-          activeTab = 'contacts'
-          openMenuFor = null
-        }}
+        onclick={() => selectTab('contacts')}
       >Contacts</button>
       <button
         type="button"
         class="flex-1 px-2 py-2 text-sm rounded-md transition-colors {activeTab === 'lists'
           ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
           : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
-        onclick={(e) => {
-          e.stopPropagation()
-          activeTab = 'lists'
-          openMenuFor = null
-        }}
+        onclick={() => selectTab('lists')}
       >Lists</button>
     </div>
     {#if activeTab === 'contacts'}
@@ -900,14 +901,14 @@
         <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">
           Addressbooks
         </div>
-        {#each allAddressbooks as b (`${b.ncId}::${b.path}`)}
-          {@const sel = selectedScope === `addressbook:${b.path}`}
+        {#each allAddressbooks as b (`${b.ncId}::${b.name}`)}
+          {@const sel = selectedScope === `addressbook:${b.name}`}
           <button
             class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
                    {sel
                      ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
                      : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
-            onclick={() => (selectedScope = `addressbook:${b.path}`)}
+            onclick={() => (selectedScope = `addressbook:${b.name}`)}
           >
             <span class="w-6 text-center">📒</span>
             <span class="flex-1 truncate">{b.displayName ?? b.name}</span>
