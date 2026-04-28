@@ -539,6 +539,12 @@ pub struct Contact {
     /// Which Nextcloud account this contact came from. Lets the UI
     /// group contacts by source if a user has more than one NC server.
     pub nextcloud_account_id: String,
+    /// CardDAV addressbook collection path the contact lives in
+    /// (e.g. `https://cloud/.../calendars/user/contacts/`).  The
+    /// contacts UI's addressbook filter compares against this.
+    /// Empty for legacy rows written before the field was added.
+    #[serde(default)]
+    pub addressbook: String,
     pub display_name: String,
     /// Email addresses paired with a kind hint (vCard `EMAIL;TYPE=…`).
     /// Same shape pattern as `phone` and `addresses` so the UI can

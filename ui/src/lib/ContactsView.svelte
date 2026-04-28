@@ -63,6 +63,8 @@
      *  row in the sidebar; sync goes back to NC via
      *  `add_contact_to_category`. */
     categories?: string[]
+    /** CardDAV addressbook path the contact lives in. */
+    addressbook?: string
   }
   interface ContactInput {
     display_name: string
@@ -374,19 +376,10 @@
     let scope = contacts
     if (selectedScope.startsWith('addressbook:')) {
       const path = selectedScope.slice('addressbook:'.length)
-      // Composite ids are `nc::uid`, but the addressbook lives
-      // server-side and we don't ship it on `Contact` directly.
-      // Match via emailing through the cache row's
-      // `nextcloud_account_id` + a separate IPC isn't worth it
-      // for the typical user with one or two books — for now
-      // we filter by the addressbook's nc-account at minimum
-      // so each book row doesn't show every account's contacts.
-      const book = allAddressbooks.find((b) => b.path === path)
-      if (book) {
-        scope = contacts.filter(
-          (c) => c.nextcloud_account_id === book.ncId,
-        )
-      }
+      // Each cached contact carries its CardDAV addressbook
+      // path; comparing equality is the strict version of
+      // "show me only this book's entries".
+      scope = contacts.filter((c) => c.addressbook === path)
     } else if (selectedScope.startsWith('category:')) {
       const name = selectedScope.slice('category:'.length)
       scope = contacts.filter((c) => c.categories?.includes(name))
@@ -728,12 +721,40 @@
 </script>
 
 <div class="h-full flex bg-surface-50 dark:bg-surface-900">
-  <!-- ── Sidebar (Contacts tab) — addressbooks + Kontaktgruppen.
-       Mailing-lists tab replaces the contacts list with the
-       new mailing-list catalogue, so the sidebar only renders
-       on the Contacts tab. ─────────────────────────────────── -->
-  {#if activeTab === 'contacts'}
+  <!-- ── Sidebar — Contacts heading, tab strip, and (when on
+       the Contacts tab) addressbooks + Kontaktgruppen.  The
+       sidebar stays mounted on the Mailing lists tab so the
+       tab strip + heading don't move; only the navigation
+       sections collapse. ───────────────────────────────────── -->
   <aside class="w-56 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100/60 dark:bg-surface-800/40 flex flex-col">
+    <div class="p-3 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
+      <button
+        class="btn-icon btn-icon-sm preset-tonal"
+        aria-label="Back"
+        onclick={onclose}
+      >&larr;</button>
+      <h2 class="text-base font-semibold flex-1 truncate">Contacts</h2>
+      {#if syncing}
+        <span class="text-[10px] text-surface-500">Syncing…</span>
+      {/if}
+    </div>
+    <div class="px-3 pt-2 flex gap-1">
+      <button
+        type="button"
+        class="flex-1 px-2 py-2 text-sm rounded-md transition-colors {activeTab === 'contacts'
+          ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
+          : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => (activeTab = 'contacts')}
+      >Contacts</button>
+      <button
+        type="button"
+        class="flex-1 px-2 py-2 text-sm rounded-md transition-colors {activeTab === 'lists'
+          ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
+          : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+        onclick={() => (activeTab = 'lists')}
+      >Lists</button>
+    </div>
+    {#if activeTab === 'contacts'}
     <div class="flex-1 overflow-y-auto px-2 py-3 space-y-1">
       <!-- "All" -->
       <button
@@ -862,45 +883,13 @@
         </p>
       {/if}
     </div>
+    {/if}
   </aside>
-  {/if}
 
-  <!-- ── Left: contact list ──────────────────────────────── -->
+  <!-- ── Middle column: contact list / mailing-list catalogue.
+       The shell heading + tab strip moved into the sidebar
+       above, so this column's job is just the list itself. ─ -->
   <aside class="w-80 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col">
-    <div class="p-3 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
-      <button
-        class="btn-icon btn-icon-sm preset-tonal"
-        aria-label="Back"
-        onclick={onclose}
-      >
-        &larr;
-      </button>
-      <h2 class="text-base font-semibold flex-1">{activeTab === 'contacts' ? 'Contacts' : 'Mailing lists'}</h2>
-      {#if syncing}
-        <span class="text-[10px] text-surface-500">Syncing…</span>
-      {/if}
-    </div>
-
-    <!-- Tab strip — Contacts / Mailing lists.  Same shell so
-         the back button / sync indicator stays anchored, only
-         the column body swaps. -->
-    <div class="px-3 pt-2 flex gap-1 border-b border-surface-200 dark:border-surface-700">
-      <button
-        type="button"
-        class="flex-1 px-3 py-2 text-sm rounded-t-md transition-colors {activeTab === 'contacts'
-          ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
-          : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
-        onclick={() => (activeTab = 'contacts')}
-      >Contacts</button>
-      <button
-        type="button"
-        class="flex-1 px-3 py-2 text-sm rounded-t-md transition-colors {activeTab === 'lists'
-          ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
-          : 'text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700'}"
-        onclick={() => (activeTab = 'lists')}
-      >Mailing lists</button>
-    </div>
-
     {#if activeTab === 'contacts'}
     <div class="p-3 flex flex-col gap-2">
       <input
