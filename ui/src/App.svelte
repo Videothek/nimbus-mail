@@ -194,6 +194,18 @@
     theme_mode: ThemeMode
     mail_html_white_background: boolean
     auto_advance_after_remove: boolean
+    talk_reminder_enabled: boolean
+  }
+
+  // Issue #123: Talk-join reminders.  Rust scans upcoming
+  // events on every sync tick and emits this event whenever an
+  // event with a Talk URL hits one of its VALARM lead times.
+  type TalkReminder = {
+    uid: string
+    summary: string
+    start: string
+    talkUrl: string
+    minutesBefore: number
   }
 
   // Cached settings snapshot — refreshed when the settings command is
@@ -275,6 +287,47 @@
     }
   }
 
+  /** Format "in 5 min" / "in 1 hour" / "now" given a positive
+   *  lead-time in minutes — wording the body of a Talk reminder
+   *  toast so the user knows how soon to drop into the call. */
+  function formatLeadTime(min: number): string {
+    if (min <= 0) return 'now'
+    if (min < 60) return `in ${min} min`
+    const hours = Math.floor(min / 60)
+    const remainder = min % 60
+    if (remainder === 0) return `in ${hours} hour${hours === 1 ? '' : 's'}`
+    return `in ${hours}h ${remainder}m`
+  }
+
+  /** Emoji-prefixed clock label for the body line.  We don't
+   *  rely on click-to-launch (Linux libnotify doesn't expose
+   *  it through the plugin), so spelling the join URL into the
+   *  body keeps the affordance visible even when the user has
+   *  to copy/paste it. */
+  function handleTalkReminder(payload: TalkReminder) {
+    if (!shouldNotify()) return
+    if (!appPrefs?.talk_reminder_enabled) return
+    const lead = formatLeadTime(payload.minutesBefore)
+    const startLocal = new Date(payload.start).toLocaleTimeString(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+    const title = `📅 ${payload.summary || 'Meeting'} — ${lead}`
+    const body = `Starts at ${startLocal} · Click to join via Talk`
+    void fireToast(title, body)
+    // Best-effort: tell the OS handler to open the Talk room
+    // when the user chooses to act on the reminder.  We open
+    // immediately for "now"-bucket reminders (≤1 min lead) so
+    // the user lands in the room without an extra click; for
+    // earlier reminders we just toast and let them decide.
+    if (payload.minutesBefore <= 1) {
+      void invoke('open_url', { url: payload.talkUrl }).catch((err) =>
+        console.warn('open_url for talk reminder failed', err),
+      )
+      void invoke('dismiss_talk_reminder', { uid: payload.uid }).catch(() => {})
+    }
+  }
+
   function handleNewMail(payload: NewMail) {
     // Refresh the list regardless of notification state — new mail
     // should appear in the inbox even if toasts are off.
@@ -336,12 +389,17 @@
     void sweepNextcloudTempFiles()
 
     let unlistenNewMail: UnlistenFn | null = null
+    let unlistenTalkReminder: UnlistenFn | null = null
     let unlistenCompose: UnlistenFn | null = null
     let unlistenComposeFromMail: UnlistenFn | null = null
     let unlistenEditDraftFromMail: UnlistenFn | null = null
     ;(async () => {
       unlistenNewMail = await listen<NewMail>('new-mail', (e) =>
         handleNewMail(e.payload),
+      )
+      unlistenTalkReminder = await listen<TalkReminder>(
+        'talk-join-reminder',
+        (e) => handleTalkReminder(e.payload),
       )
       unlistenCompose = await listen('open-compose', () => openCompose({}))
       // Standalone-mail windows (#104) emit these when the user
@@ -365,6 +423,7 @@
     })()
     return () => {
       unlistenNewMail?.()
+      unlistenTalkReminder?.()
       unlistenCompose?.()
       unlistenComposeFromMail?.()
       unlistenEditDraftFromMail?.()

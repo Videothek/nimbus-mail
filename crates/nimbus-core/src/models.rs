@@ -60,6 +60,12 @@ pub struct AppSettings {
     /// a one-time choice the first time they accept an invite.
     #[serde(default)]
     pub default_calendar_id: Option<String>,
+    /// Whether to fire desktop notifications ahead of calendar
+    /// events that carry a Nextcloud Talk URL (issue #123).
+    /// Lead time is taken from the event's own `VALARM` triggers,
+    /// so the user controls *when* by setting reminders on the
+    /// event and *whether at all* with this opt-out.
+    pub talk_reminder_enabled: bool,
 }
 
 /// Light/dark mode selection. `System` follows the OS preference
@@ -97,6 +103,7 @@ impl Default for AppSettings {
             mail_html_white_background: true,
             auto_advance_after_remove: true,
             default_calendar_id: None,
+            talk_reminder_enabled: true,
         }
     }
 }
