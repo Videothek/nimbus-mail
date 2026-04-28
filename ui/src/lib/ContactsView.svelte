@@ -176,13 +176,26 @@
   /** Selected mailing list on the Lists tab — the middle
    *  column shows its members. */
   let selectedListId = $state<string | null>(null)
-  /** Free-text filter for the Lists tab sidebar. */
-  let listsQuery = $state('')
+  /** Member-search filter shown above the member list in the
+   *  middle column when a list is selected. */
+  let memberQuery = $state('')
+  /** Open / closed state for the inline "+ Add Contact"
+   *  picker — when on, the middle column flips from "show
+   *  members" to "pick contacts to add". */
+  let pickerOpen = $state(false)
+  let pickerQuery = $state('')
   /** Which row's three-dot menu is open (Lists tab + Contacts
    *  tab Kontaktgruppen).  String id keys keep the lookup
    *  cheap and let one popover replace another by simply
    *  reassigning. */
   let openMenuFor = $state<string | null>(null)
+  /** Page-relative anchor for the open three-dot menu — set
+   *  by the trigger's onclick.  `position: fixed` lets the
+   *  menu escape the sidebar's `overflow-y-auto` clip; the
+   *  alternative (absolute inside an overflow-clipped parent)
+   *  cuts off menus that pop past the sidebar's edge. */
+  let menuTop = $state(0)
+  let menuLeft = $state(0)
   // Close any open three-dot menu when the user clicks
   // anywhere outside one — same idiom we use elsewhere for
   // popover dismissal.  The menu's own `onclick` calls
@@ -393,6 +406,65 @@
       formError = formatError(e) || 'Failed to delete mailing list'
     }
   }
+  /** Add a contact to the currently-selected mailing list.
+   *  Manual lists go through `update_contact_group`; category
+   *  lists go through `add_contact_to_category`.  Teams are
+   *  read-only — the caller never reaches this for a team. */
+  async function addContactToSelectedList(contactId: string) {
+    if (!selectedList) return
+    const ml = selectedList
+    if (ml.source === 'manual') {
+      // `manual` rows carry an id like `list:<vcardUid>`; the
+      // group_id the IPC takes is `nc::vcardUid`.  We rebuild
+      // it from the contact's composite id.
+      const groupId = ml.id.startsWith('list:') ? ml.id.slice(5) : ml.id
+      // Pull the existing member uids out of the live row so
+      // we don't lose anyone — append the new one + push back
+      // through the update IPC.
+      const currentUids = ml.members
+        .map((m) => {
+          // The MailingListView.members shape doesn't carry a
+          // bare vcard UID, only display_name + email.  We
+          // round-trip through the contacts list to recover
+          // the uid for each existing member.
+          const c = contacts.find((cc) =>
+            cc.email.some((e) => e.value.toLowerCase() === m.email.toLowerCase()),
+          )
+          return c ? bareUidOfContact(c) : null
+        })
+        .filter((u): u is string => !!u)
+      const target = contacts.find((c) => c.id === contactId)
+      if (!target) return
+      const targetUid = bareUidOfContact(target)
+      if (currentUids.includes(targetUid)) return
+      try {
+        await invoke('update_contact_group', {
+          groupId,
+          displayName: null,
+          memberUids: [...currentUids, targetUid],
+        })
+        mailingLists = await invoke<MailingListView[]>('list_mailing_lists')
+      } catch (e) {
+        formError = formatError(e) || 'Failed to add member'
+      }
+    } else if (ml.source === 'category') {
+      try {
+        await invoke('add_contact_to_category', {
+          contactId,
+          category: ml.name,
+        })
+        await reloadContacts()
+      } catch (e) {
+        formError = formatError(e) || 'Failed to tag contact'
+      }
+    }
+  }
+  /** Bare vcard UID — composite ids look like `nc::uid`. */
+  function bareUidOfContact(c: Contact): string {
+    const segs = c.id.split('::')
+    return segs[1] ?? c.id
+  }
+
   async function toggleMailingListHidden(id: string, currently: boolean) {
     try {
       await invoke('set_mailing_list_hidden', { id, hidden: !currently })
@@ -906,12 +978,16 @@
               aria-label="Kontaktgruppe actions"
               onclick={(e) => {
                 e.stopPropagation()
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                menuTop = r.top
+                menuLeft = r.right + 6
                 openMenuFor = openMenuFor === `cat:${c.name}` ? null : `cat:${c.name}`
               }}
             >⋯</button>
             {#if openMenuFor === `cat:${c.name}`}
               <div
-                class="absolute right-0 top-6 z-30 w-56 py-1 rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
+                class="z-30 w-56 py-1 rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 shadow-lg text-sm"
+                style="position: fixed; top: {menuTop}px; left: {menuLeft}px;"
                 onclick={(e) => e.stopPropagation()}
                 role="menu"
                 tabindex="-1"
@@ -944,21 +1020,11 @@
       {/if}
     </div>
     {:else}
-    <!-- Lists tab — sidebar shows Manual / Categories /
-         Teams sections, each with a three-dot menu per row.
-         Search field at the top filters across all sections. -->
-    <div class="px-3 pt-3 flex flex-col gap-2">
-      <input
-        type="search"
-        class="input"
-        placeholder="Search lists"
-        bind:value={listsQuery}
-      />
-      <button
-        class="btn preset-filled-primary-500 text-sm"
-        onclick={() => void createManualMailingList()}
-      >+ New mailing list</button>
-    </div>
+    <!-- Lists tab — sidebar shows three sections (Mailing
+         lists / Kontaktgruppen / Teams).  No search field or
+         top-of-sidebar `+` button — search lives in the right
+         pane (filters members of the selected list) and "New
+         mailing list" rides next to its own section header. -->
     <div class="flex-1 overflow-y-auto px-2 py-3 space-y-1">
       {#snippet listRow(ml: MailingListView, sourceIcon: string, pillCls: string, pillText: string)}
         {@const sel = selectedListId === ml.id}
@@ -986,6 +1052,9 @@
               aria-label="Mailing list actions"
               onclick={(e) => {
                 e.stopPropagation()
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                menuTop = r.top
+                menuLeft = r.right + 6
                 openMenuFor = openMenuFor === `ml:${ml.id}` ? null : `ml:${ml.id}`
               }}
             >⋯</button>
@@ -1037,11 +1106,25 @@
         </div>
       {/snippet}
 
-      {#if filteredMailingLists.manual.length > 0}
-        <div class="px-3 pt-1 pb-1 text-[10px] uppercase tracking-wider text-surface-500">Manual</div>
-        {#each filteredMailingLists.manual as ml (ml.id)}
-          {@render listRow(ml, '📨', 'bg-success-500/20 text-success-600 dark:text-success-300', 'manual')}
-        {/each}
+      <!-- Mailing lists — the manual KIND:group cards.  Header
+           gets its own `+` so creating one feels symmetric with
+           the Kontaktgruppen section in the Contacts tab. -->
+      <div class="px-3 pt-1 pb-1 flex items-center justify-between">
+        <span class="text-[10px] uppercase tracking-wider text-surface-500">Mailing lists</span>
+        <button
+          class="w-5 h-5 rounded-md flex items-center justify-center text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700"
+          title="New mailing list"
+          aria-label="New mailing list"
+          onclick={() => void createManualMailingList()}
+        >+</button>
+      </div>
+      {#each filteredMailingLists.manual as ml (ml.id)}
+        {@render listRow(ml, '📨', 'bg-success-500/20 text-success-600 dark:text-success-300', 'manual')}
+      {/each}
+      {#if filteredMailingLists.manual.length === 0}
+        <p class="px-3 py-2 text-xs text-surface-500 italic">
+          None yet. Click <span class="font-semibold">+</span> to create one.
+        </p>
       {/if}
       {#if filteredMailingLists.category.length > 0}
         <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">Kontaktgruppen</div>
@@ -1145,27 +1228,121 @@
         Pick a mailing list on the left to see its members.
       </div>
     {:else}
-      <div class="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
-        <div class="flex items-center gap-2">
-          <h3 class="text-base font-semibold flex-1 truncate">{selectedList.name}</h3>
+      {@const ml = selectedList}
+      {@const editable = ml.source === 'manual' || ml.source === 'category'}
+      {@const memberEmails = new Set(ml.members.map((m) => m.email.toLowerCase()).filter(Boolean))}
+      {@const filteredMembers = memberQuery.trim()
+        ? ml.members.filter((m) =>
+            m.displayName.toLowerCase().includes(memberQuery.trim().toLowerCase()) ||
+            m.email.toLowerCase().includes(memberQuery.trim().toLowerCase()),
+          )
+        : ml.members}
+      {@const pickableContacts = pickerOpen
+        ? contacts.filter((c) => {
+            // Hide contacts already in the list.
+            if (c.email.some((e) => memberEmails.has(e.value.toLowerCase()))) return false
+            const q = pickerQuery.trim().toLowerCase()
+            if (!q) return true
+            return (
+              c.display_name.toLowerCase().includes(q) ||
+              c.email.some((e) => e.value.toLowerCase().includes(q))
+            )
+          })
+        : []}
+      <div class="flex-1 flex flex-col overflow-hidden">
+        <div class="p-3 border-b border-surface-200 dark:border-surface-700 flex items-center gap-2">
+          <h3 class="text-base font-semibold flex-1 truncate">{ml.name}</h3>
+          <span class="text-xs text-surface-500">
+            {ml.members.filter((m) => m.email).length} / {ml.members.length}
+          </span>
         </div>
-        <p class="text-xs text-surface-500">
-          {selectedList.members.filter((m) => m.email).length} of {selectedList.members.length} member{selectedList.members.length === 1 ? '' : 's'} with an email
-        </p>
-        <div class="mt-2 space-y-1">
-          {#each selectedList.members as m, i (`${m.email}::${i}`)}
-            <div class="flex items-center gap-2 px-3 py-2 rounded-md bg-surface-200/40 dark:bg-surface-700/40">
-              <span class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 text-xs font-semibold flex items-center justify-center shrink-0">
-                {(m.displayName || m.email || '?').slice(0, 1).toUpperCase()}
-              </span>
-              <div class="flex-1 min-w-0">
-                <p class="font-medium truncate">{m.displayName || m.email || '(unnamed)'}</p>
-                <p class="text-xs text-surface-500 truncate">
-                  {m.email || '(no email)'}
-                </p>
+        <!-- Search + Add Contact row.  Search filters the
+             member list inline.  + Add Contact flips the
+             column into a contact-picker that lists every
+             contact NOT already in the list. -->
+        {#if editable}
+          <div class="p-3 flex items-center gap-2 border-b border-surface-200 dark:border-surface-700">
+            {#if pickerOpen}
+              <input
+                type="search"
+                class="input flex-1 text-sm"
+                placeholder="Search contacts to add"
+                bind:value={pickerQuery}
+              />
+            {:else}
+              <input
+                type="search"
+                class="input flex-1 text-sm"
+                placeholder="Search members"
+                bind:value={memberQuery}
+              />
+            {/if}
+            <button
+              class="btn btn-sm preset-filled-primary-500 text-sm"
+              onclick={() => {
+                pickerOpen = !pickerOpen
+                pickerQuery = ''
+              }}
+            >{pickerOpen ? 'Done' : '+ Add contact'}</button>
+          </div>
+        {:else}
+          <div class="p-3 border-b border-surface-200 dark:border-surface-700">
+            <input
+              type="search"
+              class="input w-full text-sm"
+              placeholder="Search members"
+              bind:value={memberQuery}
+            />
+          </div>
+        {/if}
+        <div class="flex-1 overflow-y-auto p-3 space-y-1">
+          {#if pickerOpen}
+            {#if pickableContacts.length === 0}
+              <p class="px-3 py-2 text-xs text-surface-500 italic">
+                {pickerQuery.trim()
+                  ? `No matches for "${pickerQuery}".`
+                  : 'Every contact is already in this list.'}
+              </p>
+            {/if}
+            {#each pickableContacts as c (c.id)}
+              <button
+                class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left hover:bg-surface-200 dark:hover:bg-surface-700"
+                onclick={() => void addContactToSelectedList(c.id)}
+              >
+                <span class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 text-xs font-semibold flex items-center justify-center shrink-0">
+                  {c.display_name.slice(0, 1).toUpperCase()}
+                </span>
+                <div class="flex-1 min-w-0">
+                  <p class="font-medium truncate">{c.display_name || '(no name)'}</p>
+                  {#if c.email.length > 0}
+                    <p class="text-xs text-surface-500 truncate normal-case">{c.email[0].value}</p>
+                  {/if}
+                </div>
+                <span class="text-xs text-primary-500">+ Add</span>
+              </button>
+            {/each}
+          {:else}
+            {#if filteredMembers.length === 0}
+              <p class="px-3 py-2 text-xs text-surface-500 italic">
+                {memberQuery.trim()
+                  ? `No matches for "${memberQuery}".`
+                  : 'No members yet.'}
+              </p>
+            {/if}
+            {#each filteredMembers as m, i (`${m.email}::${i}`)}
+              <div class="flex items-center gap-2 px-3 py-2 rounded-md bg-surface-200/40 dark:bg-surface-700/40">
+                <span class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 text-xs font-semibold flex items-center justify-center shrink-0">
+                  {(m.displayName || m.email || '?').slice(0, 1).toUpperCase()}
+                </span>
+                <div class="flex-1 min-w-0">
+                  <p class="font-medium truncate">{m.displayName || m.email || '(unnamed)'}</p>
+                  <p class="text-xs text-surface-500 truncate">
+                    {m.email || '(no email)'}
+                  </p>
+                </div>
               </div>
-            </div>
-          {/each}
+            {/each}
+          {/if}
         </div>
       </div>
     {/if}
