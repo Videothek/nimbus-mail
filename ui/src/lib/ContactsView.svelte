@@ -11,6 +11,7 @@
 
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import EmojiPicker from './EmojiPicker.svelte'
 
   interface Props {
     onclose: () => void
@@ -214,19 +215,6 @@
   let emojiPickerFor = $state<string | null>(null)
   let emojiPickerTop = $state(0)
   let emojiPickerLeft = $state(0)
-  /** Curated emoji set for the mailing-list picker.  Skews
-   *  towards labels, groups, and communication so the most
-   *  useful pictograms show up first.  Same shape as the
-   *  RichTextEditor picker. */
-  const MAILING_LIST_EMOJIS = [
-    '🏷️','📨','📬','📭','📮','📧','✉️','📩',
-    '👥','👨‍👩‍👧','🧑‍💼','🧑‍🤝‍🧑','🤝','💬','📣','📢',
-    '⭐','🌟','✨','💡','🎯','🚀','🔥','💯',
-    '❤️','🧡','💛','💚','💙','💜','🩷','🤍',
-    '✅','📌','📎','📋','📝','📅','🗂️','🗃️',
-    '🏠','🏢','🏫','🎓','💼','🛒','🍽️','🎉',
-    '🐶','🐱','🦊','🐻','🐼','🐯','🦁','🐸',
-  ]
   $effect(() => {
     if (!emojiPickerFor) return
     const onDoc = () => (emojiPickerFor = null)
@@ -1335,7 +1323,7 @@
           {/if}
           {#if emojiPickerFor === ml.id}
             <div
-              class="z-40 p-2 bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-md shadow-lg w-72"
+              class="z-40"
               style="position: fixed; top: {emojiPickerTop}px; left: {emojiPickerLeft}px;"
               role="menu"
               tabindex="-1"
@@ -1343,23 +1331,10 @@
               onmousedown={(e) => e.stopPropagation()}
               onkeydown={(e) => { if (e.key === 'Escape') emojiPickerFor = null }}
             >
-              <div class="grid grid-cols-8 gap-0.5 max-h-72 overflow-y-auto">
-                {#each MAILING_LIST_EMOJIS as e (e)}
-                  <button
-                    type="button"
-                    class="w-8 h-8 flex items-center justify-center text-lg rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 {ml.emoji === e ? 'bg-primary-500/15 ring-1 ring-primary-500' : ''}"
-                    title={e}
-                    onclick={() => void pickMailingListEmoji(ml, e)}
-                  >{e}</button>
-                {/each}
-              </div>
-              {#if ml.emoji}
-                <button
-                  type="button"
-                  class="mt-2 w-full text-xs text-surface-500 hover:text-error-500"
-                  onclick={() => void pickMailingListEmoji(ml, null)}
-                >Remove emoji</button>
-              {/if}
+              <EmojiPicker
+                value={ml.emoji}
+                onpick={(emoji) => void pickMailingListEmoji(ml, emoji)}
+              />
             </div>
           {/if}
         </div>
@@ -1903,21 +1878,12 @@
       />
 
       <div class="text-xs text-surface-500 mb-1">Emoji (optional)</div>
-      <div class="grid grid-cols-8 gap-0.5 mb-4 max-h-48 overflow-y-auto p-1 border border-surface-200 dark:border-surface-700 rounded-md">
-        <button
-          type="button"
-          class="w-8 h-8 flex items-center justify-center text-xs rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 {newListForm.emoji === null ? 'bg-primary-500/15 ring-1 ring-primary-500' : ''}"
-          title="No emoji"
-          onclick={() => { newListForm!.emoji = null }}
-        >∅</button>
-        {#each MAILING_LIST_EMOJIS as e (e)}
-          <button
-            type="button"
-            class="w-8 h-8 flex items-center justify-center text-lg rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 {newListForm.emoji === e ? 'bg-primary-500/15 ring-1 ring-primary-500' : ''}"
-            title={e}
-            onclick={() => { newListForm!.emoji = e }}
-          >{e}</button>
-        {/each}
+      <div class="mb-4">
+        <EmojiPicker
+          value={newListForm.emoji}
+          widthClass="w-full"
+          onpick={(emoji) => { newListForm!.emoji = emoji }}
+        />
       </div>
 
       {#if newListError}
