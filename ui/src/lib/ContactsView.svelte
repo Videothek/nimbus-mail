@@ -144,6 +144,19 @@
     hidden: boolean
   }
   let groups = $state<ContactGroupView[]>([])
+  /** Read-only NC user groups + Teams (#133 follow-up).
+   *  Hydrated once on mount via `list_nextcloud_groups`; the
+   *  sidebar renders them in their own section so the user can
+   *  filter / autocomplete from them without confusing them
+   *  with locally-managed vCard groups. */
+  interface NcGroupView {
+    nextcloudAccountId: string
+    id: string
+    source: 'group' | 'team'
+    displayName: string
+    members: { userId: string; displayName: string; email: string }[]
+  }
+  let ncGroups = $state<NcGroupView[]>([])
   /** Currently-active filter: `'all'` shows every contact in the
    *  middle list; a group id filters the list to that group's
    *  members.  Hidden groups are excluded from the sidebar so
@@ -178,6 +191,11 @@
       )
     } catch (e) {
       console.warn('list_contact_groups failed', e)
+    }
+    try {
+      ncGroups = await invoke<NcGroupView[]>('list_nextcloud_groups')
+    } catch (e) {
+      console.warn('list_nextcloud_groups failed', e)
     }
   }
   async function createGroup() {
@@ -304,11 +322,25 @@
     const q = query.trim().toLowerCase()
     let scope = contacts
     if (selectedGroupId !== 'all') {
-      // Filter to the selected group's members.  Match by bare
-      // vcard UID against the contact's composite id segment.
-      const g = groups.find((x) => x.id === selectedGroupId)
-      const uids = new Set(g?.memberUids ?? [])
-      scope = contacts.filter((c) => uids.has(bareUidOf(c)))
+      // vCard groups match by bare UID; NC groups / Teams (id
+      // prefixed with `nc:`) match by email since their members
+      // are NC user IDs, not vCard UIDs.
+      if (selectedGroupId.startsWith('nc:')) {
+        const ncId = selectedGroupId.slice(3)
+        const g = ncGroups.find((x) => x.id === ncId)
+        const emails = new Set(
+          (g?.members ?? [])
+            .map((m) => m.email.toLowerCase())
+            .filter((e) => e.length > 0),
+        )
+        scope = contacts.filter((c) =>
+          c.email.some((e) => emails.has(e.value.toLowerCase())),
+        )
+      } else {
+        const g = groups.find((x) => x.id === selectedGroupId)
+        const uids = new Set(g?.memberUids ?? [])
+        scope = contacts.filter((c) => uids.has(bareUidOf(c)))
+      }
     }
     if (!q) return scope
     return scope.filter(
@@ -656,8 +688,9 @@
     <div class="px-3 pt-3">
       <button
         class="btn w-full preset-filled-primary-500 text-sm"
+        title="Create a contact group / mailing list — Nimbus stores both as a vCard KIND:group, so the same flow works for either."
         onclick={() => void createGroup()}
-      >+ New group</button>
+      >+ New group / list</button>
     </div>
     <div class="flex-1 overflow-y-auto px-2 py-2 space-y-1">
       <!-- "All" pseudo-row clears the filter. -->
@@ -719,8 +752,57 @@
       {/each}
       {#if visibleGroups.length === 0}
         <p class="px-3 py-2 text-xs text-surface-500 italic">
-          No groups yet. Right-click an entry for rename / emoji / delete.
+          No groups yet. Click <span class="font-semibold">+ New group / list</span> above
+          — works for both contact groups and mailing lists. Drag a contact onto
+          a group to add them, right-click for rename / emoji / delete.
         </p>
+      {/if}
+
+      <!-- Nextcloud user groups + Teams (#133 follow-up).
+           Read-only — managed in the NC admin UI / Files
+           sidebar — so we render them in a separate section
+           with a "NC" / "Team" pill and skip the right-click
+           menu.  Click filters the contact list to members
+           whose email matches the group roster. -->
+      {#if ncGroups.some((g) => g.source === 'group')}
+        <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">
+          Nextcloud groups
+        </div>
+        {#each ncGroups.filter((g) => g.source === 'group') as g (g.id)}
+          {@const sel = selectedGroupId === `nc:${g.id}`}
+          <button
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
+                   {sel
+                     ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
+                     : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            title="Read-only — manage members in your Nextcloud admin UI"
+            onclick={() => (selectedGroupId = `nc:${g.id}`)}
+          >
+            <span class="w-6 text-center">🏢</span>
+            <span class="flex-1 truncate">{g.displayName}</span>
+            <span class="text-xs text-surface-500">{g.members.length}</span>
+          </button>
+        {/each}
+      {/if}
+      {#if ncGroups.some((g) => g.source === 'team')}
+        <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">
+          Teams
+        </div>
+        {#each ncGroups.filter((g) => g.source === 'team') as g (g.id)}
+          {@const sel = selectedGroupId === `nc:${g.id}`}
+          <button
+            class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors
+                   {sel
+                     ? 'bg-primary-500/15 text-primary-600 dark:text-primary-300 font-medium'
+                     : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
+            title="Read-only — manage members in Nextcloud's Teams app"
+            onclick={() => (selectedGroupId = `nc:${g.id}`)}
+          >
+            <span class="w-6 text-center">⚡</span>
+            <span class="flex-1 truncate">{g.displayName}</span>
+            <span class="text-xs text-surface-500">{g.members.length}</span>
+          </button>
+        {/each}
       {/if}
     </div>
   </aside>

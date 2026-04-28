@@ -37,4 +37,8 @@ pub use talk::{
     CreateRoomOptions, ParticipantSource, RoomType, TalkRoom, add_participant, create_room,
     delete_room, list_rooms, rename_room, set_room_public,
 };
-pub use user::{NextcloudUserMatch, NextcloudUserProfile, fetch_current_user, find_user_by_email};
+pub use user::{
+    NextcloudCircle, NextcloudUserMatch, NextcloudUserProfile, NextcloudUserSummary,
+    fetch_circle_member_ids, fetch_current_user, fetch_group_member_ids, fetch_my_circles,
+    fetch_my_groups, fetch_user_profile, find_user_by_email,
+};
