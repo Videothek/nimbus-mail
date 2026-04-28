@@ -22,8 +22,8 @@ use nimbus_carddav::{
 };
 use nimbus_core::NimbusError;
 use nimbus_core::models::{
-    Account, AppSettings, CalendarEvent, Contact, Email, EmailEnvelope, EventAttendee,
-    EventReminder, Folder, NextcloudAccount, OutgoingEmail,
+    Account, AppSettings, CalendarEvent, Contact, CustomTheme, Email, EmailEnvelope,
+    EventAttendee, EventReminder, Folder, NextcloudAccount, OutgoingEmail,
 };
 use nimbus_imap::ImapClient;
 use nimbus_jmap::JmapClient;
@@ -5682,6 +5682,151 @@ async fn check_mail_now(app: AppHandle) -> Result<(), NimbusError> {
     check_mail_now_inner(&app).await
 }
 
+// ── Custom themes (#132 tier 2) ────────────────────────────────
+//
+// User picks a Skeleton-shape CSS file in the Settings → Design
+// "Import theme…" flow.  The frontend hands us the file's
+// absolute path; we copy the bytes under
+// `<config>/nimbus-mail/themes/<id>.css`, parse out the
+// `[data-theme="…"]` slug to use as the picker id, and append a
+// `CustomTheme` record to AppSettings.
+//
+// Removal deletes both the on-disk copy and the AppSettings row;
+// the frontend's theme picker rebuilds from `get_app_settings`
+// after each operation, so no extra plumbing.
+
+/// Resolve the user-themes directory under the app's config root.
+/// Created on demand — first import is what creates the folder.
+fn custom_themes_dir() -> Result<std::path::PathBuf, NimbusError> {
+    let base = dirs::config_dir()
+        .ok_or_else(|| NimbusError::Other("cannot resolve user config dir".into()))?;
+    let dir = base.join("nimbus-mail").join("themes");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return Err(NimbusError::Other(format!(
+            "create themes dir {}: {e}",
+            dir.display()
+        )));
+    }
+    Ok(dir)
+}
+
+/// Pull the theme slug out of an imported CSS file by scanning
+/// for the first `[data-theme="…"]` selector.  Falls back to the
+/// file stem when the file doesn't follow Skeleton's convention,
+/// so the user still gets *something* in the picker — just won't
+/// switch unless they edit the CSS to match the slug.
+fn extract_theme_slug(css: &str, fallback: &str) -> String {
+    let needle = "[data-theme=";
+    if let Some(idx) = css.find(needle) {
+        let tail = &css[idx + needle.len()..];
+        // Accept both `"foo"` and `'foo'` quoting, tolerate
+        // intra-attribute whitespace.
+        let trimmed = tail.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('"').or_else(|| trimmed.strip_prefix('\'')) {
+            if let Some(end) = rest.find(['"', '\'']) {
+                let slug = rest[..end].trim();
+                if !slug.is_empty() {
+                    return slug.to_string();
+                }
+            }
+        }
+    }
+    fallback.to_string()
+}
+
+/// Copy a user-picked CSS file into the app's themes directory
+/// and append a `CustomTheme` record to AppSettings.  Returns the
+/// freshly-created record so the frontend can register the
+/// runtime stylesheet without re-reading settings.
+///
+/// Soft-fails on a duplicate slug by overwriting the previous
+/// import — that's the natural "I edited the same file and want
+/// to re-import" flow, and avoids forcing the user to remove the
+/// old row first.
+#[tauri::command]
+async fn import_custom_theme(
+    app: AppHandle,
+    source_path: String,
+    label: Option<String>,
+    settings: State<'_, SharedSettings>,
+) -> Result<CustomTheme, NimbusError> {
+    let src = std::path::PathBuf::from(&source_path);
+    if !src.exists() {
+        return Err(NimbusError::Other(format!(
+            "theme source not found: {source_path}"
+        )));
+    }
+    let css = std::fs::read_to_string(&src)
+        .map_err(|e| NimbusError::Other(format!("read theme source: {e}")))?;
+    let stem = src
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("custom-theme")
+        .to_string();
+    let slug = extract_theme_slug(&css, &stem);
+    let dir = custom_themes_dir()?;
+    let dest = dir.join(format!("{slug}.css"));
+    std::fs::write(&dest, &css)
+        .map_err(|e| NimbusError::Other(format!("copy theme file: {e}")))?;
+
+    let record = CustomTheme {
+        id: slug.clone(),
+        label: label.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| {
+            // Title-case the slug so "my_theme" reads "My theme"
+            // rather than something the user has to fix manually.
+            stem.replace(['_', '-'], " ")
+        }),
+        description: "Imported theme".to_string(),
+        path: dest.to_string_lossy().to_string(),
+    };
+
+    {
+        let mut s = settings.write().await;
+        // Replace any existing row with the same id (re-import).
+        s.custom_themes.retain(|t| t.id != record.id);
+        s.custom_themes.push(record.clone());
+        app_settings::save_settings(&s)?;
+    }
+
+    // Tell every window so a second-window picker stays in sync.
+    if let Err(e) = app.emit("custom-themes-changed", ()) {
+        tracing::warn!("emit custom-themes-changed failed: {e}");
+    }
+    Ok(record)
+}
+
+/// Remove a user-imported theme — drops both the on-disk CSS and
+/// the AppSettings row.  No-op when the id isn't found so the UI
+/// can fire-and-forget without checking first.
+#[tauri::command]
+async fn remove_custom_theme(
+    app: AppHandle,
+    id: String,
+    settings: State<'_, SharedSettings>,
+) -> Result<(), NimbusError> {
+    let path: Option<String> = {
+        let mut s = settings.write().await;
+        let path = s.custom_themes.iter().find(|t| t.id == id).map(|t| t.path.clone());
+        s.custom_themes.retain(|t| t.id != id);
+        // If the removed theme was the active one, drop back to
+        // the default so the UI doesn't try to render a missing
+        // file on next launch.
+        if s.theme_name == id {
+            s.theme_name = "cerberus".into();
+        }
+        app_settings::save_settings(&s)?;
+        path
+    };
+    if let Some(p) = path
+        && let Err(e) = std::fs::remove_file(&p) {
+            tracing::warn!("remove theme file {p}: {e}");
+        }
+    if let Err(e) = app.emit("custom-themes-changed", ()) {
+        tracing::warn!("emit custom-themes-changed failed: {e}");
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn get_total_unread(cache: State<'_, Cache>) -> Result<u32, NimbusError> {
     cache.total_unread_count().map_err(Into::into)
@@ -6017,6 +6162,8 @@ fn main() {
             // Issue #16: tray + notifications + preferences
             get_app_settings,
             update_app_settings,
+            import_custom_theme,
+            remove_custom_theme,
             check_mail_now,
             dismiss_talk_reminder,
             get_total_unread,

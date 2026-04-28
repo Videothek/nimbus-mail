@@ -8,9 +8,15 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
   import { enable as autostartEnable, disable as autostartDisable, isEnabled as autostartIsEnabled } from '@tauri-apps/plugin-autostart'
   import NextcloudSettings from './NextcloudSettings.svelte'
-  import { THEMES, applyTheme, type ThemeMode } from './theme'
+  import {
+    STOCK_THEMES,
+    applyTheme,
+    type ThemeMode,
+    type ThemeOption,
+  } from './theme'
 
   // ── Types ───────────────────────────────────────────────────
   // Mirrors the Rust `Account` struct from nimbus-core
@@ -110,6 +116,14 @@
     default_calendar_id: string | null
     talk_reminder_enabled: boolean
     autostart_enabled: boolean
+    /** User-imported Skeleton themes (#132 tier 2). */
+    custom_themes?: CustomThemeRow[]
+  }
+  interface CustomThemeRow {
+    id: string
+    label: string
+    description?: string
+    path: string
   }
 
   let appSettings = $state<AppSettings>({
@@ -125,7 +139,23 @@
     default_calendar_id: null,
     talk_reminder_enabled: true,
     autostart_enabled: false,
+    custom_themes: [],
   })
+
+  /** Picker rows — stock themes plus the user's imports.  Driven
+   *  by `appSettings.custom_themes` so a fresh import / remove
+   *  triggers Svelte's reactivity automatically (the previous
+   *  Proxy-based `THEMES` export couldn't, because it was a
+   *  plain module-level mutable). */
+  const pickerThemes = $derived<ThemeOption[]>([
+    ...STOCK_THEMES,
+    ...((appSettings.custom_themes ?? []).map((t) => ({
+      id: t.id,
+      label: t.label,
+      description: t.description ?? 'Imported theme',
+      custom: true,
+    }))),
+  ])
 
   // Calendar list for the "default calendar" picker.  Loaded
   // lazily once on mount alongside the other app settings.
@@ -239,6 +269,72 @@
       })
       .catch((e) => console.warn('autostart isEnabled failed', e))
   })
+
+  // ── Custom theme import (#132 tier 2) ──────────────────────
+  // The picker shows an "Import theme…" button next to the
+  // Theme heading.  Clicking it opens a native file dialog
+  // restricted to `.css` files; the picked path is handed to
+  // the backend's `import_custom_theme` IPC, which copies the
+  // bytes into the app's themes dir, parses out the
+  // `[data-theme="…"]` slug, and persists a `CustomTheme` row.
+  // App.svelte's `custom-themes-changed` listener picks the
+  // change up and re-seeds the theme module's runtime registry,
+  // so the new entry appears in the picker without a reload.
+  let importingTheme = $state(false)
+  async function importCustomTheme() {
+    if (importingTheme) return
+    importingTheme = true
+    try {
+      const picked = await openFileDialog({
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'CSS theme', extensions: ['css'] }],
+      })
+      if (!picked) return
+      const path = typeof picked === 'string' ? picked : picked.path
+      const fileName = path.split(/[\\/]/).pop() ?? ''
+      const stem = fileName.replace(/\.css$/i, '')
+      // Reasonable default label — the user can rename later.
+      const label = stem.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+      await invoke('import_custom_theme', {
+        sourcePath: path,
+        label,
+      })
+      // Re-pull the live settings snapshot — the import added
+      // a row to `custom_themes`, and the picker reads it via
+      // `pickerThemes` $derived.  Without this refresh the new
+      // theme would only appear after a full reload.
+      await reloadSettingsSnapshot()
+    } catch (e) {
+      console.warn('import_custom_theme failed', e)
+    } finally {
+      importingTheme = false
+    }
+  }
+  async function removeCustomTheme(id: string) {
+    if (!confirm('Remove this custom theme? The CSS file in the app data folder will be deleted.')) {
+      return
+    }
+    try {
+      await invoke('remove_custom_theme', { id })
+      await reloadSettingsSnapshot()
+    } catch (e) {
+      console.warn('remove_custom_theme failed', e)
+    }
+  }
+  /** Pull the just-saved AppSettings back into `appSettings`
+   *  so derived state (the picker list, the From: header, …)
+   *  recomputes against the new server-side truth without a
+   *  full page reload. */
+  async function reloadSettingsSnapshot() {
+    try {
+      const fresh = await invoke<AppSettings>('get_app_settings')
+      appSettings = fresh
+      onappprefschanged?.({ ...fresh })
+    } catch (e) {
+      console.warn('get_app_settings refresh failed', e)
+    }
+  }
 
   /** Theme picker handler — apply the change to the DOM immediately
       so the user sees it before the debounced save fires. We still go
@@ -788,22 +884,56 @@
         </div>
 
         <div>
-          <p class="font-medium mb-2">Theme</p>
+          <div class="flex items-center justify-between mb-2">
+            <p class="font-medium">Theme</p>
+            <button
+              type="button"
+              class="btn btn-sm preset-outlined-primary-500 text-xs"
+              disabled={importingTheme}
+              onclick={() => void importCustomTheme()}
+              title="Pick a Skeleton-shape CSS file from disk. The Skeleton theme generator (skeleton.dev) exports compatible files; community themes also work."
+            >{importingTheme ? 'Importing…' : '+ Import theme…'}</button>
+          </div>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {#each THEMES as theme (theme.id)}
-              <button
-                type="button"
-                class="text-left p-3 rounded-md border transition-colors {appSettings.theme_name ===
-                theme.id
-                  ? 'border-primary-500 bg-primary-500/10'
-                  : 'border-surface-300 dark:border-surface-700 hover:bg-surface-200 dark:hover:bg-surface-700'}"
-                onclick={() => onThemeChange(theme.id, appSettings.theme_mode)}
-              >
-                <div class="font-medium">{theme.label}</div>
-                <div class="text-xs text-surface-500 mt-0.5">{theme.description}</div>
-              </button>
+            {#each pickerThemes as theme (theme.id)}
+              {@const active = appSettings.theme_name === theme.id}
+              <div class="relative">
+                <button
+                  type="button"
+                  class="w-full text-left p-3 rounded-md border transition-colors {active
+                    ? 'border-primary-500 bg-primary-500/10'
+                    : 'border-surface-300 dark:border-surface-700 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+                  onclick={() => onThemeChange(theme.id, appSettings.theme_mode)}
+                >
+                  <div class="font-medium flex items-center gap-2">
+                    <span>{theme.label}</span>
+                    {#if theme.custom}
+                      <span class="text-[10px] uppercase tracking-wider font-semibold px-1 py-px rounded bg-primary-500/20 text-primary-600 dark:text-primary-300">
+                        custom
+                      </span>
+                    {/if}
+                  </div>
+                  <div class="text-xs text-surface-500 mt-0.5">{theme.description}</div>
+                </button>
+                {#if theme.custom}
+                  <button
+                    type="button"
+                    class="absolute top-1 right-1 w-6 h-6 rounded text-xs text-surface-500 hover:bg-error-500/20 hover:text-error-500"
+                    title="Remove custom theme"
+                    aria-label={`Remove ${theme.label}`}
+                    onclick={(e) => {
+                      e.stopPropagation()
+                      void removeCustomTheme(theme.id)
+                    }}
+                  >×</button>
+                {/if}
+              </div>
             {/each}
           </div>
+          <p class="text-xs text-surface-400 mt-2">
+            Imported themes aren't validated — a poorly-tuned palette can hurt readability.
+            Skeleton's theme generator at <span class="font-mono">skeleton.dev</span> exports compatible files.
+          </p>
         </div>
 
         <div>

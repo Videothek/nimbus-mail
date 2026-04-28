@@ -73,6 +73,38 @@ pub struct AppSettings {
     /// settings UI keeps this in lockstep with the OS state via
     /// the plugin's `enable` / `disable` IPCs.
     pub autostart_enabled: bool,
+    /// User-imported Skeleton theme CSS files (#132 tier 2).
+    /// Populated by `import_custom_theme` (Tauri command) — copies
+    /// the picked file under
+    /// `<config>/nimbus-mail/themes/<id>.css` and tracks its
+    /// metadata here.  Frontend's theme picker merges this list
+    /// with the stock catalogue.
+    #[serde(default)]
+    pub custom_themes: Vec<CustomTheme>,
+}
+
+/// One user-imported Skeleton theme — the metadata the picker
+/// needs (#132 tier 2).  The actual CSS lives at `path`; we keep
+/// the slug, label, and description here so the picker can show
+/// a row without parsing the file every time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomTheme {
+    /// Theme slug — matches the value declared inside the CSS
+    /// file's `[data-theme="…"]` selector.  This is what we set
+    /// on `<html data-theme="…">` to activate the theme.
+    pub id: String,
+    /// Human-readable label shown in the picker.  Defaults to
+    /// the imported file's stem on first import; the user can
+    /// rename later.
+    pub label: String,
+    /// One-line description shown next to the label.
+    #[serde(default)]
+    pub description: String,
+    /// Absolute path to the CSS file under
+    /// `<config>/nimbus-mail/themes/`.  Stored absolute so the
+    /// frontend can pass it through `convertFileSrc` without
+    /// having to know our data-dir layout.
+    pub path: String,
 }
 
 /// Light/dark mode selection. `System` follows the OS preference
@@ -112,6 +144,7 @@ impl Default for AppSettings {
             default_calendar_id: None,
             talk_reminder_enabled: true,
             autostart_enabled: false,
+            custom_themes: Vec::new(),
         }
     }
 }

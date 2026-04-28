@@ -146,6 +146,73 @@ shows which Nextcloud apps are available (Talk, Files, Calendar,
 Contacts). The feature-specific integrations that consume these
 capabilities are tracked in the [Roadmap](#roadmap).
 
+## Themes
+
+Nimbus uses [Skeleton UI](https://www.skeleton.dev) for theming. Out of
+the box you can pick any of Skeleton's 22 stock themes from
+*Settings → Design*, plus a Light / Dark / Follow-OS toggle that applies
+on top of any theme.
+
+### Importing a custom theme
+
+Skeleton themes are plain CSS — a single file declaring the colour
+tokens under a `[data-theme="<slug>"]` selector. Nimbus can load any
+file that follows that shape, so community themes and the output of
+Skeleton's [Theme Generator](https://themes.skeleton.dev) both work.
+
+1. **Get a theme file.** Either:
+   - Open the **[Skeleton Theme Generator](https://themes.skeleton.dev)**
+     in your browser, tweak the palette and properties, then click
+     *Export* → *CSS*. Save the file (e.g. `aurora.css`).
+   - Or download a community theme as a `.css` file from anywhere
+     you trust.
+2. **Open Nimbus → Settings → Design.**
+3. Click **`+ Import theme…`** in the *Theme* section.
+4. Pick the `.css` file in the native file dialog.
+5. The new theme appears in the picker grid with a small **`custom`**
+   tag. Click it to switch to it — the change applies live, no
+   restart.
+6. To remove a custom theme, click the small **`×`** in the top-right
+   corner of its picker tile. The CSS file is deleted from
+   `<config>/nimbus-mail/themes/`. If the removed theme was active,
+   Nimbus falls back to the default *Cerberus*.
+
+### Anatomy of a Skeleton theme file
+
+If you want to author one by hand, the minimum shape is:
+
+```css
+[data-theme='aurora'] {
+  --color-primary-500: #6c5ce7;
+  --color-secondary-500: #00b894;
+  --color-tertiary-500: #fd79a8;
+  --color-success-500: #2ecc71;
+  --color-warning-500: #f39c12;
+  --color-error-500:   #e74c3c;
+  --color-surface-50:  #ffffff;
+  /* …surface-100..-900, contrast tokens, type scale, … */
+}
+```
+
+The slug inside `[data-theme='…']` becomes the theme's id in the
+picker — a single CSS file therefore declares exactly one theme.
+Skeleton's docs cover the [full token list](https://www.skeleton.dev/docs/design/themes)
+including dark-mode variants. Imported themes aren't validated, so a
+missing or low-contrast token can hurt readability — pick from the
+generator if in doubt.
+
+### Where the files live
+
+| Platform | Path                                                  |
+|----------|-------------------------------------------------------|
+| Linux    | `~/.config/nimbus-mail/themes/`                       |
+| macOS    | `~/Library/Application Support/nimbus-mail/themes/`   |
+| Windows  | `%APPDATA%\nimbus-mail\themes\`                       |
+
+You can drop CSS files there directly and re-launch Nimbus, but the
+*Import* button is the supported path — it parses the slug, copies
+the file, and registers the theme with the picker in one step.
+
 ## Architecture principles
 
 - **Separation of concerns** — the Rust core library handles all

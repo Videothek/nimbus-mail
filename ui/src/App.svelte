@@ -36,7 +36,15 @@
     type SearchFilters,
   } from './lib/SearchBar.svelte'
   import SearchResults from './lib/SearchResults.svelte'
-  import { applyTheme, installSystemModeListener, type ThemeMode } from './lib/theme'
+  import {
+    applyTheme,
+    installSystemModeListener,
+    registerCustomThemePath,
+    setCustomThemes,
+    unregisterCustomThemePath,
+    type ThemeMode,
+    type ThemeOption,
+  } from './lib/theme'
 
   // ── View state ──────────────────────────────────────────────
   // Which view is currently shown. Starts as 'loading' until we
@@ -198,6 +206,14 @@
     auto_advance_after_remove: boolean
     talk_reminder_enabled: boolean
     autostart_enabled: boolean
+    /** User-imported Skeleton themes (#132 tier 2). */
+    custom_themes?: CustomTheme[]
+  }
+  type CustomTheme = {
+    id: string
+    label: string
+    description?: string
+    path: string
   }
 
   // Issue #123: Talk-join reminders.  Rust scans upcoming
@@ -361,10 +377,31 @@
   async function loadAppPrefs() {
     try {
       appPrefs = await invoke<AppPrefs>('get_app_settings')
+      // Seed the theme module's custom-theme registry so the
+      // picker + the runtime <link> swap know about the user's
+      // imported themes (#132).  Re-runs on every reload so
+      // imports/removals from another window stay in sync.
+      const list: CustomTheme[] = appPrefs.custom_themes ?? []
+      const options: ThemeOption[] = list.map((t) => ({
+        id: t.id,
+        label: t.label,
+        description: t.description ?? 'Imported theme',
+        custom: true,
+      }))
+      setCustomThemes(options)
+      for (const t of list) registerCustomThemePath(t.id, t.path)
+      // Drop any stale entries from a previous load that the
+      // user has since removed.
+      const liveIds = new Set(list.map((t) => t.id))
+      for (const id of Object.keys(prevCustomThemeIds)) {
+        if (!liveIds.has(id)) unregisterCustomThemePath(id)
+      }
+      prevCustomThemeIds = Object.fromEntries(list.map((t) => [t.id, true]))
     } catch (err) {
       console.warn('get_app_settings failed', err)
     }
   }
+  let prevCustomThemeIds: Record<string, boolean> = {}
 
   async function loadNotificationIconPath() {
     try {
@@ -393,6 +430,7 @@
 
     let unlistenNewMail: UnlistenFn | null = null
     let unlistenTalkReminder: UnlistenFn | null = null
+    let unlistenCustomThemes: UnlistenFn | null = null
     let unlistenCompose: UnlistenFn | null = null
     let unlistenComposeFromMail: UnlistenFn | null = null
     let unlistenEditDraftFromMail: UnlistenFn | null = null
@@ -403,6 +441,13 @@
       unlistenTalkReminder = await listen<TalkReminder>(
         'talk-join-reminder',
         (e) => handleTalkReminder(e.payload),
+      )
+      // #132: backend fires this whenever a custom theme is
+      // imported / removed (in this window or another).  Re-pull
+      // settings so the picker + the runtime <link> registry
+      // both refresh without a full reload.
+      unlistenCustomThemes = await listen('custom-themes-changed', () =>
+        loadAppPrefs(),
       )
       unlistenCompose = await listen('open-compose', () => openCompose({}))
       // Standalone-mail windows (#104) emit these when the user
@@ -427,6 +472,7 @@
     return () => {
       unlistenNewMail?.()
       unlistenTalkReminder?.()
+      unlistenCustomThemes?.()
       unlistenCompose?.()
       unlistenComposeFromMail?.()
       unlistenEditDraftFromMail?.()
