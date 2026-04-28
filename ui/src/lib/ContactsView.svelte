@@ -58,8 +58,8 @@
     note?: string | null
     addresses?: ContactAddress[]
     urls?: string[]
-    /** vCard CATEGORIES — the Kontaktgruppen the contact
-     *  belongs to.  Mutated by drag-drop onto a Kontaktgruppe
+    /** vCard CATEGORIES — the Contact Groups the contact
+     *  belongs to.  Mutated by drag-drop onto a Contact Group
      *  row in the sidebar; sync goes back to NC via
      *  `add_contact_to_category`. */
     categories?: string[]
@@ -168,7 +168,7 @@
    *  Strings: `'all'` | `'addressbook:<path>'` | `'category:<name>'`. */
   let selectedScope = $state<string>('all')
 
-  /** Drag state for the drop-a-contact-on-a-Kontaktgruppe
+  /** Drag state for the drop-a-contact-on-a-Contact Group
    *  flow.  Carries the *app-side* contact id (`nc::uid`)
    *  since the IPC takes the composite id, not the bare UID. */
   let draggedContactId = $state<string | null>(null)
@@ -194,7 +194,7 @@
   let pickerOpen = $state(false)
   let pickerQuery = $state('')
   /** Which row's three-dot menu is open (Lists tab + Contacts
-   *  tab Kontaktgruppen).  String id keys keep the lookup
+   *  tab Contact Groups).  String id keys keep the lookup
    *  cheap and let one popover replace another by simply
    *  reassigning. */
   let openMenuFor = $state<string | null>(null)
@@ -275,12 +275,12 @@
     }
   }
 
-  // ── Kontaktgruppe (CATEGORIES) CRUD ────────────────────────
+  // ── Contact Group (CATEGORIES) CRUD ────────────────────────
   async function createCategory() {
-    const name = prompt('New Kontaktgruppe — name?')?.trim()
+    const name = prompt('New Contact Group — name?')?.trim()
     if (!name) return
     if (contacts.length === 0) {
-      formError = 'Add at least one contact before creating a Kontaktgruppe — a tag with no contacts vanishes on the next sync.'
+      formError = 'Add at least one contact before creating a Contact Group — a tag with no contacts vanishes on the next sync.'
       return
     }
     const seedRaw = prompt(
@@ -299,7 +299,7 @@
     if (seedIds.length === 0) {
       // No matching contacts — the category would vanish.
       // Bail with a hint rather than silently doing nothing.
-      formError = 'None of the pasted emails matched a cached contact — Kontaktgruppe not created.'
+      formError = 'None of the pasted emails matched a cached contact — Contact Group not created.'
       return
     }
     for (const id of seedIds) {
@@ -313,14 +313,14 @@
     selectedScope = `category:${name}`
   }
   async function renameCategory(name: string) {
-    const next = prompt('Rename Kontaktgruppe', name)?.trim()
+    const next = prompt('Rename Contact Group', name)?.trim()
     if (!next || next === name) return
     try {
       await invoke('rename_contact_category', { old: name, new: next })
       await reloadContacts()
       if (selectedScope === `category:${name}`) selectedScope = `category:${next}`
     } catch (e) {
-      formError = formatError(e) || 'Failed to rename Kontaktgruppe'
+      formError = formatError(e) || 'Failed to rename Contact Group'
     }
   }
   async function deleteCategory(name: string) {
@@ -330,7 +330,7 @@
       await reloadContacts()
       if (selectedScope === `category:${name}`) selectedScope = 'all'
     } catch (e) {
-      formError = formatError(e) || 'Failed to delete Kontaktgruppe'
+      formError = formatError(e) || 'Failed to delete Contact Group'
     }
   }
   async function toggleCategoryAsList(name: string, currentlyOn: boolean) {
@@ -838,7 +838,7 @@
 
 <div class="h-full flex bg-surface-50 dark:bg-surface-900">
   <!-- ── Sidebar — Contacts heading, tab strip, and (when on
-       the Contacts tab) addressbooks + Kontaktgruppen.  The
+       the Contacts tab) addressbooks + Contact Groups.  The
        sidebar stays mounted on the Mailing lists tab so the
        tab strip + heading don't move; only the navigation
        sections collapse. ───────────────────────────────────── -->
@@ -913,16 +913,16 @@
         {/each}
       {/if}
 
-      <!-- Kontaktgruppen — derived from CATEGORIES on every
+      <!-- Contact Groups — derived from CATEGORIES on every
            cached vCard.  Drag-drop a contact onto a row to add
            it; right-click opens rename / delete; the swatch
            toggles "Use as mailing list". -->
       <div class="px-3 pt-3 pb-1 flex items-center justify-between">
-        <span class="text-[10px] uppercase tracking-wider text-surface-500">Kontaktgruppen</span>
+        <span class="text-[10px] uppercase tracking-wider text-surface-500">Contact Groups</span>
         <button
           class="w-5 h-5 rounded-md flex items-center justify-center text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700"
-          title="New Kontaktgruppe"
-          aria-label="New Kontaktgruppe"
+          title="New Contact Group"
+          aria-label="New Contact Group"
           onclick={() => void createCategory()}
         >+</button>
       </div>
@@ -976,7 +976,19 @@
           }}
         >
           <span class="w-6 text-center">{(c.name || '?').slice(0, 1).toUpperCase()}</span>
-          <span class="flex-1 truncate">{c.name}</span>
+          <span class="flex-1 truncate flex items-center gap-1">
+            <span class="truncate">{c.name}</span>
+            {#if !c.useAsMailingList}
+              <!-- Subtle hint that this Contact Group is set
+                   to "Don't use as mailing list" — without it
+                   the toggle in the three-dot menu has no
+                   visual feedback in the contacts sidebar. -->
+              <span
+                class="text-[10px] uppercase tracking-wider px-1 py-px rounded bg-surface-300 dark:bg-surface-600 text-surface-500 shrink-0"
+                title="Not used as a mailing list"
+              >solo</span>
+            {/if}
+          </span>
           <span class="text-xs text-surface-500 mr-1">{c.memberCount}</span>
           <!-- Three-dot menu: rename, delete, toggle "use as
                mailing list".  Replaces the previous inline
@@ -987,7 +999,7 @@
             <button
               class="w-5 h-5 rounded text-surface-500 hover:bg-surface-300 dark:hover:bg-surface-600 leading-none"
               title="More actions"
-              aria-label="Kontaktgruppe actions"
+              aria-label="Contact Group actions"
               onclick={(e) => {
                 e.stopPropagation()
                 const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
@@ -1026,7 +1038,7 @@
       {/each}
       {#if categories.length === 0}
         <p class="px-3 py-2 text-xs text-surface-500 italic">
-          No Kontaktgruppen yet. Click <span class="font-semibold">+</span> to
+          No Contact Groups yet. Click <span class="font-semibold">+</span> to
           create one — drag contacts onto it after to tag them.
         </p>
       {/if}
@@ -1034,7 +1046,7 @@
     {/if}
     {#if activeTab === 'lists'}
     <!-- Lists tab — sidebar shows three sections (Mailing
-         lists / Kontaktgruppen / Teams).  Split out from the
+         lists / Contact Groups / Teams).  Split out from the
          {#if/:else} pair as two independent branches because
          the {:else} variant was being clipped by the open
          three-dot menu's fixed overlay on first click,
@@ -1122,7 +1134,7 @@
 
       <!-- Mailing lists — the manual KIND:group cards.  Header
            gets its own `+` so creating one feels symmetric with
-           the Kontaktgruppen section in the Contacts tab. -->
+           the Contact Groups section in the Contacts tab. -->
       <div class="px-3 pt-1 pb-1 flex items-center justify-between">
         <span class="text-[10px] uppercase tracking-wider text-surface-500">Mailing lists</span>
         <button
@@ -1141,7 +1153,7 @@
         </p>
       {/if}
       {#if filteredMailingLists.category.length > 0}
-        <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">Kontaktgruppen</div>
+        <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">Contact Groups</div>
         {#each filteredMailingLists.category as ml (ml.id)}
           {@render listRow(ml, '🏷️', 'bg-primary-500/20 text-primary-600 dark:text-primary-300', 'category')}
         {/each}
@@ -1155,7 +1167,7 @@
       {#if mailingLists.length === 0}
         <p class="px-3 py-2 text-xs text-surface-500 italic">
           No mailing lists yet. Click <span class="font-semibold">+ New mailing list</span> for
-          a manual one, or tag contacts with a Kontaktgruppe and pick
+          a manual one, or tag contacts with a Contact Group and pick
           "Use as mailing list" from its three-dot menu.
         </p>
       {/if}
@@ -1275,41 +1287,36 @@
              member list inline.  + Add Contact flips the
              column into a contact-picker that lists every
              contact NOT already in the list. -->
-        {#if editable}
-          <div class="p-3 flex items-center gap-2 border-b border-surface-200 dark:border-surface-700">
-            {#if pickerOpen}
-              <input
-                type="search"
-                class="input flex-1 text-sm"
-                placeholder="Search contacts to add"
-                bind:value={pickerQuery}
-              />
-            {:else}
-              <input
-                type="search"
-                class="input flex-1 text-sm"
-                placeholder="Search members"
-                bind:value={memberQuery}
-              />
-            {/if}
+        <!-- Search field + Add Contact button stack — same
+             vertical layout the Contacts tab middle column
+             uses (search on top, primary action below) for
+             visual consistency. -->
+        <div class="p-3 flex flex-col gap-2 border-b border-surface-200 dark:border-surface-700">
+          {#if pickerOpen}
+            <input
+              type="search"
+              class="input"
+              placeholder="Search contacts to add"
+              bind:value={pickerQuery}
+            />
+          {:else}
+            <input
+              type="search"
+              class="input"
+              placeholder="Search members"
+              bind:value={memberQuery}
+            />
+          {/if}
+          {#if editable}
             <button
-              class="btn btn-sm preset-filled-primary-500 text-sm"
+              class="btn preset-filled-primary-500"
               onclick={() => {
                 pickerOpen = !pickerOpen
                 pickerQuery = ''
               }}
             >{pickerOpen ? 'Done' : '+ Add contact'}</button>
-          </div>
-        {:else}
-          <div class="p-3 border-b border-surface-200 dark:border-surface-700">
-            <input
-              type="search"
-              class="input w-full text-sm"
-              placeholder="Search members"
-              bind:value={memberQuery}
-            />
-          </div>
-        {/if}
+          {/if}
+        </div>
         <div class="flex-1 overflow-y-auto p-3 space-y-1">
           {#if pickerOpen}
             {#if pickableContacts.length === 0}
