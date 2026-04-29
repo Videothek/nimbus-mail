@@ -6958,19 +6958,23 @@ fn main() {
             // Warm the system-fonts cache off the main thread so
             // the first compose-toolbar font-dropdown open is
             // instant.  Errors only log — empty cache means the
-            // command falls back to a synchronous enumeration on
-            // the next request.
+            // `list_system_fonts` command falls back to a
+            // synchronous enumeration on the next request.
+            //
+            // Has to run on a plain OS thread (not tokio::spawn /
+            // spawn_blocking) because Tauri's setup callback fires
+            // before the async runtime is mounted, so calling into
+            // tokio here would panic with "no reactor running".
             let fonts_cache = app.state::<SystemFontsCache>().inner().clone();
-            tokio::spawn(async move {
-                let fonts = tokio::task::spawn_blocking(enumerate_system_fonts).await;
-                match fonts {
-                    Ok(list) => {
-                        let count = list.len();
-                        *fonts_cache.write().await = list;
-                        tracing::info!("system fonts cached: {count} families");
-                    }
-                    Err(e) => tracing::warn!("font enumeration spawn_blocking failed: {e}"),
-                }
+            std::thread::spawn(move || {
+                let list = enumerate_system_fonts();
+                let count = list.len();
+                // The shared lock is a tokio RwLock; from a sync
+                // context we use blocking_write, which parks until
+                // the lock is free.  Nothing else holds it during
+                // startup, so this is effectively immediate.
+                *fonts_cache.blocking_write() = list;
+                tracing::info!("system fonts cached: {count} families");
             });
 
             // ── Tray menu + icon ────────────────────────────────
