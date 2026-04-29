@@ -837,12 +837,12 @@
   // spacer reserving the full scroll height.
   const FONT_ROW_H = 28
   const FONT_VIEWPORT_H = 288 // mirrors `max-h-72`
-  // Buffer is sized so a fast flick stays inside the mounted
-  // window — at ~28px row height, 40 rows above / below covers
-  // ~1100px of overshoot on either side, which beats the
-  // browser's frame-pacing on a fast scroll.  Mounting 100ish
-  // rows is still trivially cheap vs. mounting all 500.
-  const FONT_BUFFER = 40
+  // Buffer is the compromise between open-latency (more rows
+  // = more DOM creation on first show) and scroll smoothness
+  // (more rows = a fast flick stays inside the mounted window).
+  // 20 rows ≈ 560px of overshoot on either side, ~50 rows
+  // mounted total, which keeps both ends snappy.
+  const FONT_BUFFER = 20
   let fontScrollY = $state(0)
   let fontScrollEl: HTMLDivElement | null = $state(null)
   const fontWindow = $derived.by(() => {
