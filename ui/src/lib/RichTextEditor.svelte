@@ -228,6 +228,15 @@
     position: { left: 0, top: 0 },
     command: null,
   })
+  /** Latches `true` the first time the picker becomes visible
+   *  and stays true for the rest of the editor's lifetime.
+   *  Drives the `{#if}` guarding the popup DOM so we mint it
+   *  exactly once, then toggle visibility via CSS instead of
+   *  mounting / unmounting on every `/`. */
+  let attachmentPickerEverShown = $state(false)
+  $effect(() => {
+    if (attachmentPicker.visible) attachmentPickerEverShown = true
+  })
 
   /** Compute the popup anchor from the trigger char's bounding
    *  rect. Clamped to the viewport so a `@` typed near the right
@@ -1867,11 +1876,17 @@
      Same shape as the contact picker, narrower because rows are
      just a filename + a paperclip glyph. Only attachments with a
      `content_id` show up — everything else has nothing to link to. -->
-{#if attachmentPicker.visible}
+{#if attachmentPickerEverShown}
+  <!-- Keep the DOM mounted across opens — `display: none` when
+       hidden so the first open mints the rows once and every
+       subsequent `/` is just a CSS flag flip plus a coordinate
+       update.  Mounting only flips on first reach to avoid
+       allocating the popup at all in the common case where the
+       user never types `/`. -->
   <ul
     class="fixed z-60 max-h-72 min-w-64 overflow-y-auto rounded-md border border-surface-300
            dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-lg py-1 text-sm"
-    style="left: {attachmentPicker.position.left}px; top: {attachmentPicker.position.top}px;"
+    style="left: {attachmentPicker.position.left}px; top: {attachmentPicker.position.top}px; display: {attachmentPicker.visible ? 'block' : 'none'};"
     role="listbox"
   >
     {#if attachmentPicker.items.length === 0}
