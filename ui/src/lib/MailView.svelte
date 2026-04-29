@@ -16,6 +16,7 @@
   import NextcloudFilePicker from './NextcloudFilePicker.svelte'
   import MoveFolderPicker from './MoveFolderPicker.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
+  import AttachmentThumb from './AttachmentThumb.svelte'
   import CalendarInviteCard, { type InviteSummary } from './CalendarInviteCard.svelte'
   import { openMailInStandaloneWindow } from './standaloneMailWindow'
 
@@ -1187,7 +1188,21 @@
               {#if emoji}
                 <span class="text-base">{emoji}</span>
               {:else}
-                <FileTypeIcon contentType={att.content_type} filename={att.filename} class="w-5 h-5" />
+                {@const tooLarge = att.size != null && att.size > 4 * 1024 * 1024}
+                <AttachmentThumb
+                  contentType={att.content_type}
+                  filename={att.filename}
+                  bytesProvider={tooLarge
+                    ? undefined
+                    : () =>
+                        invoke<number[]>('download_email_attachment', {
+                          accountId: email!.account_id,
+                          folder: email!.folder,
+                          uid: uid!,
+                          partId: att.part_id,
+                        })}
+                  class="w-9 h-9"
+                />
               {/if}
               <span class="font-medium truncate max-w-60" title={att.filename}>{att.filename}</span>
               {#if att.size != null}

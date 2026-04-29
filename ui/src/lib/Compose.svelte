@@ -26,6 +26,7 @@
   import AddressAutocomplete from './AddressAutocomplete.svelte'
   import NextcloudFilePicker, { type ShareLink } from './NextcloudFilePicker.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
+  import AttachmentThumb from './AttachmentThumb.svelte'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
   import { openComposeInStandaloneWindow } from './standaloneComposeWindow'
 
@@ -1281,7 +1282,11 @@
           oncontactpicked={onContactPicked}
           attachmentsForRef={attachments
             .filter((a): a is Attachment & { content_id: string } => !!a.content_id)
-            .map((a) => ({ content_id: a.content_id, filename: a.filename }))}
+            .map((a) => ({
+              content_id: a.content_id,
+              filename: a.filename,
+              content_type: a.content_type,
+            }))}
           actionsTrailing={sendActions}
           extraTabs={composeExtraTabs}
         />
@@ -1291,7 +1296,12 @@
         <div class="flex flex-wrap gap-2">
           {#each attachments as att, i (i)}
             <span class="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-surface-200 dark:bg-surface-800 text-xs">
-              <FileTypeIcon contentType={att.content_type ?? null} filename={att.filename} class="w-4 h-4" />
+              <AttachmentThumb
+                bytes={att.data}
+                contentType={att.content_type}
+                filename={att.filename}
+                class="w-7 h-7"
+              />
               <span>{att.filename}</span>
               <button class="text-surface-500 hover:text-red-500" onclick={() => removeAttachment(i)} aria-label="Remove">✕</button>
             </span>
