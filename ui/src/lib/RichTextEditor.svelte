@@ -613,20 +613,18 @@
       // tray, not a missing inline link.
       Mention.extend({
         name: 'attachmentRef',
-        // Render as a styled <span>, NOT an <a href="cid:...">.
-        // Most email clients (Gmail, Outlook web, modern Apple
-        // Mail) try to navigate when the user clicks an
-        // anchor and surface a "can't open cid:..." error
-        // because they don't expose CID handlers to the
-        // surrounding chrome.  A <span> is just inline text:
-        // recipients see the typed badge + filename, no
-        // hyperlink, no broken-link UX.  Nimbus's own reader
-        // intercepts the click via the `data-attachment-ref`
-        // attribute (see MailView.onBodyClick) so jumping to
-        // the attachment still works locally.  Both the cid
-        // and the raw filename ride along on data-* attrs so
-        // a recipient can match the inline reference to the
-        // file in their attachment tray by name.
+        // Render as <a href="cid:..."> so Nimbus's own reader
+        // (MailView.processEmailHtml) picks it up the same way
+        // it always did — by matching cid: anchors and routing
+        // their click to the attachment via `data-nimbus-cid`.
+        // The data-* attrs (data-cid, data-filename,
+        // data-attachment-ref) ride along for the new robust
+        // click handler and as a cross-client identifier.
+        // Cross-client trade-off: Gmail / Outlook web may
+        // surface a "can't open cid:..." error if the user
+        // *clicks* the link.  The visible badge + filename is
+        // the part those recipients are meant to read; the
+        // hyperlink is purely a Nimbus affordance.
         renderHTML({ node, HTMLAttributes }) {
           const cid = node.attrs.id ?? ''
           const label = node.attrs.label ?? cid
@@ -693,9 +691,10 @@
             'font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;' +
             'letter-spacing:0.04em;text-align:center;vertical-align:middle;'
           return [
-            'span',
+            'a',
             {
               ...HTMLAttributes,
+              href: `cid:${cid}`,
               title: `Attached file: ${label}`,
               'data-label': label,
               'data-cid': cid,
@@ -703,7 +702,7 @@
               style:
                 'display:inline-flex;align-items:center;padding:0 6px;border-radius:4px;' +
                 'background:rgba(245,158,11,0.12);color:#b45309;' +
-                'font-weight:500;cursor:pointer;',
+                'text-decoration:none;font-weight:500;',
             },
             ['span', { style: badgeStyle }, badgeText],
             label,
