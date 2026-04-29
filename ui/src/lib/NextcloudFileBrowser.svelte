@@ -63,6 +63,14 @@
     accountId?: string
     currentPath?: string
     selected?: Set<string>
+    /** Subset of `selected` whose paths are folders.  Tracked
+     *  alongside `selected` so the picker can distinguish file
+     *  vs. folder selections even when the user has navigated
+     *  away from the folder where they were ticked.  Without
+     *  this, the file/folder count derives only from the
+     *  currently-visible `entries` list and lies whenever the
+     *  user changes folders mid-selection. */
+    selectedDirs?: Set<string>
     entries?: FileEntry[]
     accounts?: NextcloudAccount[]
     error?: string
@@ -72,6 +80,7 @@
     accountId = $bindable(''),
     currentPath = $bindable('/'),
     selected = $bindable(new Set<string>()),
+    selectedDirs = $bindable(new Set<string>()),
     entries = $bindable<FileEntry[]>([]),
     accounts = $bindable<NextcloudAccount[]>([]),
     error = $bindable(''),
@@ -111,6 +120,7 @@
   async function selectAccount(id: string) {
     accountId = id
     selected = new Set()
+    selectedDirs = new Set()
     await loadFolder('/')
   }
 
@@ -163,16 +173,23 @@
     } else if (!pickFolderMode) {
       // In folder-pick mode files aren't selectable — they're shown
       // only as a preview of what's already in the destination folder.
-      toggleSelected(entry.path)
+      toggleSelected(entry.path, entry.is_dir)
     }
   }
 
-  function toggleSelected(path: string) {
+  function toggleSelected(path: string, isDir: boolean) {
     // Svelte 5 Sets need reassignment to trigger reactivity.
     const next = new Set(selected)
-    if (next.has(path)) next.delete(path)
-    else next.add(path)
+    const nextDirs = new Set(selectedDirs)
+    if (next.has(path)) {
+      next.delete(path)
+      nextDirs.delete(path)
+    } else {
+      next.add(path)
+      if (isDir) nextDirs.add(path)
+    }
     selected = next
+    selectedDirs = nextDirs
   }
 
   function formatSize(bytes: number | null): string {
@@ -354,7 +371,7 @@
                     class="checkbox"
                     checked={selected.has(entry.path)}
                     onclick={(e) => e.stopPropagation()}
-                    onchange={() => toggleSelected(entry.path)}
+                    onchange={() => toggleSelected(entry.path, entry.is_dir)}
                   />
                 {/if}
                 {#if emoji}
