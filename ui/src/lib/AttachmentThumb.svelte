@@ -57,13 +57,17 @@
   }
 
   /** Pre-warm the image blob URL + video first-frame caches for
-   *  an attachment off the critical path.  Compose calls this
-   *  the moment an attachment is added so the `/` picker, which
-   *  may open milliseconds later, sees fully-resolved thumbs
-   *  instead of icons that progressively swap in.
+   *  an attachment.  Compose calls this the moment an attachment
+   *  is added so the editor's `/` picker, which may open
+   *  milliseconds later, sees fully-resolved thumbs without
+   *  having to mount any preview component.
    *
-   *  Runs through `requestIdleCallback` (with a setTimeout fallback)
-   *  so it never blocks the UI thread when a file is dropped. */
+   *  Image blob URLs are built synchronously (cheap O(n) array
+   *  copy) so they're guaranteed available the instant the
+   *  picker opens.  Video first-frame extraction is async (a
+   *  GStreamer pipeline cycle on Linux WebKit) and runs through
+   *  the global extractionChain so the picker may briefly show
+   *  the typed icon for a video that's still decoding. */
   export function prewarm(opts: {
     bytes: Uint8Array | number[]
     contentType?: string | null
@@ -73,40 +77,44 @@
     const { bytes, contentType = null, filename, cacheKey = null } = opts
     if (!bytes || bytes.length === 0) return
     const key = cacheKey ?? bytes
-    const schedule = (cb: () => void) => {
-      const w = window as unknown as {
-        requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => void
-      }
-      if (typeof w.requestIdleCallback === 'function') {
-        w.requestIdleCallback(cb, { timeout: 200 })
-      } else {
-        setTimeout(cb, 0)
-      }
+    if (isImageGuess(contentType, filename)) {
+      if (imageBlobGet(key)) return
+      let ct = contentType ?? ''
+      if (!ct) ct = 'image/png'
+      const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+      const url = URL.createObjectURL(new Blob([u8], { type: ct }))
+      imageBlobPut(key, url)
+    } else if (isVideoGuess(contentType, filename)) {
+      if (cacheGet(key)) return
+      let ct = contentType ?? ''
+      if (!ct) ct = 'video/mp4'
+      const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+      const url = URL.createObjectURL(new Blob([u8], { type: ct }))
+      extractionChain = extractionChain
+        .then(async () => {
+          const frame = await extractFirstFrame(url)
+          if (frame) cachePut(key, frame)
+        })
+        .finally(() => URL.revokeObjectURL(url))
     }
-    schedule(() => {
-      if (isImageGuess(contentType, filename)) {
-        if (!imageBlobGet(key)) {
-          let ct = contentType ?? ''
-          if (!ct) ct = 'image/png'
-          const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
-          const url = URL.createObjectURL(new Blob([u8], { type: ct }))
-          imageBlobPut(key, url)
-        }
-      } else if (isVideoGuess(contentType, filename)) {
-        if (!cacheGet(key)) {
-          let ct = contentType ?? ''
-          if (!ct) ct = 'video/mp4'
-          const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
-          const url = URL.createObjectURL(new Blob([u8], { type: ct }))
-          extractionChain = extractionChain
-            .then(async () => {
-              const frame = await extractFirstFrame(url)
-              if (frame) cachePut(key, frame)
-            })
-            .finally(() => URL.revokeObjectURL(url))
-        }
-      }
-    })
+  }
+
+  /** Synchronous read of whatever's currently cached for a
+   *  given attachment.  Used by hosts that want to render the
+   *  thumb inline without paying the cost of mounting an
+   *  AttachmentThumb component (the editor's `/` picker
+   *  dropdown).  Returns the blob/data URL, or null if not
+   *  cached yet — caller falls back to a typed icon. */
+  export function thumbUrlSync(opts: {
+    bytes?: Uint8Array | number[] | null
+    contentType?: string | null
+    filename: string
+    cacheKey?: string | null
+  }): string | null {
+    const { bytes = null, cacheKey = null } = opts
+    const key = cacheKey ?? bytes ?? null
+    if (key === null) return null
+    return imageBlobGet(key) ?? cacheGet(key) ?? null
   }
   // Serialise extractions so a folder full of videos doesn't
   // spin up N pipelines simultaneously — Linux WebKit hits a

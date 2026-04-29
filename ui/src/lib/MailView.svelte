@@ -421,7 +421,19 @@
           'form', 'input', 'textarea', 'select', 'button',
           'base', 'meta', 'link', 'style',
         ],
-        ADD_ATTR: ['target', 'data-nimbus-cid', 'data-nimbus-blocked-src', 'title'],
+        ADD_ATTR: [
+          'target',
+          'data-nimbus-cid',
+          'data-nimbus-blocked-src',
+          'title',
+          // Attachment-ref (#93) — survive sanitisation so the
+          // body click handler can route the click back to the
+          // matching attachment row.
+          'data-attachment-ref',
+          'data-cid',
+          'data-filename',
+          'data-label',
+        ],
         FORCE_BODY: true,
       })
 
@@ -485,6 +497,29 @@
   function onBodyClick(e: MouseEvent) {
     const target = e.target as HTMLElement | null
     if (!target) return
+
+    // Tiptap-rendered attachment refs from Nimbus (#93): a
+    // <span data-attachment-ref data-cid=...> badge + filename.
+    // Other clients see plain styled text — Nimbus picks up
+    // the click and opens the matching attachment by cid (or
+    // by filename, if cid wasn't preserved on round-trip).
+    const refEl = target.closest('[data-attachment-ref]') as HTMLElement | null
+    if (refEl) {
+      e.preventDefault()
+      e.stopPropagation()
+      if (!email) return
+      const cidAttr = (refEl.getAttribute('data-cid') ?? '').toLowerCase()
+      const fnAttr = (refEl.getAttribute('data-filename') ?? '').toLowerCase()
+      const att = email.attachments.find((a) => {
+        if (cidAttr && a.content_id && a.content_id.toLowerCase() === cidAttr) return true
+        if (fnAttr && a.filename.toLowerCase() === fnAttr) return true
+        return false
+      })
+      if (att) void attachmentClicked(att)
+      else console.warn(`MailView: attachment-ref click had no match (cid=${cidAttr}, filename=${fnAttr})`)
+      return
+    }
+
     const anchor = target.closest('a') as HTMLAnchorElement | null
     if (!anchor) return
 

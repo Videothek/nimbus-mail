@@ -41,7 +41,7 @@
   import type { Range } from '@tiptap/core'
   import EmojiPicker from './EmojiPicker.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
-  import AttachmentThumb from './AttachmentThumb.svelte'
+  import { thumbUrlSync } from './AttachmentThumb.svelte'
   import { invoke } from '@tauri-apps/api/core'
 
   /**
@@ -604,6 +604,20 @@
       // tray, not a missing inline link.
       Mention.extend({
         name: 'attachmentRef',
+        // Render as a styled <span>, NOT an <a href="cid:...">.
+        // Most email clients (Gmail, Outlook web, modern Apple
+        // Mail) try to navigate when the user clicks an
+        // anchor and surface a "can't open cid:..." error
+        // because they don't expose CID handlers to the
+        // surrounding chrome.  A <span> is just inline text:
+        // recipients see the typed badge + filename, no
+        // hyperlink, no broken-link UX.  Nimbus's own reader
+        // intercepts the click via the `data-attachment-ref`
+        // attribute (see MailView.onBodyClick) so jumping to
+        // the attachment still works locally.  Both the cid
+        // and the raw filename ride along on data-* attrs so
+        // a recipient can match the inline reference to the
+        // file in their attachment tray by name.
         renderHTML({ node, HTMLAttributes }) {
           const cid = node.attrs.id ?? ''
           const label = node.attrs.label ?? cid
@@ -670,16 +684,17 @@
             'font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;' +
             'letter-spacing:0.04em;text-align:center;vertical-align:middle;'
           return [
-            'a',
+            'span',
             {
               ...HTMLAttributes,
-              href: `cid:${cid}`,
               title: `Attached file: ${label}`,
               'data-label': label,
+              'data-cid': cid,
+              'data-filename': label,
               style:
                 'display:inline-flex;align-items:center;padding:0 6px;border-radius:4px;' +
                 'background:rgba(245,158,11,0.12);color:#b45309;' +
-                'text-decoration:none;font-weight:500;',
+                'font-weight:500;cursor:pointer;',
             },
             ['span', { style: badgeStyle }, badgeText],
             label,
@@ -692,16 +707,22 @@
         parseHTML() {
           return [
             {
-              tag: 'a[data-attachment-ref]',
+              // Match both the new <span> and the legacy <a>
+              // shape so messages composed before the cid-anchor
+              // → span migration still re-import correctly.
+              tag: '[data-attachment-ref]',
               getAttrs: (el) => {
                 const e = el as HTMLElement
+                // Prefer `data-cid` (new), fall back to parsing
+                // the legacy href="cid:..." attribute.
+                const dataCid = e.getAttribute('data-cid')
                 const href = e.getAttribute('href') ?? ''
-                const id = href.replace(/^cid:/, '')
+                const id = dataCid || href.replace(/^cid:/, '')
                 // `data-label` is the canonical recovery path
                 // (set by renderHTML).  Older messages that
                 // pre-date the badge still parse via textContent
                 // with the leading badge code or emoji stripped.
-                const dataLabel = e.getAttribute('data-label')
+                const dataLabel = e.getAttribute('data-label') ?? e.getAttribute('data-filename')
                 if (dataLabel) return { id, label: dataLabel }
                 const text = e.textContent ?? ''
                 const label =
@@ -1869,12 +1890,20 @@
             attachmentPicker.command?.(a)
           }}
         >
-          <AttachmentThumb
-            bytes={a.data ?? null}
-            contentType={a.content_type ?? null}
-            filename={a.filename}
-            class="w-7 h-7"
-          />
+          {@const thumb = thumbUrlSync({
+            bytes: a.data ?? null,
+            contentType: a.content_type ?? null,
+            filename: a.filename,
+          })}
+          {#if thumb}
+            <img
+              src={thumb}
+              alt=""
+              class="w-7 h-7 object-cover rounded shrink-0 bg-surface-200 dark:bg-surface-800"
+            />
+          {:else}
+            <FileTypeIcon contentType={a.content_type ?? null} filename={a.filename} class="w-7 h-7" />
+          {/if}
           <span class="truncate">{a.filename}</span>
         </li>
       {/each}
