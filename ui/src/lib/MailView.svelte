@@ -797,7 +797,7 @@
     if (ct.includes('pdf')) return '📄'
     if (ct.includes('zip') || ct.includes('compressed')) return '🗜️'
     if (ct.startsWith('text/')) return '📝'
-    return '📎'
+    return '🖇️'
   }
 
   /**

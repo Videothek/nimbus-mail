@@ -215,7 +215,7 @@
     {
       id: 'attach',
       label: 'Attach',
-      icon: '📎',
+      icon: '🖇️',
       content: attachTabContent,
     },
     {
@@ -300,7 +300,7 @@
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     if (initial?.nextcloudLinks && initial.nextcloudLinks.length > 0) {
       const items = initial.nextcloudLinks
-        .map((l) => `<p>📎 <a href="${l.url}">${esc(l.filename)}</a></p>`)
+        .map((l) => `<p>🖇️ <a href="${l.url}">${esc(l.filename)}</a></p>`)
         .join('')
       html += `<p><strong>Shared via Nextcloud:</strong></p>${items}`
     }
@@ -1290,7 +1290,7 @@
         <div class="flex flex-wrap gap-2">
           {#each attachments as att, i (i)}
             <span class="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-surface-200 dark:bg-surface-800 text-xs">
-              <span>📎 {att.filename}</span>
+              <span>🖇️ {att.filename}</span>
               <button class="text-surface-500 hover:text-red-500" onclick={() => removeAttachment(i)} aria-label="Remove">✕</button>
             </span>
           {/each}
@@ -1319,7 +1319,7 @@
      reads as visually indistinguishable from a built-in. -->
 {#snippet attachTabContent()}
   <label class="rt-btn cursor-pointer" title="Attach a file from your computer">
-    <span class="rt-btn-icon">📎</span>
+    <span class="rt-btn-icon">🖇️</span>
     <span class="rt-btn-label">Attach</span>
     <input type="file" multiple class="hidden" onchange={onPickFiles} />
   </label>
@@ -1410,7 +1410,7 @@
       const items = links
         .map(
           (l) =>
-            `<p>📎 <a href="${l.url}">${esc(l.filename)}</a></p>`,
+            `<p>🖇️ <a href="${l.url}">${esc(l.filename)}</a></p>`,
         )
         .join('')
       const block = `<p><strong>Shared via Nextcloud:</strong></p>${items}`
