@@ -228,15 +228,15 @@
     position: { left: 0, top: 0 },
     command: null,
   })
-  /** Latches `true` the first time the picker becomes visible
-   *  and stays true for the rest of the editor's lifetime.
-   *  Drives the `{#if}` guarding the popup DOM so we mint it
-   *  exactly once, then toggle visibility via CSS instead of
-   *  mounting / unmounting on every `/`. */
-  let attachmentPickerEverShown = $state(false)
-  $effect(() => {
-    if (attachmentPicker.visible) attachmentPickerEverShown = true
-  })
+  /** Always true — kept as a $state flag so the {#if} below
+   *  doesn't fall back to constant folding (which Svelte would
+   *  treat as unconditional anyway, but the named flag makes
+   *  the intent obvious).  Mounting the popup DOM eagerly
+   *  with the editor itself means even the very first `/` is
+   *  a CSS flag flip, no DOM allocation cost on the critical
+   *  path.  The hidden <ul> is one detached element — a
+   *  rounding-error memory cost for the latency win. */
+  const attachmentPickerEverShown = true
 
   /** Compute the popup anchor from the trigger char's bounding
    *  rect. Clamped to the viewport so a `@` typed near the right
