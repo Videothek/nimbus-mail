@@ -115,6 +115,11 @@ uuid = { version = "1", features = ["v4"] }
 # doesn't expose a Mozilla autoconfig endpoint. Pure Rust, no
 # system-resolver dependency.
 hickory-resolver = "0.24"
+# System font enumeration for the compose toolbar's font picker
+# (#142).  font-kit walks the OS font catalogue (DirectWrite on
+# Windows, Core Text on macOS, fontconfig on Linux) and gives
+# us the family-name list cheaply at app startup.
+font-kit = "0.14"
 # Internal crates
 nimbus-core = { path = "crates/nimbus-core" }
 nimbus-imap = { path = "crates/nimbus-imap" }

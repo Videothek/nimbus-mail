@@ -30,6 +30,7 @@
   import Mention from '@tiptap/extension-mention'
   import type { Range } from '@tiptap/core'
   import EmojiPicker from './EmojiPicker.svelte'
+  import { invoke } from '@tauri-apps/api/core'
 
   /**
    * Imperative handle the parent gets via `onready`. Tiptap is
@@ -757,7 +758,7 @@
   // family: …">`. Using system-font stacks (not single names)
   // means the recipient's client renders something reasonable
   // even when their OS doesn't have the exact face installed.
-  const FONT_FAMILIES: Array<{ label: string; css: string }> = [
+  const CURATED_FONTS: Array<{ label: string; css: string }> = [
     { label: 'Default', css: '' },
     {
       label: 'Sans-serif',
@@ -771,7 +772,47 @@
     { label: 'Arial', css: 'Arial, Helvetica, sans-serif' },
     { label: 'Times', css: '"Times New Roman", Times, serif' },
   ]
+  /** OS-installed font families discovered via the
+   *  `list_system_fonts` Tauri command (#142).  Loaded once on
+   *  mount; failures (sandboxed dev / missing perm) leave the
+   *  list empty so the dropdown still shows the curated stacks. */
+  let systemFonts = $state<string[]>([])
+  $effect(() => {
+    void invoke<string[]>('list_system_fonts')
+      .then((rows) => {
+        // Drop any name that already maps to a curated entry so
+        // the dropdown doesn't render the same family twice.
+        const curatedLabels = new Set(
+          CURATED_FONTS.map((f) => f.label.toLowerCase()),
+        )
+        systemFonts = rows.filter((f) => !curatedLabels.has(f.toLowerCase()))
+      })
+      .catch((e) => {
+        console.warn('list_system_fonts failed', e)
+      })
+  })
+  /** Quote a single family name for safe insertion into a CSS
+   *  `font-family` string.  Names that contain spaces or non-
+   *  word characters need surrounding quotes per CSS3. */
+  function familyToCss(name: string): string {
+    if (/^[\w-]+$/.test(name)) return name
+    return `"${name.replace(/"/g, '\\"')}"`
+  }
+  /** Combined picker rows — curated stacks at the top, then the
+   *  user's OS fonts filtered by the in-picker search box. */
+  const FONT_FAMILIES = $derived.by(() => {
+    const q = fontPickerQuery.trim().toLowerCase()
+    const curated = q
+      ? CURATED_FONTS.filter((f) => f.label.toLowerCase().includes(q))
+      : CURATED_FONTS
+    const os = (q
+      ? systemFonts.filter((f) => f.toLowerCase().includes(q))
+      : systemFonts
+    ).map((f) => ({ label: f, css: familyToCss(f) }))
+    return [...curated, ...os]
+  })
   let showFontPicker = $state(false)
+  let fontPickerQuery = $state('')
 
   /** Label for the toolbar button, reflecting the font at the current
       cursor position. `$editor` is a svelte-tiptap store that re-emits
@@ -782,8 +823,12 @@
   function currentFontLabel(): string {
     if (!$editor) return 'Font'
     const css = ($editor.getAttributes('textStyle')?.fontFamily as string | undefined) ?? ''
-    const match = FONT_FAMILIES.find((f) => f.css === css)
-    return match?.label ?? 'Font'
+    if (!css) return 'Default'
+    const curated = CURATED_FONTS.find((f) => f.css === css)
+    if (curated) return curated.label
+    const sys = systemFonts.find((f) => familyToCss(f) === css)
+    if (sys) return sys
+    return 'Font'
   }
 
   function setFont(css: string) {
@@ -1263,20 +1308,35 @@
           </button>
           {#if showFontPicker}
             <div
-              class="absolute z-20 mt-1 min-w-44 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md py-1"
+              class="absolute z-20 mt-1 w-64 rounded-md border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 shadow-md py-1 flex flex-col"
               role="menu"
               tabindex="-1"
               onclick={(e) => e.stopPropagation()}
-              onkeydown={(e) => e.key === 'Escape' && (showFontPicker = false)}
+              onkeydown={(e) => { if (e.key === 'Escape') { showFontPicker = false; fontPickerQuery = '' } }}
             >
-              {#each FONT_FAMILIES as f (f.label)}
-                <button
-                  type="button"
-                  class="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-200 dark:hover:bg-surface-800"
-                  style={f.css ? `font-family: ${f.css};` : ''}
-                  onclick={() => setFont(f.css)}
-                >{f.label}</button>
-              {/each}
+              <div class="px-2 pt-1 pb-2 border-b border-surface-200 dark:border-surface-700">
+                <input
+                  type="search"
+                  class="input w-full text-sm px-2 py-1 rounded-md"
+                  placeholder="Search fonts ({systemFonts.length} system)"
+                  bind:value={fontPickerQuery}
+                />
+              </div>
+              <div class="max-h-72 overflow-y-auto py-1">
+                {#each FONT_FAMILIES as f (f.label)}
+                  <button
+                    type="button"
+                    class="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-200 dark:hover:bg-surface-800 truncate"
+                    style={f.css ? `font-family: ${f.css};` : ''}
+                    onclick={() => { setFont(f.css); fontPickerQuery = '' }}
+                  >{f.label}</button>
+                {/each}
+                {#if FONT_FAMILIES.length === 0}
+                  <p class="px-3 py-2 text-xs text-surface-500 italic">
+                    No fonts match "{fontPickerQuery}".
+                  </p>
+                {/if}
+              </div>
             </div>
           {/if}
         </div>
