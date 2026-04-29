@@ -89,6 +89,24 @@
       const label = ext === 'jpeg' ? 'JPG' : ext.toUpperCase()
       return { label: label.slice(0, 4), colorClass: 'text-cyan-500' }
     }
+    // Video — pink to stand apart from the doc/archive palette.
+    if (ct.startsWith('video/')) {
+      const sub = ct.slice('video/'.length).split(';')[0].trim()
+      const label = (sub || 'VID').toUpperCase().slice(0, 4)
+      return { label, colorClass: 'text-pink-500' }
+    }
+    if (['mp4', 'mkv', 'mov', 'avi', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg', '3gp'].includes(ext)) {
+      return { label: ext.toUpperCase().slice(0, 4), colorClass: 'text-pink-500' }
+    }
+    // Audio — purple, distinct from the cyan/sky/pink trio.
+    if (ct.startsWith('audio/')) {
+      const sub = ct.slice('audio/'.length).split(';')[0].trim()
+      const label = (sub || 'AUD').toUpperCase().slice(0, 4)
+      return { label, colorClass: 'text-purple-500' }
+    }
+    if (['mp3', 'flac', 'wav', 'ogg', 'm4a', 'aac', 'opus', 'wma', 'aiff', 'alac'].includes(ext)) {
+      return { label: ext.toUpperCase().slice(0, 4), colorClass: 'text-purple-500' }
+    }
     return null
   }
 

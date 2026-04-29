@@ -548,6 +548,38 @@ async fn download_nextcloud_file(nc_id: String, path: String) -> Result<Vec<u8>,
         .await
 }
 
+/// Fetch a server-rendered preview thumbnail for a Nextcloud
+/// file.  Used by the file picker to render inline thumbnails
+/// for image / video rows.  Returns `None` (`Ok(None)`) when the
+/// server has no preview for this file (404) so the frontend
+/// silently falls back to the typed icon instead of surfacing an
+/// error to the user.
+#[tauri::command]
+async fn nextcloud_file_preview(
+    nc_id: String,
+    path: String,
+    size: Option<u32>,
+) -> Result<Option<Vec<u8>>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let s = size.unwrap_or(96);
+    match nimbus_nextcloud::fetch_preview(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &path,
+        s,
+    )
+    .await
+    {
+        Ok(bytes) => Ok(Some(bytes)),
+        // The 404 ("no preview available") path is legitimate —
+        // surface as None so the picker just shows the icon.
+        Err(NimbusError::Nextcloud(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// Result of `create_nextcloud_share` — both the public URL (for
 /// pasting into the email body) and the share id (for later
 /// label updates via `update_nextcloud_share_label`).
@@ -7292,6 +7324,7 @@ fn main() {
             open_url,
             list_nextcloud_files,
             download_nextcloud_file,
+            nextcloud_file_preview,
             create_nextcloud_share,
             update_nextcloud_share_label,
             create_nextcloud_directory,

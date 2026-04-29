@@ -797,8 +797,6 @@
   function attachmentEmoji(att: EmailAttachment): string | null {
     const ct = att.content_type || ''
     const fn = att.filename.toLowerCase()
-    if (ct.startsWith('video/')) return '🎞️'
-    if (ct.startsWith('audio/')) return '🎵'
     // Plain text files that aren't markdown still get the memo
     // emoji — a CHANGELOG.txt looks more "note" than "code".
     if (ct.startsWith('text/') && !ct.includes('markdown') && !fn.endsWith('.md') && !fn.endsWith('.markdown'))

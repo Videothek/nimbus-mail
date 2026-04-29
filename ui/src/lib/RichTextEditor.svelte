@@ -640,6 +640,16 @@
           ) {
             badgeText = (ext === 'jpeg' ? 'JPG' : ext.toUpperCase()).slice(0, 4)
             badgeBg = '#06b6d4' // cyan
+          } else if (
+            ['mp4', 'mkv', 'mov', 'avi', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg', '3gp'].includes(ext)
+          ) {
+            badgeText = ext.toUpperCase().slice(0, 4)
+            badgeBg = '#ec4899' // pink
+          } else if (
+            ['mp3', 'flac', 'wav', 'ogg', 'm4a', 'aac', 'opus', 'wma', 'aiff', 'alac'].includes(ext)
+          ) {
+            badgeText = ext.toUpperCase().slice(0, 4)
+            badgeBg = '#a855f7' // purple
           }
           const badgeStyle =
             'display:inline-block;min-width:2.2em;padding:1px 4px;margin-right:6px;' +

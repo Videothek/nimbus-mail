@@ -31,6 +31,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
   import FileTypeIcon from './FileTypeIcon.svelte'
+  import NcPreview from './NcPreview.svelte'
 
   interface NextcloudCapabilities {
     version?: string | null
@@ -190,8 +191,6 @@
     if (entry.is_dir) return '📁'
     const ct = entry.content_type ?? ''
     const fn = entry.name.toLowerCase()
-    if (ct.startsWith('video/')) return '🎞️'
-    if (ct.startsWith('audio/')) return '🎵'
     if (ct.startsWith('text/') && !ct.includes('markdown') && !fn.endsWith('.md') && !fn.endsWith('.markdown'))
       return '📝'
     return null
@@ -359,9 +358,15 @@
                   />
                 {/if}
                 {#if emoji}
-                  <span class="text-lg">{emoji}</span>
+                  <span class="text-lg w-9 h-9 flex items-center justify-center shrink-0">{emoji}</span>
                 {:else}
-                  <FileTypeIcon contentType={entry.content_type} filename={entry.name} class="w-5 h-5" />
+                  <NcPreview
+                    {accountId}
+                    path={entry.path}
+                    contentType={entry.content_type}
+                    filename={entry.name}
+                    class="w-9 h-9"
+                  />
                 {/if}
                 <span class="flex-1 truncate text-sm">{entry.name}</span>
                 <span class="text-xs text-surface-500">{formatSize(entry.size)}</span>
