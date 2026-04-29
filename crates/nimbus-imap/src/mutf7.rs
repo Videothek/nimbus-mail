@@ -31,10 +31,9 @@ use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 fn engine() -> GeneralPurpose {
     // Unwrap is safe: the alphabet string is a compile-time constant
     // of exactly 64 unique characters, which `Alphabet::new` accepts.
-    let alphabet = Alphabet::new(
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,",
-    )
-    .expect("static IMAP mUTF-7 alphabet is valid");
+    let alphabet =
+        Alphabet::new("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,")
+            .expect("static IMAP mUTF-7 alphabet is valid");
     let config = GeneralPurposeConfig::new()
         .with_encode_padding(false)
         .with_decode_padding_mode(DecodePaddingMode::RequireNone);

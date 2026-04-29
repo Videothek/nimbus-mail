@@ -208,9 +208,10 @@ mod tests {
         // alpha values, not a binary inside/outside mask.
         let img = render_taskbar_overlay(1).expect("expected overlay");
         let pixels = img.rgba();
-        let has_partial = pixels
-            .chunks_exact(4)
-            .any(|p| (1..230).contains(&p[3]));
-        assert!(has_partial, "expected at least one partially-covered AA edge pixel");
+        let has_partial = pixels.chunks_exact(4).any(|p| (1..230).contains(&p[3]));
+        assert!(
+            has_partial,
+            "expected at least one partially-covered AA edge pixel"
+        );
     }
 }

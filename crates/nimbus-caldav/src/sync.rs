@@ -359,7 +359,10 @@ mod tests {
 </d:multistatus>"#;
         let r = parse_sync_collection(xml, "https://cloud.example.com").unwrap();
         assert_eq!(r.changed.len(), 1);
-        assert_eq!(r.changed[0].href, "https://cloud.example.com/dav/cal/e1.ics");
+        assert_eq!(
+            r.changed[0].href,
+            "https://cloud.example.com/dav/cal/e1.ics"
+        );
         assert_eq!(r.deleted, vec!["https://cloud.example.com/dav/cal/e2.ics"]);
         assert_eq!(r.new_sync_token.as_deref(), Some("http://nc/ns/sync/55"));
     }

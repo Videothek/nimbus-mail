@@ -614,10 +614,7 @@ fn parse_multistatus(
     // Prefix of the href we should treat as "our path", so we can
     // strip it and produce user-facing paths relative to the user root.
     // Nextcloud returns hrefs URL-encoded; we match encoded-to-encoded.
-    let user_prefix = format!(
-        "/remote.php/dav/files/{}",
-        encode_path_segment(username)
-    );
+    let user_prefix = format!("/remote.php/dav/files/{}", encode_path_segment(username));
     // Encoded form of the request target under the user root.
     let request_prefix_encoded = encode_path(request_path); // e.g. "/Documents/"
 
@@ -763,14 +760,12 @@ fn resourcetype_is_collection(
     let mut is_collection = false;
     loop {
         match reader.read_event()? {
-            Event::Start(e) | Event::Empty(e)
-                if local_name(&e) == "collection" => {
-                    is_collection = true;
-                }
-            Event::End(e)
-                if local_name_end(&e) == "resourcetype" => {
-                    return Ok(is_collection);
-                }
+            Event::Start(e) | Event::Empty(e) if local_name(&e) == "collection" => {
+                is_collection = true;
+            }
+            Event::End(e) if local_name_end(&e) == "resourcetype" => {
+                return Ok(is_collection);
+            }
             Event::Eof => return Ok(is_collection),
             _ => {}
         }
@@ -805,10 +800,9 @@ fn read_text_until(
         match reader.read_event()? {
             Event::Text(t) => buf.push_str(&t.unescape().unwrap_or_default()),
             Event::CData(c) => buf.push_str(&String::from_utf8_lossy(&c)),
-            Event::End(e)
-                if strip_prefix_lowercase(e.name().as_ref()) == start_local => {
-                    return Ok(buf);
-                }
+            Event::End(e) if strip_prefix_lowercase(e.name().as_ref()) == start_local => {
+                return Ok(buf);
+            }
             Event::Eof => return Ok(buf),
             _ => {}
         }
@@ -823,7 +817,10 @@ mod tests {
 
     #[test]
     fn encodes_path_segments_but_keeps_slashes() {
-        assert_eq!(encode_path("/Documents/Q1 report.pdf"), "/Documents/Q1%20report.pdf");
+        assert_eq!(
+            encode_path("/Documents/Q1 report.pdf"),
+            "/Documents/Q1%20report.pdf"
+        );
         assert_eq!(encode_path("/"), "/");
         assert_eq!(encode_path(""), "");
         // Unicode: ä = 0xC3 0xA4

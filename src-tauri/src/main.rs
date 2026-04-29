@@ -22,8 +22,8 @@ use nimbus_carddav::{
 };
 use nimbus_core::NimbusError;
 use nimbus_core::models::{
-    Account, AppSettings, CalendarEvent, Contact, CustomTheme, Email, EmailEnvelope,
-    EventAttendee, EventReminder, Folder, NextcloudAccount, OutgoingEmail,
+    Account, AppSettings, CalendarEvent, Contact, CustomTheme, Email, EmailEnvelope, EventAttendee,
+    EventReminder, Folder, NextcloudAccount, OutgoingEmail,
 };
 use nimbus_imap::ImapClient;
 use nimbus_jmap::JmapClient;
@@ -140,10 +140,7 @@ fn send_native_notification(
 /// without needing to ask the OS layer about the platform.
 #[cfg(not(target_os = "linux"))]
 #[tauri::command]
-fn send_native_notification(
-    _title: String,
-    _body: String,
-) -> Result<bool, NimbusError> {
+fn send_native_notification(_title: String, _body: String) -> Result<bool, NimbusError> {
     Ok(false)
 }
 
@@ -346,8 +343,7 @@ async fn test_connection(
 ) -> Result<String, NimbusError> {
     tracing::info!("Testing IMAP connection to {host}:{port} as {username}");
     let trusted = trusted_certs.unwrap_or_default();
-    let client =
-        ImapClient::connect(&host, port, &username, &password, &trusted).await?;
+    let client = ImapClient::connect(&host, port, &username, &password, &trusted).await?;
     let _ = client.logout().await;
     Ok(format!("IMAP login to {host}:{port} succeeded"))
 }
@@ -531,19 +527,11 @@ fn open_url(url: String) -> Result<(), NimbusError> {
 /// Returns directories and files mixed, in the order the server sent
 /// them — the UI sorts if it wants a particular display order.
 #[tauri::command]
-async fn list_nextcloud_files(
-    nc_id: String,
-    path: String,
-) -> Result<Vec<FileEntry>, NimbusError> {
+async fn list_nextcloud_files(nc_id: String, path: String) -> Result<Vec<FileEntry>, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::list_directory(
-        &account.server_url,
-        &account.username,
-        &app_password,
-        &path,
-    )
-    .await
+    nimbus_nextcloud::list_directory(&account.server_url, &account.username, &app_password, &path)
+        .await
 }
 
 /// Download a single file from Nextcloud.
@@ -553,19 +541,11 @@ async fn list_nextcloud_files(
 /// for now — matches how locally-picked attachments work. A streaming
 /// path is a separate future issue once compose itself streams.
 #[tauri::command]
-async fn download_nextcloud_file(
-    nc_id: String,
-    path: String,
-) -> Result<Vec<u8>, NimbusError> {
+async fn download_nextcloud_file(nc_id: String, path: String) -> Result<Vec<u8>, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::download_file(
-        &account.server_url,
-        &account.username,
-        &app_password,
-        &path,
-    )
-    .await
+    nimbus_nextcloud::download_file(&account.server_url, &account.username, &app_password, &path)
+        .await
 }
 
 /// Result of `create_nextcloud_share` — both the public URL (for
@@ -694,19 +674,11 @@ async fn upload_to_nextcloud(
 /// inside the currently-open directory; on success the picker re-lists
 /// the parent so the new entry shows up.
 #[tauri::command]
-async fn create_nextcloud_directory(
-    nc_id: String,
-    path: String,
-) -> Result<(), NimbusError> {
+async fn create_nextcloud_directory(nc_id: String, path: String) -> Result<(), NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
-    nimbus_nextcloud::create_directory(
-        &account.server_url,
-        &account.username,
-        &app_password,
-        &path,
-    )
-    .await
+    nimbus_nextcloud::create_directory(&account.server_url, &account.username, &app_password, &path)
+        .await
 }
 
 // ── Office viewer (issue #65) ────────────────────────────────
@@ -754,7 +726,10 @@ struct OfficeOpenResult {
 /// exists" as `NimbusError::Nextcloud` which we swallow so a
 /// pre-existing folder doesn't fail the open. Anything else
 /// propagates so quota / 401 / network errors surface to the user.
-async fn ensure_temp_dir(account: &NextcloudAccount, app_password: &str) -> Result<(), NimbusError> {
+async fn ensure_temp_dir(
+    account: &NextcloudAccount,
+    app_password: &str,
+) -> Result<(), NimbusError> {
     for dir in [NIMBUS_TEMP_ROOT, NIMBUS_TEMP_DIR] {
         match nimbus_nextcloud::create_directory(
             &account.server_url,
@@ -792,12 +767,7 @@ async fn office_open_attachment(
     // viewer windows, and gives the sweeper a way to recognise our
     // own files without a metadata round-trip.
     let safe_name = filename.replace(['/', '\\'], "_");
-    let temp_path = format!(
-        "{}/{}-{}",
-        NIMBUS_TEMP_DIR,
-        uuid::Uuid::new_v4(),
-        safe_name
-    );
+    let temp_path = format!("{}/{}-{}", NIMBUS_TEMP_DIR, uuid::Uuid::new_v4(), safe_name);
 
     nimbus_nextcloud::upload_file(
         &account.server_url,
@@ -834,10 +804,7 @@ async fn office_open_attachment(
 /// the frontend logs and moves on — leftover files get caught by
 /// `office_sweep_temp` at next connect.
 #[tauri::command]
-async fn office_close_attachment(
-    nc_id: String,
-    temp_path: String,
-) -> Result<(), NimbusError> {
+async fn office_close_attachment(nc_id: String, temp_path: String) -> Result<(), NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     nimbus_nextcloud::delete_path(
@@ -886,12 +853,7 @@ async fn pdf_open_attachment(
     ensure_temp_dir(&account, &app_password).await?;
 
     let safe_name = filename.replace(['/', '\\'], "_");
-    let temp_path = format!(
-        "{}/{}-{}",
-        NIMBUS_TEMP_DIR,
-        uuid::Uuid::new_v4(),
-        safe_name
-    );
+    let temp_path = format!("{}/{}-{}", NIMBUS_TEMP_DIR, uuid::Uuid::new_v4(), safe_name);
 
     nimbus_nextcloud::upload_file(
         &account.server_url,
@@ -920,10 +882,7 @@ async fn pdf_open_attachment(
 /// Office — kept as its own command so the frontend's per-viewer
 /// dispatch stays straightforward.
 #[tauri::command]
-async fn pdf_close_attachment(
-    nc_id: String,
-    temp_path: String,
-) -> Result<(), NimbusError> {
+async fn pdf_close_attachment(nc_id: String, temp_path: String) -> Result<(), NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     nimbus_nextcloud::delete_path(
@@ -965,10 +924,7 @@ async fn office_sweep_temp(nc_id: String) -> Result<u32, NimbusError> {
     let cutoff = chrono::Utc::now() - chrono::Duration::hours(1);
     let mut swept = 0u32;
     for entry in entries {
-        let stale = entry
-            .modified
-            .map(|t| t < cutoff)
-            .unwrap_or(true);
+        let stale = entry.modified.map(|t| t < cutoff).unwrap_or(true);
         if !stale {
             continue;
         }
@@ -1341,10 +1297,7 @@ async fn add_talk_participants(
 /// in the session — without it, the room would dangle empty in the
 /// user's Talk list with no context.
 #[tauri::command]
-async fn delete_talk_room(
-    nc_id: String,
-    room_token: String,
-) -> Result<(), NimbusError> {
+async fn delete_talk_room(nc_id: String, room_token: String) -> Result<(), NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     nimbus_nextcloud::delete_room(
@@ -1392,9 +1345,7 @@ async fn rename_talk_room(
 
 /// List every note the connected Nextcloud user can see.
 #[tauri::command]
-async fn list_nextcloud_notes(
-    nc_id: String,
-) -> Result<Vec<nimbus_nextcloud::Note>, NimbusError> {
+async fn list_nextcloud_notes(nc_id: String) -> Result<Vec<nimbus_nextcloud::Note>, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     nimbus_nextcloud::list_notes(&account.server_url, &account.username, &app_password).await
@@ -1478,10 +1429,7 @@ async fn update_nextcloud_note(
 /// Delete a note. Called by the trash button in NotesView; the
 /// frontend confirms in JS first so we don't need a confirm here.
 #[tauri::command]
-async fn delete_nextcloud_note(
-    nc_id: String,
-    note_id: u64,
-) -> Result<(), NimbusError> {
+async fn delete_nextcloud_note(nc_id: String, note_id: u64) -> Result<(), NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     nimbus_nextcloud::delete_note(
@@ -1651,9 +1599,7 @@ fn get_contacts_sync_status(
         .latest_addressbook_sync_at(&nc_id)
         .map_err(NimbusError::from)?
         .map(|t| t.to_rfc3339());
-    let count = cache
-        .count_contacts(&nc_id)
-        .map_err(NimbusError::from)?;
+    let count = cache.count_contacts(&nc_id).map_err(NimbusError::from)?;
     Ok(SyncStatus {
         last_synced_at: last,
         count,
@@ -1926,12 +1872,22 @@ async fn update_contact(
     )
     .await?;
 
-    let row = parsed_to_row(&outcome.href, &outcome.etag, &handle.vcard_uid, &parsed, vcard);
+    let row = parsed_to_row(
+        &outcome.href,
+        &outcome.etag,
+        &handle.vcard_uid,
+        &parsed,
+        vcard,
+    );
     cache
         .upsert_single_contact(&handle.nextcloud_account_id, &handle.addressbook, &row)
         .map_err(NimbusError::from)?;
 
-    Ok(row_to_contact(&handle.nextcloud_account_id, &handle.addressbook, &row))
+    Ok(row_to_contact(
+        &handle.nextcloud_account_id,
+        &handle.addressbook,
+        &row,
+    ))
 }
 
 /// Delete a contact from the server and the local cache. The
@@ -2121,10 +2077,7 @@ async fn rename_contact_category(
 /// Delete a category — strips the tag from every contact.  The
 /// underlying contacts are untouched, just no longer tagged.
 #[tauri::command]
-async fn delete_contact_category(
-    name: String,
-    cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+async fn delete_contact_category(name: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
     let contacts = cache
         .list_contacts_with_category(&name)
         .map_err(NimbusError::from)?;
@@ -2192,7 +2145,13 @@ where
         &vcard,
     )
     .await?;
-    let row = parsed_to_row(&outcome.href, &outcome.etag, &handle.vcard_uid, &parsed, vcard);
+    let row = parsed_to_row(
+        &outcome.href,
+        &outcome.etag,
+        &handle.vcard_uid,
+        &parsed,
+        vcard,
+    );
     cache
         .upsert_single_contact(&handle.nextcloud_account_id, &handle.addressbook, &row)
         .map_err(NimbusError::from)?;
@@ -2243,9 +2202,7 @@ struct MailingListMemberView {
 /// SQL pass and the NC group / team list reuses the existing
 /// list_nextcloud_groups path.
 #[tauri::command]
-async fn list_mailing_lists(
-    cache: State<'_, Cache>,
-) -> Result<Vec<MailingListView>, NimbusError> {
+async fn list_mailing_lists(cache: State<'_, Cache>) -> Result<Vec<MailingListView>, NimbusError> {
     // Same lazy backfill list_contact_categories does — this
     // IPC is the entry point the autocomplete uses on first
     // launch, before the contacts UI was opened, so we have to
@@ -2259,9 +2216,7 @@ async fn list_mailing_lists(
     let suppressed = cache
         .get_mailing_list_suppressed()
         .map_err(NimbusError::from)?;
-    let emojis = cache
-        .get_mailing_list_emojis()
-        .map_err(NimbusError::from)?;
+    let emojis = cache.get_mailing_list_emojis().map_err(NimbusError::from)?;
     let mut out: Vec<MailingListView> = Vec::new();
 
     // 1. Categories.  Skip the reserved one we use as a holder
@@ -2279,9 +2234,7 @@ async fn list_mailing_lists(
         // suppresses suggestions; the row carries the flag so
         // the UI can render it greyed-out.
         let hidden_from_autocomplete = suppressed.contains(&id);
-        let contacts = cache
-            .list_contacts_with_category(&name)
-            .unwrap_or_default();
+        let contacts = cache.list_contacts_with_category(&name).unwrap_or_default();
         // Drop members that have no email — a category-derived
         // mailing list is only useful as a sending target, and
         // a row with empty email would just be noise (and
@@ -2292,7 +2245,12 @@ async fn list_mailing_lists(
         let members: Vec<MailingListMemberView> = contacts
             .into_iter()
             .filter_map(|c| {
-                let email = c.email.into_iter().next().map(|e| e.value).unwrap_or_default();
+                let email = c
+                    .email
+                    .into_iter()
+                    .next()
+                    .map(|e| e.value)
+                    .unwrap_or_default();
                 if email.is_empty() {
                     None
                 } else {
@@ -2473,9 +2431,7 @@ struct GroupMemberView {
 /// each with its members already resolved to (id, name, email)
 /// triples so the UI doesn't have to chase referenced UIDs.
 #[tauri::command]
-fn list_contact_groups(
-    cache: State<'_, Cache>,
-) -> Result<Vec<ContactGroupView>, NimbusError> {
+fn list_contact_groups(cache: State<'_, Cache>) -> Result<Vec<ContactGroupView>, NimbusError> {
     let groups = cache.list_contact_groups().map_err(NimbusError::from)?;
     let mut out = Vec::with_capacity(groups.len());
     for g in groups {
@@ -2616,7 +2572,13 @@ async fn update_contact_group(
         &vcard,
     )
     .await?;
-    let row = parsed_to_row(&outcome.href, &outcome.etag, &handle.vcard_uid, &parsed, vcard);
+    let row = parsed_to_row(
+        &outcome.href,
+        &outcome.etag,
+        &handle.vcard_uid,
+        &parsed,
+        vcard,
+    );
     cache
         .upsert_single_contact(&handle.nextcloud_account_id, &handle.addressbook, &row)
         .map_err(NimbusError::from)?;
@@ -2733,9 +2695,8 @@ struct NextcloudGroupMemberView {
 /// else passes through untouched.
 fn humanize_nc_group_name(raw: &str) -> String {
     const PREFIXES: &[&str] = &[
-        "SAML_", "saml_", "saml-", "SAML-",
-        "LDAP_", "ldap_", "ldap-", "LDAP-",
-        "OIDC_", "oidc_", "oidc-", "OIDC-",
+        "SAML_", "saml_", "saml-", "SAML-", "LDAP_", "ldap_", "ldap-", "LDAP-", "OIDC_", "oidc_",
+        "oidc-", "OIDC-",
     ];
     for p in PREFIXES {
         if let Some(rest) = raw.strip_prefix(p) {
@@ -2766,7 +2727,12 @@ async fn list_nextcloud_groups(
         .unwrap_or_default()
         .into_iter()
         .filter_map(|c| {
-            let email = c.email.into_iter().next().map(|e| e.value).unwrap_or_default();
+            let email = c
+                .email
+                .into_iter()
+                .next()
+                .map(|e| e.value)
+                .unwrap_or_default();
             if email.is_empty() {
                 return None;
             }
@@ -2784,19 +2750,16 @@ async fn list_nextcloud_groups(
             }
         };
         // OCS user groups -------------------------------------------------
-        let group_ids = match nimbus_nextcloud::fetch_my_groups(
-            &acc.server_url,
-            &acc.username,
-            &app_password,
-        )
-        .await
-        {
-            Ok(g) => g,
-            Err(e) => {
-                tracing::warn!("fetch_my_groups failed for {}: {e}", acc.id);
-                Vec::new()
-            }
-        };
+        let group_ids =
+            match nimbus_nextcloud::fetch_my_groups(&acc.server_url, &acc.username, &app_password)
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => {
+                    tracing::warn!("fetch_my_groups failed for {}: {e}", acc.id);
+                    Vec::new()
+                }
+            };
         for gid in group_ids {
             let members = collect_group_members(acc, &app_password, &gid, &cache_uid_email).await;
             // OCS groups + Circles both surface as "team" so
@@ -2813,19 +2776,16 @@ async fn list_nextcloud_groups(
             });
         }
         // Circles / Teams ------------------------------------------------
-        let circles = match nimbus_nextcloud::fetch_my_circles(
-            &acc.server_url,
-            &acc.username,
-            &app_password,
-        )
-        .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("fetch_my_circles failed for {}: {e}", acc.id);
-                Vec::new()
-            }
-        };
+        let circles =
+            match nimbus_nextcloud::fetch_my_circles(&acc.server_url, &acc.username, &app_password)
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("fetch_my_circles failed for {}: {e}", acc.id);
+                    Vec::new()
+                }
+            };
         for c in circles {
             let mids = match nimbus_nextcloud::fetch_circle_member_ids(
                 &acc.server_url,
@@ -2841,13 +2801,7 @@ async fn list_nextcloud_groups(
                     Vec::new()
                 }
             };
-            let members = resolve_member_profiles(
-                acc,
-                &app_password,
-                mids,
-                &cache_uid_email,
-            )
-            .await;
+            let members = resolve_member_profiles(acc, &app_password, mids, &cache_uid_email).await;
             out.push(NextcloudGroupView {
                 nextcloud_account_id: acc.id.clone(),
                 id: format!("team:{}", c.id),
@@ -3029,9 +2983,7 @@ struct SyncCalendarsReport {
 /// no cache write. Used in settings UIs where the user just wants
 /// to see what calendars exist server-side before toggling sync on.
 #[tauri::command]
-async fn list_nextcloud_calendars(
-    nc_id: String,
-) -> Result<Vec<CalendarSummary>, NimbusError> {
+async fn list_nextcloud_calendars(nc_id: String) -> Result<Vec<CalendarSummary>, NimbusError> {
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
     let calendars: Vec<CaldavCalendar> =
@@ -3147,11 +3099,8 @@ async fn sync_nextcloud_calendars(
         // onto every row from the same href — the raw blob stays
         // identical, and the store is optimised for per-row reads,
         // not per-href grouping.
-        let upserts: Vec<CalendarEventRow> = delta
-            .upserts
-            .iter()
-            .flat_map(raw_event_to_rows)
-            .collect();
+        let upserts: Vec<CalendarEventRow> =
+            delta.upserts.iter().flat_map(raw_event_to_rows).collect();
 
         if let Err(e) = cache.apply_event_delta(
             &cal_id,
@@ -3383,7 +3332,12 @@ fn get_cached_events(
             .get(master.id.as_str())
             .cloned()
             .unwrap_or_default();
-        out.extend(nimbus_caldav::expand_event(master, &ovs, range_start, range_end));
+        out.extend(nimbus_caldav::expand_event(
+            master,
+            &ovs,
+            range_start,
+            range_end,
+        ));
     }
     // Expansion doesn't guarantee chronological order across the whole
     // set (singletons come first, then per-master occurrences). Sort
@@ -3438,10 +3392,8 @@ fn input_to_calendar_event(uid: &str, input: &CalendarEventInput) -> CalendarEve
         use chrono::TimeZone;
         let start_day = input.start.date_naive();
         let end_day = input.end.date_naive();
-        let s = chrono::Utc
-            .from_utc_datetime(&start_day.and_hms_opt(0, 0, 0).unwrap());
-        let e = chrono::Utc
-            .from_utc_datetime(&end_day.and_hms_opt(23, 59, 59).unwrap());
+        let s = chrono::Utc.from_utc_datetime(&start_day.and_hms_opt(0, 0, 0).unwrap());
+        let e = chrono::Utc.from_utc_datetime(&end_day.and_hms_opt(23, 59, 59).unwrap());
         (s, e)
     } else {
         (input.start, input.end)
@@ -3584,13 +3536,14 @@ async fn create_calendar_event(
     input: CalendarEventInput,
     cache: State<'_, Cache>,
 ) -> Result<CalendarEvent, NimbusError> {
-    let (nc_id, calendar_path) = cache
-        .get_calendar_server_path(&calendar_id)?
-        .ok_or_else(|| {
-            NimbusError::Other(format!(
-                "calendar '{calendar_id}' is not in the local cache — refresh and try again"
-            ))
-        })?;
+    let (nc_id, calendar_path) =
+        cache
+            .get_calendar_server_path(&calendar_id)?
+            .ok_or_else(|| {
+                NimbusError::Other(format!(
+                    "calendar '{calendar_id}' is not in the local cache — refresh and try again"
+                ))
+            })?;
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
@@ -3598,11 +3551,7 @@ async fn create_calendar_event(
     let event = input_to_calendar_event(&uid, &input);
     let (organizer_email, organizer_name) =
         resolve_organizer(&account, &app_password, !event.attendees.is_empty()).await;
-    let ics = caldav_build_ics(
-        &event,
-        Some(&organizer_email),
-        organizer_name.as_deref(),
-    );
+    let ics = caldav_build_ics(&event, Some(&organizer_email), organizer_name.as_deref());
 
     // `calendar_path` from the cache is already an absolute URL —
     // `nimbus-caldav::discovery` resolves it via `absolute_url` before
@@ -3651,17 +3600,12 @@ async fn update_calendar_event(
 
     let (organizer_email, organizer_name) =
         resolve_organizer(&account, &app_password, !event.attendees.is_empty()).await;
-    let ics = caldav_build_ics(
-        &event,
-        Some(&organizer_email),
-        organizer_name.as_deref(),
-    );
+    let ics = caldav_build_ics(&event, Some(&organizer_email), organizer_name.as_deref());
     // Use the etag-aware retry helper so a concurrent edit on
     // another device (NC web, phone) doesn't surface to the
     // user as "refresh and try again" — it transparently syncs
     // and re-PUTs once.
-    let (outcome, handle) =
-        update_event_with_etag_retry(&cache, &event_id, &ics).await?;
+    let (outcome, handle) = update_event_with_etag_retry(&cache, &event_id, &ics).await?;
 
     let row = calendar_event_to_row(&event, &outcome.href, &outcome.etag, &ics);
     cache.upsert_single_event(&handle.calendar_id, &row)?;
@@ -3684,7 +3628,13 @@ async fn delete_calendar_event(
     let nc_account = load_nextcloud_account(&handle.nextcloud_account_id)?;
     let app_password = credentials::get_nextcloud_password(&handle.nextcloud_account_id)?;
 
-    caldav_delete_event(&handle.href, &nc_account.username, &app_password, &handle.etag).await?;
+    caldav_delete_event(
+        &handle.href,
+        &nc_account.username,
+        &app_password,
+        &handle.etag,
+    )
+    .await?;
     cache.delete_event_by_id(&event_id)?;
     Ok(())
 }
@@ -3743,10 +3693,7 @@ fn is_invite_cancelled(uid: String, cache: State<'_, Cache>) -> Result<bool, Nim
 }
 
 #[tauri::command]
-async fn dismiss_cancelled_event(
-    uid: String,
-    cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+async fn dismiss_cancelled_event(uid: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
     let Some(event_id) = cache.find_event_id_by_uid(&uid)? else {
         tracing::info!(
             "dismiss_cancelled_event: no cached event with UID {uid}, treating as no-op"
@@ -3945,13 +3892,14 @@ async fn respond_to_invite(
     cache: State<'_, Cache>,
 ) -> Result<(), NimbusError> {
     // Resolve the chosen calendar's location on the server.
-    let (nc_id, calendar_path) = cache
-        .get_calendar_server_path(&calendar_id)?
-        .ok_or_else(|| {
-            NimbusError::Other(format!(
-                "calendar '{calendar_id}' is not in the local cache — refresh and try again"
-            ))
-        })?;
+    let (nc_id, calendar_path) =
+        cache
+            .get_calendar_server_path(&calendar_id)?
+            .ok_or_else(|| {
+                NimbusError::Other(format!(
+                    "calendar '{calendar_id}' is not in the local cache — refresh and try again"
+                ))
+            })?;
     let account = load_nextcloud_account(&nc_id)?;
     let app_password = credentials::get_nextcloud_password(&nc_id)?;
 
@@ -4123,9 +4071,7 @@ async fn respond_to_invite(
     let mut existing_id = cache.find_event_id_by_uid(&event.id)?;
     if existing_id.is_none() {
         if let Err(e) = refresh_calendar_cache(&cache, &nc_id, &calendar_path).await {
-            tracing::warn!(
-                "RSVP: pre-PUT cache refresh failed (continuing): {e}"
-            );
+            tracing::warn!("RSVP: pre-PUT cache refresh failed (continuing): {e}");
         }
         existing_id = cache.find_event_id_by_uid(&event.id)?;
     }
@@ -4155,8 +4101,7 @@ async fn respond_to_invite(
                 &partstat,
                 true,
             );
-            let (out, _) =
-                update_event_with_etag_retry(&cache, &existing_id, &surgical).await?;
+            let (out, _) = update_event_with_etag_retry(&cache, &existing_id, &surgical).await?;
             body_put = surgical;
             out
         }
@@ -4372,9 +4317,7 @@ async fn update_event_with_etag_retry(
     {
         Ok(o) => Ok((o, handle)),
         Err(NimbusError::EtagMismatch(_)) => {
-            tracing::info!(
-                "stale etag for {event_id}; refreshing calendar cache and retrying"
-            );
+            tracing::info!("stale etag for {event_id}; refreshing calendar cache and retrying");
             let cal_path = cache
                 .get_calendar_server_path(&handle.calendar_id)?
                 .map(|(_, p)| p)
@@ -4438,8 +4381,7 @@ async fn refresh_calendar_cache(
         prev_token.as_deref(),
     )
     .await?;
-    let upserts: Vec<CalendarEventRow> =
-        delta.upserts.iter().flat_map(raw_event_to_rows).collect();
+    let upserts: Vec<CalendarEventRow> = delta.upserts.iter().flat_map(raw_event_to_rows).collect();
     cache.apply_event_delta(
         &cal.id,
         &upserts,
@@ -4760,7 +4702,9 @@ async fn fetch_unified_envelopes(
             tracing::warn!("unified poll failed for '{}': {e}", account.id);
         }
     }
-    cache.get_unified_envelopes(&folder, limit).map_err(Into::into)
+    cache
+        .get_unified_envelopes(&folder, limit)
+        .map_err(Into::into)
 }
 
 /// Outcome of polling a single folder — used by both the user-facing
@@ -5191,9 +5135,10 @@ async fn delete_message(
     // reason we hit that error *is* a stale cache row, so dropping it
     // unblocks the user's next refresh.
     if should_clean_cache_for_delete(&result)
-        && let Err(e) = cache.remove_envelope(&account_id, &folder, uid) {
-            tracing::warn!("remove_envelope after delete_message failed: {e}");
-        }
+        && let Err(e) = cache.remove_envelope(&account_id, &folder, uid)
+    {
+        tracing::warn!("remove_envelope after delete_message failed: {e}");
+    }
 
     result
 }
@@ -5528,11 +5473,7 @@ async fn send_email(
 /// Locate the account's Sent folder (via the IMAP `\Sent` attribute,
 /// or a name-based fallback) and `APPEND` the raw RFC 822 bytes there.
 /// Marked `\Seen` so it doesn't add to the unread badge.
-async fn append_to_sent(
-    account: &Account,
-    raw: &[u8],
-    cache: &Cache,
-) -> Result<(), NimbusError> {
+async fn append_to_sent(account: &Account, raw: &[u8], cache: &Cache) -> Result<(), NimbusError> {
     let sent_folder = pick_sent_folder(&account.id, cache);
     let Some(sent) = sent_folder else {
         return Err(NimbusError::Other(
@@ -5643,9 +5584,10 @@ async fn save_draft(
         if let Some(src) = replace_source {
             let delete_result = client.delete_message(&src.folder, src.uid).await;
             if should_clean_cache_for_delete(&delete_result)
-                && let Err(e) = cache.remove_envelope(&account_id, &src.folder, src.uid) {
-                    tracing::warn!("remove_envelope after save_draft replace failed: {e}");
-                }
+                && let Err(e) = cache.remove_envelope(&account_id, &src.folder, src.uid)
+            {
+                tracing::warn!("remove_envelope after save_draft replace failed: {e}");
+            }
             match delete_result {
                 Ok(()) => Ok(()),
                 Err(e) => Err(NimbusError::Other(format!(
@@ -5822,9 +5764,10 @@ async fn delete_folder(
     let _ = client.logout().await;
 
     if result.is_ok()
-        && let Err(e) = cache.wipe_folder(&account_id, &name) {
-            tracing::warn!("wipe_folder after delete_folder failed: {e}");
-        }
+        && let Err(e) = cache.wipe_folder(&account_id, &name)
+    {
+        tracing::warn!("wipe_folder after delete_folder failed: {e}");
+    }
 
     result
 }
@@ -5850,9 +5793,10 @@ async fn rename_folder(
     let _ = client.logout().await;
 
     if result.is_ok()
-        && let Err(e) = cache.rename_folder(&account_id, &old_name, &new_name) {
-            tracing::warn!("cache.rename_folder failed: {e}");
-        }
+        && let Err(e) = cache.rename_folder(&account_id, &old_name, &new_name)
+    {
+        tracing::warn!("cache.rename_folder failed: {e}");
+    }
 
     result
 }
@@ -5886,7 +5830,9 @@ fn get_unified_cached_envelopes(
     limit: u32,
     cache: State<'_, Cache>,
 ) -> Result<Vec<EmailEnvelope>, NimbusError> {
-    cache.get_unified_envelopes(&folder, limit).map_err(Into::into)
+    cache
+        .get_unified_envelopes(&folder, limit)
+        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -6403,7 +6349,15 @@ fn extract_meeting_url(event: &CalendarEvent) -> Option<String> {
         // doesn't end up baked into the captured URL.
         for token in s.split_whitespace() {
             let url = token.trim_matches(|c: char| {
-                c == '<' || c == '>' || c == '"' || c == '\'' || c == ',' || c == '.' || c == ';' || c == ')' || c == '('
+                c == '<'
+                    || c == '>'
+                    || c == '"'
+                    || c == '\''
+                    || c == ','
+                    || c == '.'
+                    || c == ';'
+                    || c == ')'
+                    || c == '('
             });
             if url.starts_with("http://") || url.starts_with("https://") {
                 return Some(url.to_string());
@@ -6504,7 +6458,12 @@ async fn check_talk_reminders_inner(app: &AppHandle) -> Result<(), NimbusError> 
             .get(master.id.as_str())
             .cloned()
             .unwrap_or_default();
-        events.extend(nimbus_caldav::expand_event(master, &ovs, range_start, range_end));
+        events.extend(nimbus_caldav::expand_event(
+            master,
+            &ovs,
+            range_start,
+            range_end,
+        ));
     }
 
     let state = app.state::<TalkReminderState>();
@@ -6522,7 +6481,10 @@ async fn check_talk_reminders_inner(app: &AppHandle) -> Result<(), NimbusError> 
         fired.retain(|(uid, _)| active_uids.contains(uid));
     }
     let dismissed_snapshot: HashSet<String> = {
-        let d = state.dismissed.lock().expect("talk-reminder dismissed mutex");
+        let d = state
+            .dismissed
+            .lock()
+            .expect("talk-reminder dismissed mutex");
         d.clone()
     };
 
@@ -6620,7 +6582,10 @@ fn dismiss_talk_reminder(
     state: State<'_, TalkReminderState>,
 ) -> Result<(), NimbusError> {
     {
-        let mut d = state.dismissed.lock().expect("talk-reminder dismissed mutex");
+        let mut d = state
+            .dismissed
+            .lock()
+            .expect("talk-reminder dismissed mutex");
         d.insert(uid.clone());
     }
     {
@@ -6724,7 +6689,10 @@ fn extract_theme_slug(css: &str, fallback: &str) -> String {
         // Accept both `"foo"` and `'foo'` quoting, tolerate
         // intra-attribute whitespace.
         let trimmed = tail.trim_start();
-        if let Some(rest) = trimmed.strip_prefix('"').or_else(|| trimmed.strip_prefix('\'')) {
+        if let Some(rest) = trimmed
+            .strip_prefix('"')
+            .or_else(|| trimmed.strip_prefix('\''))
+        {
             if let Some(end) = rest.find(['"', '\'']) {
                 let slug = rest[..end].trim();
                 if !slug.is_empty() {
@@ -6768,8 +6736,7 @@ async fn import_custom_theme(
     let slug = extract_theme_slug(&css, &stem);
     let dir = custom_themes_dir()?;
     let dest = dir.join(format!("{slug}.css"));
-    std::fs::write(&dest, &css)
-        .map_err(|e| NimbusError::Other(format!("copy theme file: {e}")))?;
+    std::fs::write(&dest, &css).map_err(|e| NimbusError::Other(format!("copy theme file: {e}")))?;
 
     let record = CustomTheme {
         id: slug.clone(),
@@ -6808,7 +6775,11 @@ async fn remove_custom_theme(
 ) -> Result<(), NimbusError> {
     let path: Option<String> = {
         let mut s = settings.write().await;
-        let path = s.custom_themes.iter().find(|t| t.id == id).map(|t| t.path.clone());
+        let path = s
+            .custom_themes
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.path.clone());
         s.custom_themes.retain(|t| t.id != id);
         // If the removed theme was the active one, drop back to
         // the default so the UI doesn't try to render a missing
@@ -6820,9 +6791,10 @@ async fn remove_custom_theme(
         path
     };
     if let Some(p) = path
-        && let Err(e) = std::fs::remove_file(&p) {
-            tracing::warn!("remove theme file {p}: {e}");
-        }
+        && let Err(e) = std::fs::remove_file(&p)
+    {
+        tracing::warn!("remove theme file {p}: {e}");
+    }
     if let Err(e) = app.emit("custom-themes-changed", ()) {
         tracing::warn!("emit custom-themes-changed failed: {e}");
     }
@@ -6865,15 +6837,14 @@ fn main() {
     // cache got into that state.
     match account_store::load_accounts(&cache) {
         Ok(accounts) => {
-            let active_ids: Vec<String> =
-                accounts.iter().map(|a| a.id.clone()).collect();
+            let active_ids: Vec<String> = accounts.iter().map(|a| a.id.clone()).collect();
             if let Err(e) = cache.prune_orphan_accounts(&active_ids) {
                 tracing::warn!("startup orphan-account prune failed: {e}");
             }
         }
-        Err(e) => tracing::warn!(
-            "skipping startup orphan-account prune — load_accounts failed: {e}"
-        ),
+        Err(e) => {
+            tracing::warn!("skipping startup orphan-account prune — load_accounts failed: {e}")
+        }
     }
 
     // App-wide preferences (Issue #16). A missing file is fine on first

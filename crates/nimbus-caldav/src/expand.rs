@@ -304,17 +304,31 @@ mod tests {
         );
         // 2026-05-04, 05-11, 05-18, 05-25 → 4 instances in May.
         assert_eq!(out.len(), 4);
-        assert!(out[0].start.date_naive().to_string().starts_with("2026-05-04"));
-        assert!(out[3].start.date_naive().to_string().starts_with("2026-05-25"));
+        assert!(
+            out[0]
+                .start
+                .date_naive()
+                .to_string()
+                .starts_with("2026-05-04")
+        );
+        assert!(
+            out[3]
+                .start
+                .date_naive()
+                .to_string()
+                .starts_with("2026-05-25")
+        );
         // Each synthesised instance preserves duration.
         for inst in &out {
             assert_eq!(inst.end - inst.start, chrono::Duration::hours(1));
             assert!(inst.rrule.is_none(), "occurrence must not carry RRULE");
-            assert!(inst.recurrence_id.is_some(), "occurrence sets recurrence_id");
+            assert!(
+                inst.recurrence_id.is_some(),
+                "occurrence sets recurrence_id"
+            );
         }
         // Distinct ids so the UI's keyed each doesn't dedupe.
-        let ids: std::collections::HashSet<&str> =
-            out.iter().map(|e| e.id.as_str()).collect();
+        let ids: std::collections::HashSet<&str> = out.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids.len(), 4);
     }
 
@@ -333,8 +347,8 @@ mod tests {
         );
         assert_eq!(out.len(), 3);
         assert!(
-            !out.iter().any(|ev| ev.start
-                == Utc.with_ymd_and_hms(2026, 5, 11, 9, 0, 0).unwrap()),
+            !out.iter()
+                .any(|ev| ev.start == Utc.with_ymd_and_hms(2026, 5, 11, 9, 0, 0).unwrap()),
             "cancelled instance must not appear"
         );
     }
@@ -448,8 +462,8 @@ mod tests {
         // Two RRULE instances + one RDATE extra.
         assert_eq!(out.len(), 3);
         assert!(
-            out.iter().any(|ev| ev.start
-                == Utc.with_ymd_and_hms(2026, 5, 15, 9, 0, 0).unwrap()),
+            out.iter()
+                .any(|ev| ev.start == Utc.with_ymd_and_hms(2026, 5, 15, 9, 0, 0).unwrap()),
             "RDATE extra must appear"
         );
     }

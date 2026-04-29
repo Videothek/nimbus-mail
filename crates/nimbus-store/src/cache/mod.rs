@@ -177,10 +177,7 @@ impl Cache {
     ///
     /// Returns the count of orphan account ids that were pruned —
     /// zero on a clean cache, any other number is worth a log line.
-    pub fn prune_orphan_accounts(
-        &self,
-        active_ids: &[String],
-    ) -> Result<usize, CacheError> {
+    pub fn prune_orphan_accounts(&self, active_ids: &[String]) -> Result<usize, CacheError> {
         let conn = self.pool.get()?;
         // Collect every distinct account_id across the three tables
         // that might hold orphans. Using a union keeps this robust
@@ -874,8 +871,7 @@ impl Cache {
                         is_read: r.get::<_, i64>(3)? != 0,
                         is_starred: r.get::<_, i64>(4)? != 0,
                         has_attachments: r.get::<_, i64>(7)? != 0,
-                        attachments: serde_json::from_str(&attachments_json)
-                            .unwrap_or_default(),
+                        attachments: serde_json::from_str(&attachments_json).unwrap_or_default(),
                     })
                 },
             )
@@ -1175,11 +1171,36 @@ mod tests {
     fn folders_preserve_server_order() {
         let cache = open_test_cache();
         let server_order = vec![
-            Folder { name: "INBOX".into(), delimiter: None, attributes: vec![], unread_count: None },
-            Folder { name: "Drafts".into(), delimiter: None, attributes: vec![], unread_count: None },
-            Folder { name: "Sent".into(), delimiter: None, attributes: vec![], unread_count: None },
-            Folder { name: "Archive".into(), delimiter: None, attributes: vec![], unread_count: None },
-            Folder { name: "Trash".into(), delimiter: None, attributes: vec![], unread_count: None },
+            Folder {
+                name: "INBOX".into(),
+                delimiter: None,
+                attributes: vec![],
+                unread_count: None,
+            },
+            Folder {
+                name: "Drafts".into(),
+                delimiter: None,
+                attributes: vec![],
+                unread_count: None,
+            },
+            Folder {
+                name: "Sent".into(),
+                delimiter: None,
+                attributes: vec![],
+                unread_count: None,
+            },
+            Folder {
+                name: "Archive".into(),
+                delimiter: None,
+                attributes: vec![],
+                unread_count: None,
+            },
+            Folder {
+                name: "Trash".into(),
+                delimiter: None,
+                attributes: vec![],
+                unread_count: None,
+            },
         ];
         cache.upsert_folders("acc", &server_order).unwrap();
 

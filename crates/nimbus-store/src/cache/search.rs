@@ -653,13 +653,7 @@ mod tests {
         // via FTS5's prefix-match operator, not just exact "dam".
         let cache = open();
         cache
-            .upsert_message(&email(
-                1,
-                "INBOX",
-                "Damm das Tor",
-                "body",
-                "a@x.de",
-            ))
+            .upsert_message(&email(1, "INBOX", "Damm das Tor", "body", "a@x.de"))
             .unwrap();
         cache
             .upsert_message(&email(

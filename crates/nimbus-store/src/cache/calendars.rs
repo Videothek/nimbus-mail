@@ -221,10 +221,7 @@ impl Cache {
         // Prune calendars that vanished server-side. We bind the
         // full server path list as an in-memory temp join so we
         // don't have to build a variadic `NOT IN (...)` clause.
-        tx.execute(
-            "CREATE TEMP TABLE _seen_paths (path TEXT PRIMARY KEY)",
-            [],
-        )?;
+        tx.execute("CREATE TEMP TABLE _seen_paths (path TEXT PRIMARY KEY)", [])?;
         {
             let mut stmt = tx.prepare("INSERT INTO _seen_paths (path) VALUES (?1)")?;
             for r in rows {
@@ -306,11 +303,7 @@ impl Cache {
 
     /// Layer 1 toggle — removes the calendar from the sidebar entirely.
     /// Purely client-side; never touches the server.
-    pub fn set_calendar_hidden(
-        &self,
-        calendar_id: &str,
-        hidden: bool,
-    ) -> Result<(), CacheError> {
+    pub fn set_calendar_hidden(&self, calendar_id: &str, hidden: bool) -> Result<(), CacheError> {
         let conn = self.pool.get()?;
         conn.execute(
             "UPDATE calendars SET hidden = ?2 WHERE id = ?1",
@@ -322,11 +315,7 @@ impl Cache {
     /// Layer 2 toggle — keeps the calendar in the sidebar but hides its
     /// events from the agenda grid. Purely client-side; never touches
     /// the server.
-    pub fn set_calendar_muted(
-        &self,
-        calendar_id: &str,
-        muted: bool,
-    ) -> Result<(), CacheError> {
+    pub fn set_calendar_muted(&self, calendar_id: &str, muted: bool) -> Result<(), CacheError> {
         let conn = self.pool.get()?;
         conn.execute(
             "UPDATE calendars SET muted = ?2 WHERE id = ?1",
@@ -347,10 +336,7 @@ impl Cache {
 
     /// All cached calendars for one Nextcloud account, alphabetised
     /// by display name.
-    pub fn list_calendars(
-        &self,
-        nc_account_id: &str,
-    ) -> Result<Vec<CachedCalendar>, CacheError> {
+    pub fn list_calendars(&self, nc_account_id: &str) -> Result<Vec<CachedCalendar>, CacheError> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
             "SELECT id, nextcloud_account_id, path, display_name, color,
@@ -518,10 +504,10 @@ impl Cache {
                     &e.exdate.iter().map(|d| d.timestamp()).collect::<Vec<_>>(),
                 )
                 .unwrap_or_else(|_| "[]".into());
-                let attendees_json = serde_json::to_string(&e.attendees)
-                    .unwrap_or_else(|_| "[]".into());
-                let reminders_json = serde_json::to_string(&e.reminders)
-                    .unwrap_or_else(|_| "[]".into());
+                let attendees_json =
+                    serde_json::to_string(&e.attendees).unwrap_or_else(|_| "[]".into());
+                let reminders_json =
+                    serde_json::to_string(&e.reminders).unwrap_or_else(|_| "[]".into());
                 stmt.execute(params![
                     id,
                     calendar_id,
@@ -600,15 +586,13 @@ impl Cache {
         );
 
         let mut stmt = conn.prepare(&sql)?;
-        let mut bound: Vec<Box<dyn rusqlite::ToSql>> =
-            Vec::with_capacity(calendar_ids.len() + 2);
+        let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(calendar_ids.len() + 2);
         for id in calendar_ids {
             bound.push(Box::new(id.clone()));
         }
         bound.push(Box::new(range_start.timestamp()));
         bound.push(Box::new(range_end.timestamp()));
-        let param_refs: Vec<&dyn rusqlite::ToSql> =
-            bound.iter().map(|b| b.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
 
         let rows = stmt.query_map(param_refs.as_slice(), row_to_calendar_event)?;
         let mut out = Vec::new();
@@ -704,8 +688,7 @@ impl Cache {
         range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     ) -> Result<Vec<CalendarEvent>, CacheError> {
         let mut stmt = conn.prepare(sql)?;
-        let mut bound: Vec<Box<dyn rusqlite::ToSql>> =
-            Vec::with_capacity(calendar_ids.len() + 2);
+        let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(calendar_ids.len() + 2);
         for id in calendar_ids {
             bound.push(Box::new(id.clone()));
         }
@@ -713,8 +696,7 @@ impl Cache {
             bound.push(Box::new(rs.timestamp()));
             bound.push(Box::new(re.timestamp()));
         }
-        let param_refs: Vec<&dyn rusqlite::ToSql> =
-            bound.iter().map(|b| b.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
         let rows = stmt.query_map(param_refs.as_slice(), row_to_calendar_event)?;
         let mut out = Vec::new();
         for r in rows {
@@ -762,8 +744,7 @@ impl Cache {
                         uid: r.get(0)?,
                         href: r.get(1)?,
                         etag: r.get(2)?,
-                        recurrence_id: recurrence_ts
-                            .and_then(|t| Utc.timestamp_opt(t, 0).single()),
+                        recurrence_id: recurrence_ts.and_then(|t| Utc.timestamp_opt(t, 0).single()),
                         ics_raw: r.get(4)?,
                         calendar_id: r.get(5)?,
                         nextcloud_account_id: r.get(6)?,
@@ -805,18 +786,14 @@ impl Cache {
     ) -> Result<(), CacheError> {
         let conn = self.pool.get()?;
         let id = event_row_id(calendar_id, &row.uid, row.recurrence_id);
-        let rdate_json = serde_json::to_string(
-            &row.rdate.iter().map(|d| d.timestamp()).collect::<Vec<_>>(),
-        )
-        .unwrap_or_else(|_| "[]".into());
-        let exdate_json = serde_json::to_string(
-            &row.exdate.iter().map(|d| d.timestamp()).collect::<Vec<_>>(),
-        )
-        .unwrap_or_else(|_| "[]".into());
-        let attendees_json =
-            serde_json::to_string(&row.attendees).unwrap_or_else(|_| "[]".into());
-        let reminders_json =
-            serde_json::to_string(&row.reminders).unwrap_or_else(|_| "[]".into());
+        let rdate_json =
+            serde_json::to_string(&row.rdate.iter().map(|d| d.timestamp()).collect::<Vec<_>>())
+                .unwrap_or_else(|_| "[]".into());
+        let exdate_json =
+            serde_json::to_string(&row.exdate.iter().map(|d| d.timestamp()).collect::<Vec<_>>())
+                .unwrap_or_else(|_| "[]".into());
+        let attendees_json = serde_json::to_string(&row.attendees).unwrap_or_else(|_| "[]".into());
+        let reminders_json = serde_json::to_string(&row.reminders).unwrap_or_else(|_| "[]".into());
         let now = Utc::now().timestamp();
         conn.execute(
             "INSERT INTO calendar_events
@@ -876,11 +853,7 @@ impl Cache {
     /// the SMTP server, so the card can re-render in the chosen
     /// state on next open.  Overwrites a previous answer, which is
     /// the right semantics: changing your mind replaces the row.
-    pub fn upsert_rsvp_response(
-        &self,
-        uid: &str,
-        partstat: &str,
-    ) -> Result<(), CacheError> {
+    pub fn upsert_rsvp_response(&self, uid: &str, partstat: &str) -> Result<(), CacheError> {
         let conn = self.pool.get()?;
         let now = Utc::now().timestamp();
         conn.execute(
@@ -897,10 +870,7 @@ impl Cache {
     /// Look up the user's last RSVP answer for `uid`. Returns
     /// `Ok(None)` if the user has never answered this invite (the
     /// card should show the fresh Accept/Decline/Tentative state).
-    pub fn get_rsvp_response(
-        &self,
-        uid: &str,
-    ) -> Result<Option<String>, CacheError> {
+    pub fn get_rsvp_response(&self, uid: &str) -> Result<Option<String>, CacheError> {
         let conn = self.pool.get()?;
         let row = conn
             .query_row(
@@ -952,10 +922,7 @@ impl Cache {
     /// meeting we previously accepted, the inbound mail only carries
     /// the UID — we need to map that back to the local event so we
     /// can remove it from the user's calendar.
-    pub fn find_event_id_by_uid(
-        &self,
-        uid: &str,
-    ) -> Result<Option<String>, CacheError> {
+    pub fn find_event_id_by_uid(&self, uid: &str) -> Result<Option<String>, CacheError> {
         let conn = self.pool.get()?;
         let row = conn
             .query_row(
@@ -1001,18 +968,13 @@ pub struct CalendarEventServerHandle {
     pub ics_raw: String,
 }
 
-
 /// Build the stable app-side event id.
 ///
 /// Matches the schema comment: `{calendar_id}::{uid}` for a master
 /// (or a non-recurring VEVENT), and `{calendar_id}::{uid}::{epoch}`
 /// for a RECURRENCE-ID override. Callers use this id as their single
 /// handle to a row.
-fn event_row_id(
-    calendar_id: &str,
-    uid: &str,
-    recurrence_id: Option<DateTime<Utc>>,
-) -> String {
+fn event_row_id(calendar_id: &str, uid: &str, recurrence_id: Option<DateTime<Utc>>) -> String {
     match recurrence_id {
         Some(t) => format!("{calendar_id}::{uid}::{}", t.timestamp()),
         None => format!("{calendar_id}::{uid}"),
@@ -1022,8 +984,7 @@ fn event_row_id(
 /// Column list the three event queries select in lockstep so
 /// `row_to_calendar_event` can address them by index without drifting
 /// out of sync with individual `SELECT` statements.
-const EVENT_COLUMNS: &str =
-    "id, calendar_id, summary, description, start_utc, end_utc, \
+const EVENT_COLUMNS: &str = "id, calendar_id, summary, description, start_utc, end_utc, \
      location, rrule, rdate_json, exdate_json, recurrence_id, \
      url, transparency, attendees_json, reminders_json";
 
@@ -1032,7 +993,10 @@ const EVENT_COLUMNS: &str =
 /// caller has — the result is always safe because the string only
 /// contains `?` and digits, never user input.
 fn sql_placeholders(n: usize) -> String {
-    (1..=n).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", ")
+    (1..=n)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Shared row → `CalendarEvent` mapper. All three event queries keep
@@ -1048,10 +1012,8 @@ fn row_to_calendar_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<CalendarEven
     let reminders_json: String = r.get(14)?;
     let rdate_epochs: Vec<i64> = serde_json::from_str(&rdate_json).unwrap_or_default();
     let exdate_epochs: Vec<i64> = serde_json::from_str(&exdate_json).unwrap_or_default();
-    let attendees: Vec<EventAttendee> =
-        serde_json::from_str(&attendees_json).unwrap_or_default();
-    let reminders: Vec<EventReminder> =
-        serde_json::from_str(&reminders_json).unwrap_or_default();
+    let attendees: Vec<EventAttendee> = serde_json::from_str(&attendees_json).unwrap_or_default();
+    let reminders: Vec<EventReminder> = serde_json::from_str(&reminders_json).unwrap_or_default();
     Ok(CalendarEvent {
         id: r.get(0)?,
         summary: r.get(2)?,
@@ -1305,13 +1267,7 @@ mod tests {
         };
 
         cache
-            .apply_event_delta(
-                &cal_id,
-                &[master, override_row],
-                &[],
-                Some("tok"),
-                None,
-            )
+            .apply_event_delta(&cal_id, &[master, override_row], &[], Some("tok"), None)
             .unwrap();
 
         let got = cache
@@ -1352,13 +1308,7 @@ mod tests {
         };
 
         cache
-            .apply_event_delta(
-                &cal_id,
-                &[master.clone(), override_row],
-                &[],
-                None,
-                None,
-            )
+            .apply_event_delta(&cal_id, &[master.clone(), override_row], &[], None, None)
             .unwrap();
         assert_eq!(
             cache

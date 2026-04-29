@@ -72,10 +72,7 @@ async fn tls_connect(
 /// by walking the entire presented chain anyway. Caller is
 /// responsible for never using this for actual mail traffic — we
 /// drop the connection immediately after the handshake succeeds.
-pub async fn probe_server_certificate(
-    host: &str,
-    port: u16,
-) -> Result<Vec<Vec<u8>>, NimbusError> {
+pub async fn probe_server_certificate(host: &str, port: u16) -> Result<Vec<Vec<u8>>, NimbusError> {
     let addr = format!("{host}:{port}");
     let tcp = TcpStream::connect(&addr)
         .await
@@ -283,11 +280,7 @@ impl ImapClient {
     /// to the new one. That's handled in the caller (`main.rs`)
     /// via `Cache::rename_folder` — this method only drives the
     /// IMAP side.
-    pub async fn rename_folder(
-        &mut self,
-        from: &str,
-        to: &str,
-    ) -> Result<(), NimbusError> {
+    pub async fn rename_folder(&mut self, from: &str, to: &str) -> Result<(), NimbusError> {
         let session = self
             .session
             .as_mut()
@@ -786,9 +779,7 @@ impl ImapClient {
             .attachment(part_id)
             .or_else(|| parsed.parts.get(part_id as usize))
             .ok_or_else(|| {
-                NimbusError::Protocol(format!(
-                    "Message UID {uid} has no part #{part_id}"
-                ))
+                NimbusError::Protocol(format!("Message UID {uid} has no part #{part_id}"))
             })?;
 
         let filename = part
@@ -1172,18 +1163,14 @@ impl ImapClient {
                 // command for another reason). Fall back to plain
                 // EXPUNGE — we only flagged one UID in this session
                 // so the broader command is still targeted enough.
-                tracing::warn!(
-                    "delete_message: UID EXPUNGE failed ({e}), falling back to EXPUNGE"
-                );
+                tracing::warn!("delete_message: UID EXPUNGE failed ({e}), falling back to EXPUNGE");
                 let expunged: Vec<_> = session
                     .expunge()
                     .await
                     .map_err(|e| NimbusError::Protocol(format!("EXPUNGE failed: {e}")))?
                     .try_collect()
                     .await
-                    .map_err(|e| {
-                        NimbusError::Protocol(format!("Failed to read EXPUNGE: {e}"))
-                    })?;
+                    .map_err(|e| NimbusError::Protocol(format!("Failed to read EXPUNGE: {e}")))?;
                 info!(
                     "delete_message: EXPUNGE removed {} message(s) (fallback)",
                     expunged.len()

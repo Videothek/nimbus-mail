@@ -42,9 +42,7 @@ pub async fn discover(domain: &str, email: &str) -> Result<DiscoveredAccount, Di
 
     let candidates = [
         (
-            format!(
-                "https://autoconfig.{domain}/mail/config-v1.1.xml?emailaddress={email}"
-            ),
+            format!("https://autoconfig.{domain}/mail/config-v1.1.xml?emailaddress={email}"),
             DiscoverySource::AutoconfigDomain,
         ),
         (

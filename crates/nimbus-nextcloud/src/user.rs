@@ -406,9 +406,7 @@ pub async fn fetch_my_circles(
         .await
         .map_err(|e| NimbusError::Network(format!("circles request failed: {e}")))?;
     let status = resp.status();
-    if status == reqwest::StatusCode::NOT_FOUND
-        || status == reqwest::StatusCode::FORBIDDEN
-    {
+    if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::FORBIDDEN {
         return Ok(Vec::new());
     }
     if !status.is_success() {
@@ -480,9 +478,7 @@ pub async fn fetch_circle_member_ids(
         .await
         .map_err(|e| NimbusError::Network(format!("circle members request failed: {e}")))?;
     let status = resp.status();
-    if status == reqwest::StatusCode::NOT_FOUND
-        || status == reqwest::StatusCode::FORBIDDEN
-    {
+    if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::FORBIDDEN {
         return Ok(Vec::new());
     }
     if !status.is_success() {

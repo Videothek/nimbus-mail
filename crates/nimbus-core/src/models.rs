@@ -120,7 +120,6 @@ pub enum ThemeMode {
     Dark,
 }
 
-
 impl Default for AppSettings {
     fn default() -> Self {
         Self {

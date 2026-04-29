@@ -128,10 +128,13 @@ impl ServerCertVerifier for FingerprintVerifier {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        match self
-            .inner
-            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
-        {
+        match self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        ) {
             Ok(v) => Ok(v),
             Err(webpki_err) => {
                 // Walk the entire presented chain — leaf and every
@@ -146,8 +149,9 @@ impl ServerCertVerifier for FingerprintVerifier {
                     .iter()
                     .map(|c| canonicalize_fingerprint(&fingerprint_sha256(c.as_ref())))
                     .collect();
-                let chain_fps: Vec<&String> =
-                    std::iter::once(&leaf_fp).chain(intermediate_fps.iter()).collect();
+                let chain_fps: Vec<&String> = std::iter::once(&leaf_fp)
+                    .chain(intermediate_fps.iter())
+                    .collect();
 
                 let matched = chain_fps
                     .iter()

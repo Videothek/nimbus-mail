@@ -167,11 +167,9 @@ impl Cache {
                 let id = format!("{nc_account_id}::{}", c.vcard_uid);
                 let emails = serde_json::to_string(&c.emails).unwrap_or_else(|_| "[]".into());
                 let phones = serde_json::to_string(&c.phones).unwrap_or_else(|_| "[]".into());
-                let addresses =
-                    serde_json::to_string(&c.addresses).unwrap_or_else(|_| "[]".into());
+                let addresses = serde_json::to_string(&c.addresses).unwrap_or_else(|_| "[]".into());
                 let urls = serde_json::to_string(&c.urls).unwrap_or_else(|_| "[]".into());
-                let members =
-                    serde_json::to_string(&c.member_uids).unwrap_or_else(|_| "[]".into());
+                let members = serde_json::to_string(&c.member_uids).unwrap_or_else(|_| "[]".into());
                 let categories =
                     serde_json::to_string(&c.categories).unwrap_or_else(|_| "[]".into());
                 stmt.execute(params![
@@ -525,10 +523,8 @@ impl Cache {
                  WHERE COALESCE(categories_json, '[]') = '[]'
                    AND vcard_raw LIKE '%CATEGORIES%'",
             )?;
-            stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
         };
         let mut updated = 0u32;
         for (id, raw) in pairs {
@@ -553,9 +549,7 @@ impl Cache {
     /// category; the unified mailing-list view derives a
     /// virtual mailing list per row.  Empty when no card has a
     /// CATEGORIES tag.
-    pub fn list_contact_categories(
-        &self,
-    ) -> Result<Vec<(String, u32)>, CacheError> {
+    pub fn list_contact_categories(&self) -> Result<Vec<(String, u32)>, CacheError> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
             "SELECT categories_json FROM contacts
@@ -566,8 +560,7 @@ impl Cache {
             let v: String = r.get(0)?;
             Ok(v)
         })?;
-        let mut counts: std::collections::HashMap<String, u32> =
-            std::collections::HashMap::new();
+        let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         for r in rows {
             let json = r?;
             let cats: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
@@ -599,10 +592,7 @@ impl Cache {
     /// Iterating every row is fine at typical addressbook
     /// sizes — one cheap SELECT per Lists-tab open, not per
     /// keystroke.
-    pub fn list_contacts_with_category(
-        &self,
-        category: &str,
-    ) -> Result<Vec<Contact>, CacheError> {
+    pub fn list_contacts_with_category(&self, category: &str) -> Result<Vec<Contact>, CacheError> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
             "SELECT id, nextcloud_account_id, display_name, emails_json,
@@ -701,9 +691,7 @@ impl Cache {
             "SELECT id, emoji FROM mailing_list_settings
              WHERE emoji IS NOT NULL AND emoji != ''",
         )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         let mut out = std::collections::HashMap::new();
         for r in rows {
             let (k, v) = r?;
@@ -712,11 +700,7 @@ impl Cache {
         Ok(out)
     }
 
-    pub fn set_mailing_list_emoji(
-        &self,
-        id: &str,
-        emoji: Option<&str>,
-    ) -> Result<(), CacheError> {
+    pub fn set_mailing_list_emoji(&self, id: &str, emoji: Option<&str>) -> Result<(), CacheError> {
         let conn = self.pool.get()?;
         conn.execute(
             "INSERT INTO mailing_list_settings (id, hidden_from_autocomplete, emoji)
@@ -770,8 +754,7 @@ impl Cache {
             let members_json: String = r.get(3)?;
             let emoji: Option<String> = r.get(4)?;
             let hidden: i64 = r.get(5)?;
-            let raw_uris: Vec<String> =
-                serde_json::from_str(&members_json).unwrap_or_default();
+            let raw_uris: Vec<String> = serde_json::from_str(&members_json).unwrap_or_default();
             // Strip the `urn:uuid:` prefix that vCard 4 prescribes
             // so the frontend gets bare UIDs ready to match against
             // contact rows.  Anything that isn't a urn:uuid form
@@ -802,11 +785,7 @@ impl Cache {
     }
 
     /// Toggle the local `group_hidden` flag for one group.
-    pub fn set_contact_group_hidden(
-        &self,
-        group_id: &str,
-        hidden: bool,
-    ) -> Result<(), CacheError> {
+    pub fn set_contact_group_hidden(&self, group_id: &str, hidden: bool) -> Result<(), CacheError> {
         let conn = self.pool.get()?;
         conn.execute(
             "UPDATE contacts SET group_hidden = ?2 WHERE id = ?1",
@@ -869,9 +848,12 @@ impl Cache {
             let id: String = r.get(0)?;
             let name: String = r.get(1)?;
             let emails_json: String = r.get(2)?;
-            let emails: Vec<ContactEmail> =
-                serde_json::from_str(&emails_json).unwrap_or_default();
-            let first_email = emails.into_iter().next().map(|e| e.value).unwrap_or_default();
+            let emails: Vec<ContactEmail> = serde_json::from_str(&emails_json).unwrap_or_default();
+            let first_email = emails
+                .into_iter()
+                .next()
+                .map(|e| e.value)
+                .unwrap_or_default();
             Ok((id, name, first_email))
         })?;
         let mut out = Vec::new();

@@ -155,10 +155,7 @@ fn build_tls_params(
 /// the cert isn't visible until after a SMTP greeting + STARTTLS
 /// dance — and in practice the IMAP probe usually surfaces the
 /// same cert (same host), so we let the UI try the IMAP probe first.
-pub async fn probe_server_certificate(
-    host: &str,
-    port: u16,
-) -> Result<Vec<u8>, NimbusError> {
+pub async fn probe_server_certificate(host: &str, port: u16) -> Result<Vec<u8>, NimbusError> {
     let addr = format!("{host}:{port}");
     let tcp = tokio::net::TcpStream::connect(&addr)
         .await
@@ -176,9 +173,7 @@ pub async fn probe_server_certificate(
     let leaf = conn
         .peer_certificates()
         .and_then(|chain| chain.first())
-        .ok_or_else(|| {
-            NimbusError::Protocol(format!("server '{host}' returned no certificate"))
-        })?
+        .ok_or_else(|| NimbusError::Protocol(format!("server '{host}' returned no certificate")))?
         .to_vec();
     Ok(leaf)
 }
