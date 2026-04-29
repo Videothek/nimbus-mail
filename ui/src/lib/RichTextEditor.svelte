@@ -595,31 +595,62 @@
         renderHTML({ node, HTMLAttributes }) {
           const cid = node.attrs.id ?? ''
           const label = node.attrs.label ?? cid
-          // Pick a per-format emoji so the recipient sees a typed
-          // glyph (📕 PDF / 📘 DOC / 📗 XLS / 📙 PPT / 🗜️ ZIP) —
-          // pure-emoji rather than inline SVG because Gmail and
-          // Outlook strip <svg> from message bodies.
+          // Render an inline-styled file-type badge + filename
+          // instead of a leading emoji.  A coloured rounded box
+          // with the format code (PDF/DOC/XLS/PPT/CSV/ZIP) in
+          // bold survives every major MUA's content sanitiser
+          // because it's just <span style="..."> — no <svg>, no
+          // class names, no external CSS.  Recipients on Gmail
+          // / Outlook web / Apple Mail get a typed-icon look
+          // close to what they'd see in a file explorer.
+          //
+          // `data-label` carries the filename verbatim so a
+          // round-trip back into Tiptap recovers it without
+          // having to slice the badge out of textContent.
           const ext = label.includes('.')
             ? label.slice(label.lastIndexOf('.') + 1).toLowerCase()
             : ''
-          let glyph = '🖇️'
-          if (ext === 'pdf') glyph = '📕'
-          else if (['doc', 'docx', 'odt', 'rtf'].includes(ext)) glyph = '📘'
-          else if (['xls', 'xlsx', 'ods', 'csv'].includes(ext)) glyph = '📗'
-          else if (['ppt', 'pptx', 'odp'].includes(ext)) glyph = '📙'
-          else if (['zip', '7z', 'rar', 'tar', 'gz', 'xz'].includes(ext)) glyph = '🗜️'
+          let badgeText = 'FILE'
+          let badgeBg = '#64748b' // slate
+          if (ext === 'pdf') {
+            badgeText = 'PDF'
+            badgeBg = '#e11d48' // rose
+          } else if (['doc', 'docx', 'odt', 'rtf'].includes(ext)) {
+            badgeText = 'DOC'
+            badgeBg = '#2563eb' // blue
+          } else if (['xls', 'xlsx', 'ods'].includes(ext)) {
+            badgeText = 'XLS'
+            badgeBg = '#059669' // emerald-600
+          } else if (ext === 'csv') {
+            badgeText = 'CSV'
+            badgeBg = '#10b981' // emerald-500
+          } else if (['ppt', 'pptx', 'odp'].includes(ext)) {
+            badgeText = 'PPT'
+            badgeBg = '#f59e0b' // amber
+          } else if (['zip', '7z', 'rar', 'tar', 'gz', 'xz'].includes(ext)) {
+            badgeText = 'ZIP'
+            badgeBg = '#7c3aed' // violet
+          }
+          const badgeStyle =
+            'display:inline-block;min-width:2.2em;padding:1px 4px;margin-right:6px;' +
+            `background:${badgeBg};color:#ffffff;` +
+            'border-radius:3px;font-size:0.7em;font-weight:700;' +
+            'font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;' +
+            'letter-spacing:0.04em;text-align:center;vertical-align:middle;'
           return [
             'a',
             {
               ...HTMLAttributes,
               href: `cid:${cid}`,
               title: `Attached file: ${label}`,
+              'data-label': label,
               style:
-                'display:inline-block;padding:0 4px;border-radius:4px;' +
-                'background:rgba(245,158,11,0.15);color:#b45309;' +
+                'display:inline-flex;align-items:center;padding:0 6px;border-radius:4px;' +
+                'background:rgba(245,158,11,0.12);color:#b45309;' +
                 'text-decoration:none;font-weight:500;',
             },
-            `${glyph} ${label}`,
+            ['span', { style: badgeStyle }, badgeText],
+            label,
           ]
         },
         renderText({ node }) {
@@ -631,10 +662,20 @@
             {
               tag: 'a[data-attachment-ref]',
               getAttrs: (el) => {
-                const href = (el as HTMLElement).getAttribute('href') ?? ''
+                const e = el as HTMLElement
+                const href = e.getAttribute('href') ?? ''
                 const id = href.replace(/^cid:/, '')
-                const text = (el as HTMLElement).textContent ?? ''
-                const label = text.replace(/^(?:🖇️|📕|📘|📗|📙|🗜️|📎)\s*/, '') || id
+                // `data-label` is the canonical recovery path
+                // (set by renderHTML).  Older messages that
+                // pre-date the badge still parse via textContent
+                // with the leading badge code or emoji stripped.
+                const dataLabel = e.getAttribute('data-label')
+                if (dataLabel) return { id, label: dataLabel }
+                const text = e.textContent ?? ''
+                const label =
+                  text
+                    .replace(/^(?:PDF|DOC|XLS|XLSX|CSV|PPT|PPTX|ZIP|FILE)\s*/i, '')
+                    .replace(/^(?:🖇️|📕|📘|📗|📙|🗜️|📎)\s*/, '') || id
                 return { id, label }
               },
             },
