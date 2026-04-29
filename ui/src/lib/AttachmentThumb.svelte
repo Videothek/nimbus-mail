@@ -32,24 +32,35 @@
     class: cls = 'w-9 h-9',
   }: Props = $props()
 
+  function ext(): string {
+    const dot = filename.lastIndexOf('.')
+    return dot >= 0 ? filename.slice(dot + 1).toLowerCase() : ''
+  }
   function isImage(): boolean {
     const ct = (contentType ?? '').toLowerCase()
     if (ct.startsWith('image/')) return true
-    const dot = filename.lastIndexOf('.')
-    const ext = dot >= 0 ? filename.slice(dot + 1).toLowerCase() : ''
-    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'tif', 'tiff', 'heic', 'heif', 'svg'].includes(ext)
+    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'tif', 'tiff', 'heic', 'heif', 'svg'].includes(ext())
+  }
+  function isVideo(): boolean {
+    const ct = (contentType ?? '').toLowerCase()
+    if (ct.startsWith('video/')) return true
+    return ['mp4', 'mkv', 'mov', 'avi', 'webm', 'm4v', 'mpg', 'mpeg', '3gp', 'wmv', 'flv'].includes(ext())
   }
 
   let blobUrl = $state<string | null>(null)
 
   function makeBlobUrl(b: Uint8Array | number[]): string {
-    const ct = contentType && contentType.startsWith('image/') ? contentType : 'image/png'
+    // Use the actual content-type when we have one so the browser
+    // picks the right decoder; fall back to image/png for images
+    // and video/mp4 for videos when missing.
+    let ct = contentType ?? ''
+    if (!ct) ct = isVideo() ? 'video/mp4' : 'image/png'
     const u8 = b instanceof Uint8Array ? b : new Uint8Array(b)
     return URL.createObjectURL(new Blob([u8], { type: ct }))
   }
 
   $effect(() => {
-    if (!isImage()) {
+    if (!isImage() && !isVideo()) {
       blobUrl = null
       return
     }
@@ -83,13 +94,25 @@
   })
 </script>
 
-{#if blobUrl}
+{#if blobUrl && isImage()}
   <img
     src={blobUrl}
     alt=""
     loading="lazy"
     class="{cls} object-cover rounded shrink-0 bg-surface-200 dark:bg-surface-800"
   />
+{:else if blobUrl && isVideo()}
+  <!-- `preload="metadata"` + `muted` is enough for every modern
+       webview to render the first frame as a static thumbnail
+       without playback.  No controls so the chip stays visually
+       a thumbnail. -->
+  <video
+    src={blobUrl}
+    muted
+    preload="metadata"
+    playsinline
+    class="{cls} object-cover rounded shrink-0 bg-black"
+  ></video>
 {:else}
   <FileTypeIcon contentType={contentType} filename={filename} class={cls} />
 {/if}

@@ -1188,7 +1188,16 @@
               {#if emoji}
                 <span class="text-base">{emoji}</span>
               {:else}
-                {@const tooLarge = att.size != null && att.size > 4 * 1024 * 1024}
+                <!-- Bytes are lazy-fetched only when the chip
+                     mounts and only for sub-threshold sizes —
+                     a 100 MiB MOV shouldn't trigger an IPC just
+                     to render a 36×36 cell.  Images cap at 4 MiB
+                     (typical phone photo); videos cap at 16 MiB
+                     (most short clips that actually fit on a
+                     mail server). -->
+                {@const isVid = (att.content_type || '').startsWith('video/')}
+                {@const sizeCap = isVid ? 16 * 1024 * 1024 : 4 * 1024 * 1024}
+                {@const tooLarge = att.size != null && att.size > sizeCap}
                 <AttachmentThumb
                   contentType={att.content_type}
                   filename={att.filename}

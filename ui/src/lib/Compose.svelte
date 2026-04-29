@@ -1286,6 +1286,7 @@
               content_id: a.content_id,
               filename: a.filename,
               content_type: a.content_type,
+              data: a.data,
             }))}
           actionsTrailing={sendActions}
           extraTabs={composeExtraTabs}
