@@ -41,6 +41,7 @@
   import type { Range } from '@tiptap/core'
   import EmojiPicker from './EmojiPicker.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
+  import AttachmentThumb from './AttachmentThumb.svelte'
   import { invoke } from '@tauri-apps/api/core'
 
   /**
@@ -162,6 +163,12 @@
      *  popup.  Optional so older callers (and the picker's
      *  parseHTML round-trip) keep working without it. */
     content_type?: string
+    /** Raw bytes of the attachment, when available — Compose
+     *  always has them in memory so we can render an inline
+     *  image / video thumbnail in the picker dropdown.  Omitted
+     *  for non-Compose callers (the picker then falls back to
+     *  the typed icon). */
+    data?: number[] | Uint8Array
   }
   let {
     content = '',
@@ -1862,7 +1869,12 @@
             attachmentPicker.command?.(a)
           }}
         >
-          <FileTypeIcon contentType={a.content_type ?? null} filename={a.filename} class="w-4 h-4" />
+          <AttachmentThumb
+            bytes={a.data ?? null}
+            contentType={a.content_type ?? null}
+            filename={a.filename}
+            class="w-7 h-7"
+          />
           <span class="truncate">{a.filename}</span>
         </li>
       {/each}
