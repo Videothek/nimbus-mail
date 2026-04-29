@@ -146,6 +146,79 @@ shows which Nextcloud apps are available (Talk, Files, Calendar,
 Contacts). The feature-specific integrations that consume these
 capabilities are tracked in the [Roadmap](#roadmap).
 
+## Contacts, Contact Groups, Mailing Lists, and Teams
+
+Nimbus pulls four distinct concepts together in the Contacts view. They look
+similar — all of them surface as "groups of people" in the UI — but each
+lives in a different system, and knowing which is which makes the picker
+behave the way you expect.
+
+### Addressbooks
+
+CardDAV collections on your Nextcloud server. Each addressbook is a folder of
+vCards; every contact lives in exactly one addressbook (e.g. *Personal*,
+*Work*). The Contacts tab's sidebar lists addressbooks as filters — clicking
+*Personal* narrows the contact list to that collection. New contacts are
+created into an addressbook of your choice.
+
+This is the storage layer — addressbooks are *where* contacts live, not how
+you group them.
+
+### Contact Groups (vCard CATEGORIES)
+
+Tags applied to individual contacts. They are stored as the `CATEGORIES`
+property on each vCard, so they sync through CardDAV automatically and show
+up in Nextcloud as *Kontaktgruppen* and on iOS as *Groups*. A contact can
+belong to many groups, and a contact group can span multiple addressbooks
+(it's a tag, not a folder).
+
+Use these for organising people: *Family*, *Book club*, *D&D party*. The
+sidebar shows them as filters under *Contact Groups*; selecting one shows
+every contact carrying that tag, regardless of addressbook.
+
+### Mailing Lists
+
+A separate concept for *sending* mail to a bundle of people in one go.
+Mailing lists live on the Lists tab and unify three sources behind a single
+list:
+
+1. **Categories with "Use as mailing list" enabled** — every Contact Group
+   automatically gets a mirrored mailing-list row. Toggle it off via the
+   left swatch on the row if you only want it to be an organisational tag.
+   Editable: adding a contact tags their vCard with the category.
+2. **Manual mailing lists** — standalone `KIND:group` vCards that exist
+   purely to bundle email addresses. They sync to Nextcloud as a special
+   "Mailing Lists" Kontaktgruppe so iOS Contacts surfaces them next to
+   your other groups. Fully editable: rename, set an emoji avatar, add /
+   remove members, delete.
+3. **Teams** (read-only) — Nextcloud user groups (OCS) and Circles unified
+   under one section. Membership is managed in Nextcloud itself; Nimbus
+   just expands them when you address one.
+
+Picking a mailing list in the Compose autocomplete (or the event-invite
+attendee picker) expands every member's email address into the recipient
+field. The left swatch on each row toggles whether it appears in the
+autocomplete dropdown — useful for hiding noisy auto-generated groups.
+
+### How they relate
+
+```
+Addressbook (storage)
+   └── Contact (vCard)
+           ├── CATEGORIES: ["Family", "Book club"]   ← Contact Groups
+           └── lives in   ─→ "Mailing Lists" Kontaktgruppe (auto-tag)
+
+Contact Group  ─── mirrored as ──→  Mailing List (category source)
+Manual mailing list (KIND:group vCard)  ──→  Mailing List (manual source)
+Nextcloud user group / Circle           ──→  Mailing List (team source)
+```
+
+Rule of thumb: **addressbooks** decide *where the data lives*, **contact
+groups** decide *how you organise people*, and **mailing lists** decide
+*how you send to them*. Most users will only think about contact groups —
+the mailing-list view exists for finer control over what shows up when
+you're addressing mail.
+
 ## Themes
 
 Nimbus uses [Skeleton UI](https://www.skeleton.dev) for theming. Out of
