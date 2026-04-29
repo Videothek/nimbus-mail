@@ -1181,8 +1181,8 @@
             {@const isOffice = isOfficeAttachment(att)}
             {@const isPdf = isPdfAttachment(att)}
             {@const menuOpen = openMenuFor === att.part_id}
+            {@const emoji = attachmentEmoji(att)}
             <li class="relative flex items-center gap-2 pl-3 pr-1 py-1.5 rounded-md bg-surface-100 dark:bg-surface-800 text-sm">
-              {@const emoji = attachmentEmoji(att)}
               {#if emoji}
                 <span class="text-base">{emoji}</span>
               {:else}
