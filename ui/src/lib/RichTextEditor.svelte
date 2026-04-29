@@ -748,8 +748,13 @@
           ]
         },
       }).configure({
+        // Use a truthy marker value rather than the empty
+        // string — some HTML serialisers drop empty-valued
+        // attributes during round-trip, which would silently
+        // break the MailView click handler that looks for
+        // `[data-attachment-ref]`.
         HTMLAttributes: {
-          'data-attachment-ref': '',
+          'data-attachment-ref': 'true',
           class: 'inline-block text-primary-600 dark:text-primary-400 underline',
         },
         suggestion: {

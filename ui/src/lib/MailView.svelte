@@ -498,25 +498,52 @@
     const target = e.target as HTMLElement | null
     if (!target) return
 
-    // Tiptap-rendered attachment refs from Nimbus (#93): a
-    // <span data-attachment-ref data-cid=...> badge + filename.
-    // Other clients see plain styled text — Nimbus picks up
-    // the click and opens the matching attachment by cid (or
-    // by filename, if cid wasn't preserved on round-trip).
+    // Tiptap-rendered attachment refs from Nimbus (#93).
+    // Two on-the-wire shapes float around:
+    //   - new: <span data-attachment-ref data-cid=... data-filename=...>
+    //   - legacy: <a href="cid:..." data-attachment-ref>
+    // Plus an intermediate where DOMPurify's cid: handler has
+    // already moved the cid into `data-nimbus-cid`.  We resolve
+    // through every channel so a click works regardless of the
+    // sending client's age or what survived the round-trip.
     const refEl = target.closest('[data-attachment-ref]') as HTMLElement | null
     if (refEl) {
       e.preventDefault()
       e.stopPropagation()
       if (!email) return
-      const cidAttr = (refEl.getAttribute('data-cid') ?? '').toLowerCase()
-      const fnAttr = (refEl.getAttribute('data-filename') ?? '').toLowerCase()
+      // CID resolution: explicit data-cid → data-nimbus-cid
+      // (set by processEmailHtml on legacy anchors) → href.
+      let cidAttr = (refEl.getAttribute('data-cid') ?? '').trim()
+      if (!cidAttr) cidAttr = (refEl.getAttribute('data-nimbus-cid') ?? '').trim()
+      if (!cidAttr) {
+        const href = (refEl.getAttribute('href') ?? '').trim()
+        if (href.toLowerCase().startsWith('cid:')) {
+          cidAttr = href.slice(4).replace(/^<|>$/g, '')
+        }
+      }
+      const cidLower = cidAttr.toLowerCase()
+      // Filename resolution: explicit data-filename →
+      // data-label → the visible text after the leading badge
+      // letters, as a last resort.
+      let fnAttr = (
+        refEl.getAttribute('data-filename') ?? refEl.getAttribute('data-label') ?? ''
+      ).trim()
+      if (!fnAttr) {
+        fnAttr = (refEl.textContent ?? '')
+          .trim()
+          .replace(/^[A-Z]{2,4}\s+/, '')
+      }
+      const fnLower = fnAttr.toLowerCase()
       const att = email.attachments.find((a) => {
-        if (cidAttr && a.content_id && a.content_id.toLowerCase() === cidAttr) return true
-        if (fnAttr && a.filename.toLowerCase() === fnAttr) return true
+        if (cidLower && a.content_id && a.content_id.toLowerCase() === cidLower) return true
+        if (fnLower && a.filename.toLowerCase() === fnLower) return true
         return false
       })
       if (att) void attachmentClicked(att)
-      else console.warn(`MailView: attachment-ref click had no match (cid=${cidAttr}, filename=${fnAttr})`)
+      else
+        console.warn(
+          `MailView: attachment-ref click had no match (cid=${cidLower}, filename=${fnLower})`,
+        )
       return
     }
 
