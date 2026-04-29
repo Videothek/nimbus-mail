@@ -15,6 +15,7 @@
   import { formatError } from './errors'
   import NextcloudFilePicker from './NextcloudFilePicker.svelte'
   import MoveFolderPicker from './MoveFolderPicker.svelte'
+  import FileTypeIcon from './FileTypeIcon.svelte'
   import CalendarInviteCard, { type InviteSummary } from './CalendarInviteCard.svelte'
   import { openMailInStandaloneWindow } from './standaloneMailWindow'
 
@@ -789,15 +790,17 @@
     return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
   }
 
-  function attachmentIcon(att: EmailAttachment): string {
+  /** Returns an emoji glyph for media types that read better as
+   *  pictographs.  Documents (pdf / office / zip) fall through
+   *  to `null` so the chip renders the typed `FileTypeIcon`
+   *  SVG instead of an emoji. */
+  function attachmentEmoji(att: EmailAttachment): string | null {
     const ct = att.content_type || ''
     if (ct.startsWith('image/')) return '🖼️'
     if (ct.startsWith('video/')) return '🎞️'
     if (ct.startsWith('audio/')) return '🎵'
-    if (ct.includes('pdf')) return '📄'
-    if (ct.includes('zip') || ct.includes('compressed')) return '🗜️'
     if (ct.startsWith('text/')) return '📝'
-    return '🖇️'
+    return null
   }
 
   /**
@@ -1179,7 +1182,12 @@
             {@const isPdf = isPdfAttachment(att)}
             {@const menuOpen = openMenuFor === att.part_id}
             <li class="relative flex items-center gap-2 pl-3 pr-1 py-1.5 rounded-md bg-surface-100 dark:bg-surface-800 text-sm">
-              <span class="text-base">{attachmentIcon(att)}</span>
+              {@const emoji = attachmentEmoji(att)}
+              {#if emoji}
+                <span class="text-base">{emoji}</span>
+              {:else}
+                <FileTypeIcon contentType={att.content_type} filename={att.filename} class="w-5 h-5" />
+              {/if}
               <span class="font-medium truncate max-w-60" title={att.filename}>{att.filename}</span>
               {#if att.size != null}
                 <span class="text-xs text-surface-500">{formatAttSize(att.size)}</span>
