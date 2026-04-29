@@ -40,6 +40,7 @@
   import Mention from '@tiptap/extension-mention'
   import type { Range } from '@tiptap/core'
   import EmojiPicker from './EmojiPicker.svelte'
+  import FileTypeIcon from './FileTypeIcon.svelte'
   import { invoke } from '@tauri-apps/api/core'
 
   /**
@@ -157,6 +158,10 @@
      *  inserted link. Stamped at attachment-pick time in Compose. */
     content_id: string
     filename: string
+    /** MIME type — drives the per-format icon in the `/` picker
+     *  popup.  Optional so older callers (and the picker's
+     *  parseHTML round-trip) keep working without it. */
+    content_type?: string
   }
   let {
     content = '',
@@ -1857,7 +1862,7 @@
             attachmentPicker.command?.(a)
           }}
         >
-          <span class="text-base shrink-0">🖇️</span>
+          <FileTypeIcon contentType={a.content_type ?? null} filename={a.filename} class="w-4 h-4" />
           <span class="truncate">{a.filename}</span>
         </li>
       {/each}
