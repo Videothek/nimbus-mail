@@ -44,43 +44,51 @@
       ct.includes('msword') ||
       ct.includes('officedocument.wordprocessing') ||
       ct.includes('opendocument.text') ||
-      ext === 'doc' ||
-      ext === 'docx' ||
-      ext === 'odt' ||
-      ext === 'rtf'
+      ['doc', 'docx', 'docm', 'dot', 'dotx', 'dotm', 'odt', 'ott', 'rtf'].includes(ext)
     )
       return { label: 'DOC', colorClass: 'text-blue-500' }
-    if (ct.includes('csv') || ext === 'csv')
+    if (ct.includes('csv') || ['csv', 'tsv'].includes(ext))
       return { label: 'CSV', colorClass: 'text-emerald-500' }
     if (
       ct.includes('ms-excel') ||
       ct.includes('officedocument.spreadsheet') ||
       ct.includes('opendocument.spreadsheet') ||
-      ext === 'xls' ||
-      ext === 'xlsx' ||
-      ext === 'ods'
+      ['xls', 'xlsx', 'xlsm', 'xlt', 'xltx', 'xltm', 'ods', 'ots'].includes(ext)
     )
       return { label: 'XLS', colorClass: 'text-emerald-600' }
     if (
       ct.includes('ms-powerpoint') ||
       ct.includes('officedocument.presentation') ||
       ct.includes('opendocument.presentation') ||
-      ext === 'ppt' ||
-      ext === 'pptx' ||
-      ext === 'odp'
+      ['ppt', 'pptx', 'pptm', 'pot', 'potx', 'potm', 'odp', 'otp'].includes(ext)
     )
       return { label: 'PPT', colorClass: 'text-amber-500' }
     if (
       ct.includes('zip') ||
       ct.includes('compressed') ||
-      ext === 'zip' ||
-      ext === '7z' ||
-      ext === 'rar' ||
-      ext === 'tar' ||
-      ext === 'gz' ||
-      ext === 'xz'
+      ['zip', '7z', 'rar', 'tar', 'gz', 'xz', 'bz2', 'tgz'].includes(ext)
     )
       return { label: 'ZIP', colorClass: 'text-violet-500' }
+    // Markdown — render as `MD` in a distinct sky tone so a
+    // README in an attachment list jumps out from the surrounding
+    // plain-text files.
+    if (ct.includes('markdown') || ['md', 'markdown', 'mdx', 'mkd'].includes(ext))
+      return { label: 'MD', colorClass: 'text-sky-500' }
+    // Images — show the format code (PNG / JPG / GIF / SVG / etc.)
+    // rather than a generic photo glyph, so a thumbnail strip
+    // tells you at a glance which format each row is.
+    if (ct.startsWith('image/')) {
+      const sub = ct.slice('image/'.length).split(';')[0].trim()
+      const fromCt = sub === 'jpeg' ? 'JPG' : sub === 'svg+xml' ? 'SVG' : sub.toUpperCase()
+      const label = (fromCt || 'IMG').slice(0, 4)
+      return { label, colorClass: 'text-cyan-500' }
+    }
+    if (
+      ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'tif', 'tiff', 'svg', 'heic', 'heif', 'ico'].includes(ext)
+    ) {
+      const label = ext === 'jpeg' ? 'JPG' : ext.toUpperCase()
+      return { label: label.slice(0, 4), colorClass: 'text-cyan-500' }
+    }
     return null
   }
 

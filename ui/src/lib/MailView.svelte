@@ -791,15 +791,18 @@
   }
 
   /** Returns an emoji glyph for media types that read better as
-   *  pictographs.  Documents (pdf / office / zip) fall through
-   *  to `null` so the chip renders the typed `FileTypeIcon`
-   *  SVG instead of an emoji. */
+   *  pictographs.  Documents (pdf / office / zip / images /
+   *  markdown) fall through to `null` so the chip renders the
+   *  typed `FileTypeIcon` SVG instead of an emoji. */
   function attachmentEmoji(att: EmailAttachment): string | null {
     const ct = att.content_type || ''
-    if (ct.startsWith('image/')) return '🖼️'
+    const fn = att.filename.toLowerCase()
     if (ct.startsWith('video/')) return '🎞️'
     if (ct.startsWith('audio/')) return '🎵'
-    if (ct.startsWith('text/')) return '📝'
+    // Plain text files that aren't markdown still get the memo
+    // emoji — a CHANGELOG.txt looks more "note" than "code".
+    if (ct.startsWith('text/') && !ct.includes('markdown') && !fn.endsWith('.md') && !fn.endsWith('.markdown'))
+      return '📝'
     return null
   }
 
