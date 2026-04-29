@@ -328,8 +328,12 @@ pub async fn fetch_preview(
     // means "return 404 if no preview exists" rather than serving
     // the generic mimetype icon, so we know to fall back.
     // `a=1` keeps aspect ratio so portraits don't get cropped.
+    // `mimeFallback=false` is explicit insurance against future
+    // NC versions flipping the default — we want a real preview
+    // or a 404, never a mime-typed icon.  `forceIcon=0` belongs
+    // to the same family.
     let url = format!(
-        "{server}/index.php/core/preview.png?file={}&x={size}&y={size}&a=1&forceIcon=0",
+        "{server}/index.php/core/preview.png?file={}&x={size}&y={size}&a=1&forceIcon=0&mimeFallback=false",
         encode_path(&inner),
     );
 
@@ -356,6 +360,7 @@ pub async fn fetch_preview(
         )));
     }
     if !status.is_success() {
+        tracing::warn!("preview GET {url} returned HTTP {status}");
         return Err(NimbusError::Nextcloud(format!(
             "preview GET returned HTTP {status}"
         )));
