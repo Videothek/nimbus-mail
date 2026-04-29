@@ -3,7 +3,7 @@
   // search box that filters across every category, and a grid
   // of buttons below.  The host owns positioning and the
   // current value; this component only emits picks.
-  import { EMOJI_CATEGORIES, ALL_EMOJIS } from './emojiData'
+  import { EMOJI_CATEGORIES, EMOJI_SEARCH_INDEX } from './emojiData'
 
   interface Props {
     /** Currently chosen emoji, used to highlight its tile. */
@@ -20,22 +20,23 @@
   let query = $state('')
 
   /** Visible emoji set: the active category's list, or — when
-   *  the search box has anything — every category filtered by
-   *  a substring match against the emoji's CLDR-ish name.  We
-   *  don't ship per-emoji names, so the filter falls back to
-   *  matching the emoji *character* (useful when the user
-   *  pastes one) plus a small heuristic on category names. */
+   *  the search box has anything — every emoji whose keyword
+   *  blob matches.  Each query token must hit somewhere so
+   *  multi-word searches like "red heart" actually narrow.
+   *  Direct character match is checked first so pasting an
+   *  emoji into the search field surfaces it instantly. */
   const visible = $derived.by(() => {
     const q = query.trim().toLowerCase()
     if (!q) {
       return EMOJI_CATEGORIES.find((c) => c.id === activeCategory)?.emojis ?? []
     }
-    const direct = ALL_EMOJIS.filter((e) => e.includes(q))
-    if (direct.length > 0) return direct
-    const cat = EMOJI_CATEGORIES.find((c) =>
-      c.label.toLowerCase().includes(q) || c.id.toLowerCase().includes(q),
-    )
-    return cat ? cat.emojis : []
+    const tokens = q.split(/\s+/).filter(Boolean)
+    return EMOJI_SEARCH_INDEX
+      .filter((entry) => {
+        if (entry.emoji.includes(q)) return true
+        return tokens.every((t) => entry.search.includes(t))
+      })
+      .map((entry) => entry.emoji)
   })
 </script>
 
