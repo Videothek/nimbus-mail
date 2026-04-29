@@ -828,6 +828,40 @@
   })
   let showFontPicker = $state(false)
   let fontPickerQuery = $state('')
+  // ── Font picker windowing (#142 follow-up) ─────────────────
+  // Even with content-visibility, Svelte mounts a DOM node per
+  // {#each} entry on first show.  ~500 buttons × per-button
+  // font-family = perceptible click-to-open lag on the first
+  // open after launch.  Window the list manually: render only
+  // the rows actually visible plus a small buffer, with a tall
+  // spacer reserving the full scroll height.
+  const FONT_ROW_H = 28
+  const FONT_VIEWPORT_H = 288 // mirrors `max-h-72`
+  const FONT_BUFFER = 6
+  let fontScrollY = $state(0)
+  let fontScrollEl: HTMLDivElement | null = $state(null)
+  const fontWindow = $derived.by(() => {
+    const total = FONT_FAMILIES.length
+    const visibleCount = Math.ceil(FONT_VIEWPORT_H / FONT_ROW_H) + FONT_BUFFER * 2
+    const start = Math.max(0, Math.floor(fontScrollY / FONT_ROW_H) - FONT_BUFFER)
+    const end = Math.min(total, start + visibleCount)
+    return {
+      start,
+      end,
+      total,
+      slice: FONT_FAMILIES.slice(start, end),
+    }
+  })
+  // Reset scroll back to 0 whenever the picker opens or the
+  // search query changes — otherwise a previous scroll position
+  // would carry over into a filtered list whose total height is
+  // smaller, leaving the user staring at empty space.
+  $effect(() => {
+    void fontPickerQuery
+    void showFontPicker
+    if (fontScrollEl) fontScrollEl.scrollTop = 0
+    fontScrollY = 0
+  })
 
   /** Label for the toolbar button, reflecting the font at the current
       cursor position. `$editor` is a svelte-tiptap store that re-emits
@@ -1337,30 +1371,32 @@
                   bind:value={fontPickerQuery}
                 />
               </div>
-              <div class="max-h-72 overflow-y-auto py-1">
-                {#each FONT_FAMILIES as f (f.label)}
-                  <!-- content-visibility: auto + contain-intrinsic-size
-                       lets the browser skip layout, paint, and (most
-                       importantly) per-row font-resolution work for
-                       rows that are scrolled off-screen.  Without it,
-                       opening the dropdown forces the browser to
-                       resolve hundreds of distinct `font-family`
-                       declarations synchronously — that was the
-                       dominant cost of the open-dropdown latency.
-                       Fixed h-7 + intrinsic-size keep scroll geometry
-                       stable so the scrollbar position doesn't jump
-                       as off-screen rows materialise on scroll. -->
-                  <button
-                    type="button"
-                    class="w-full text-left px-3 py-1 h-7 text-sm leading-tight hover:bg-surface-200 dark:hover:bg-surface-800 truncate"
-                    style="content-visibility: auto; contain-intrinsic-size: 0 28px;{f.css ? ` font-family: ${f.css};` : ''}"
-                    onclick={() => { setFont(f.css); fontPickerQuery = '' }}
-                  >{f.label}</button>
-                {/each}
-                {#if FONT_FAMILIES.length === 0}
+              <!-- Windowed scroll container — absolute-positions
+                   only the rows currently in (or close to) the
+                   viewport.  Total scroll height is reserved by
+                   a single spacer div sized to total*ROW_H so
+                   the scrollbar geometry matches an unwindowed
+                   list. -->
+              <div
+                bind:this={fontScrollEl}
+                class="max-h-72 overflow-y-auto"
+                onscroll={(e) => (fontScrollY = (e.currentTarget as HTMLDivElement).scrollTop)}
+              >
+                {#if fontWindow.total === 0}
                   <p class="px-3 py-2 text-xs text-surface-500 italic">
                     No fonts match "{fontPickerQuery}".
                   </p>
+                {:else}
+                  <div style="position: relative; height: {fontWindow.total * FONT_ROW_H}px;">
+                    {#each fontWindow.slice as f, i (f.label)}
+                      <button
+                        type="button"
+                        class="absolute left-0 right-0 text-left px-3 text-sm leading-tight hover:bg-surface-200 dark:hover:bg-surface-800 truncate"
+                        style="top: {(fontWindow.start + i) * FONT_ROW_H}px; height: {FONT_ROW_H}px;{f.css ? ` font-family: ${f.css};` : ''}"
+                        onclick={() => { setFont(f.css); fontPickerQuery = '' }}
+                      >{f.label}</button>
+                    {/each}
+                  </div>
                 {/if}
               </div>
             </div>
