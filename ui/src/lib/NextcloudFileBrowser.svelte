@@ -365,6 +365,7 @@
                     path={entry.path}
                     contentType={entry.content_type}
                     filename={entry.name}
+                    size={entry.size}
                     class="w-9 h-9"
                   />
                 {/if}

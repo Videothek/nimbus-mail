@@ -1,12 +1,28 @@
 <script lang="ts" module>
-  // Cache: video bytes → first-frame data URL.  Keyed by the
-  // bytes reference (Compose attaches reuse the same number[]
-  // across renders) plus an optional explicit string key for
-  // hosts that build fresh byte arrays each time (MailView).
-  // Decoding once costs a transient GStreamer pipeline init
-  // on Linux WebKit; subsequent mounts of the same file render
-  // a plain <img> with no codec activity at all.
-  const FRAME_CACHE = new Map<unknown, string>()
+  // Cache: video bytes → first-frame data URL.  Two backings so
+  // we can be honest about lifetimes:
+  //
+  // - WeakMap keyed by the bytes reference — used by hosts that
+  //   reuse the same array each render (Compose).  When the
+  //   Compose surface unmounts and drops the Attachment object,
+  //   the bytes array becomes unreferenced and GC reclaims its
+  //   cache entry too.  A "send" or "cancel" therefore frees
+  //   every cached poster for that draft automatically.
+  // - Map keyed by an explicit string id — used when the host
+  //   produces fresh byte arrays per mount (MailView fetches
+  //   bytes on demand).  Session-scoped so re-opening the same
+  //   mail later doesn't re-decode.
+  const FRAME_CACHE_REF = new WeakMap<object, string>()
+  const FRAME_CACHE_KEY = new Map<string, string>()
+  function cacheGet(key: unknown): string | undefined {
+    if (typeof key === 'string') return FRAME_CACHE_KEY.get(key)
+    if (key && typeof key === 'object') return FRAME_CACHE_REF.get(key as object)
+    return undefined
+  }
+  function cachePut(key: unknown, val: string): void {
+    if (typeof key === 'string') FRAME_CACHE_KEY.set(key, val)
+    else if (key && typeof key === 'object') FRAME_CACHE_REF.set(key as object, val)
+  }
   // Serialise extractions so a folder full of videos doesn't
   // spin up N pipelines simultaneously — Linux WebKit hits a
   // visible stall when more than two or three pipelines are
@@ -133,7 +149,7 @@
 
   async function loadFrame(b: Uint8Array | number[]): Promise<string | null> {
     const key = frameKey(b)
-    const hit = FRAME_CACHE.get(key)
+    const hit = cacheGet(key)
     if (hit) return hit
     const url = makeBlobUrl(b)
     // Chain through the global queue so concurrent mounts don't
@@ -144,7 +160,7 @@
     })
     await extractionChain
     URL.revokeObjectURL(url)
-    if (frame) FRAME_CACHE.set(key, frame)
+    if (frame) cachePut(key, frame)
     return frame
   }
 
