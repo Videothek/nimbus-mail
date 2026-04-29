@@ -1878,6 +1878,11 @@
       <li class="px-3 py-2 text-xs text-surface-500">No attachments to reference</li>
     {:else}
       {#each attachmentPicker.items as a, i (a.content_id)}
+        {@const thumb = thumbUrlSync({
+          bytes: a.data ?? null,
+          contentType: a.content_type ?? null,
+          filename: a.filename,
+        })}
         <li
           role="option"
           aria-selected={i === attachmentPicker.selectedIndex}
@@ -1890,11 +1895,6 @@
             attachmentPicker.command?.(a)
           }}
         >
-          {@const thumb = thumbUrlSync({
-            bytes: a.data ?? null,
-            contentType: a.content_type ?? null,
-            filename: a.filename,
-          })}
           {#if thumb}
             <img
               src={thumb}
