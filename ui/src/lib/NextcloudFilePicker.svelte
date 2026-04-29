@@ -85,6 +85,11 @@
   let accountId = $state('')
   let currentPath = $state('/')
   let selected = $state<Set<string>>(new Set())
+  /** Subset of `selected` whose paths are folders.  Tracked
+   *  alongside `selected` so file vs. folder counts stay
+   *  accurate even after the user navigates to a different
+   *  folder mid-selection. */
+  let selectedDirs = $state<Set<string>>(new Set())
   let entries = $state<FileEntry[]>([])
   let accounts = $state<NextcloudAccount[]>([])
   let error = $state('')
@@ -160,21 +165,23 @@
   // links but not attached as bytes (Nextcloud has no zip-folder
   // endpoint, so there's nothing meaningful to download). The footer
   // uses these counts to label and disable buttons appropriately.
-  let selectedFileCount = $derived.by(() => {
-    let n = 0
-    for (const e of entries) if (!e.is_dir && selected.has(e.path)) n++
-    return n
-  })
-  let selectedFolderCount = $derived(selected.size - selectedFileCount)
+  // Selection split is computed straight off the two
+  // bindable sets, so it stays correct across folder
+  // navigation: selectedDirs always contains *every* folder
+  // ever ticked, not just ones currently rendered.
+  let selectedFolderCount = $derived(selectedDirs.size)
+  let selectedFileCount = $derived(selected.size - selectedDirs.size)
 
   function basename(path: string): string {
     return path.split('/').filter(Boolean).pop() ?? path
   }
 
   async function attachSelected() {
-    const filePaths = entries
-      .filter((e) => !e.is_dir && selected.has(e.path))
-      .map((e) => e.path)
+    // Pull from `selected` / `selectedDirs` directly so files
+    // ticked in folders the user has since navigated away from
+    // still get downloaded.  Filtering by the current `entries`
+    // list (the previous behaviour) silently dropped them.
+    const filePaths = [...selected].filter((p) => !selectedDirs.has(p))
     if (filePaths.length === 0) return
     downloading = true
     error = ''
@@ -187,6 +194,10 @@
             ncId: accountId,
             path: p,
           })
+          // Content-type from the current folder's entries when
+          // available; fall back to a neutral default for files
+          // selected in other folders (the SMTP build path
+          // re-derives from filename when this is unset).
           const ct =
             entries.find((e) => e.path === p)?.content_type ??
             'application/octet-stream'
@@ -213,14 +224,9 @@
       a share if the user changes their mind mid-click. */
   function shareSelected() {
     if (selected.size === 0 || !onlinks) return
-    // Snapshot whether any of the selected entries is a folder so
-    // the dropdown can hide the folder-only permission options for
-    // pure-file shares.  Looked up against the current `entries`
-    // listing — the user can only select within one folder at a
-    // time, so this is always the right source of truth.
-    const hasFolders = entries.some(
-      (e) => e.is_dir && selected.has(e.path),
-    )
+    // `selectedDirs` is the source of truth for "is any of the
+    // ticked paths a folder" — survives folder navigation.
+    const hasFolders = selectedDirs.size > 0
     sharePrompt = {
       paths: Array.from(selected),
       password: '',
@@ -294,6 +300,7 @@
       bind:accountId
       bind:currentPath
       bind:selected
+      bind:selectedDirs
       bind:entries
       bind:accounts
       bind:error
