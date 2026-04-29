@@ -335,6 +335,7 @@
       {:else}
         <ul class="divide-y divide-surface-200 dark:divide-surface-800">
           {#each entries as entry (entry.path)}
+            {@const emoji = iconEmojiFor(entry)}
             <li>
               <button
                 class="w-full flex items-center gap-3 px-5 py-2 text-left hover:bg-surface-100 dark:hover:bg-surface-800"
@@ -355,7 +356,6 @@
                     onchange={() => toggleSelected(entry.path)}
                   />
                 {/if}
-                {@const emoji = iconEmojiFor(entry)}
                 {#if emoji}
                   <span class="text-lg">{emoji}</span>
                 {:else}
