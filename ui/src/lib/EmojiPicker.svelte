@@ -41,14 +41,19 @@
 </script>
 
 <div class="{widthClass} bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 rounded-md shadow-lg flex flex-col">
-  <!-- Category tab strip.  Each tab is a single emoji; the
-       active one gets a primary underline so the eye can
-       jump back to it without reading the label. -->
-  <div class="flex items-center border-b border-surface-200 dark:border-surface-700 px-1 py-1 overflow-x-auto">
+  <!-- Category tab strip.  Tabs are distributed with flex-1 so
+       they evenly fill the available width — at the picker's
+       default w-80 (320px) the nine categories already fit in
+       a single row, and at the wider w-full layout (used in the
+       new-list modal) they spread out without leaving a stale
+       horizontal scrollbar.  The strip falls back to overflow-x
+       only on hosts that render the picker narrower than ~270px,
+       which never happens in practice. -->
+  <div class="flex items-center border-b border-surface-200 dark:border-surface-700 px-1 py-1 gap-0.5 overflow-x-auto">
     {#each EMOJI_CATEGORIES as cat (cat.id)}
       <button
         type="button"
-        class="px-2 py-1 text-base rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 {activeCategory === cat.id && !query.trim() ? 'bg-primary-500/15 ring-1 ring-primary-500' : ''}"
+        class="flex-1 min-w-0 px-1 py-1 text-base rounded-md hover:bg-surface-200 dark:hover:bg-surface-800 {activeCategory === cat.id && !query.trim() ? 'bg-primary-500/15 ring-1 ring-primary-500' : ''}"
         title={cat.label}
         aria-label={cat.label}
         onclick={() => { activeCategory = cat.id; query = '' }}
