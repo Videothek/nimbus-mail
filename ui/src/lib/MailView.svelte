@@ -1201,6 +1201,7 @@
                 <AttachmentThumb
                   contentType={att.content_type}
                   filename={att.filename}
+                  cacheKey={`${email!.account_id}::${email!.folder}::${uid}::${att.part_id}`}
                   bytesProvider={tooLarge
                     ? undefined
                     : () =>
