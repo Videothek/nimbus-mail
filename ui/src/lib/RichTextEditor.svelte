@@ -1339,10 +1339,21 @@
               </div>
               <div class="max-h-72 overflow-y-auto py-1">
                 {#each FONT_FAMILIES as f (f.label)}
+                  <!-- content-visibility: auto + contain-intrinsic-size
+                       lets the browser skip layout, paint, and (most
+                       importantly) per-row font-resolution work for
+                       rows that are scrolled off-screen.  Without it,
+                       opening the dropdown forces the browser to
+                       resolve hundreds of distinct `font-family`
+                       declarations synchronously — that was the
+                       dominant cost of the open-dropdown latency.
+                       Fixed h-7 + intrinsic-size keep scroll geometry
+                       stable so the scrollbar position doesn't jump
+                       as off-screen rows materialise on scroll. -->
                   <button
                     type="button"
-                    class="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-200 dark:hover:bg-surface-800 truncate"
-                    style={f.css ? `font-family: ${f.css};` : ''}
+                    class="w-full text-left px-3 py-1 h-7 text-sm leading-tight hover:bg-surface-200 dark:hover:bg-surface-800 truncate"
+                    style="content-visibility: auto; contain-intrinsic-size: 0 28px;{f.css ? ` font-family: ${f.css};` : ''}"
                     onclick={() => { setFont(f.css); fontPickerQuery = '' }}
                   >{f.label}</button>
                 {/each}
