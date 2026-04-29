@@ -6657,6 +6657,128 @@ fn enumerate_system_fonts() -> Vec<String> {
     out
 }
 
+// ── On-disk font cache (#142 follow-up) ───────────────────────
+//
+// Even with the in-memory cache, a cold launch still pays the
+// cost of font-kit's catalogue walk — slow on Linux's first-run
+// fontconfig and visible enough that the user complained about
+// "first compose" lag.  Persist the result to a JSON file in the
+// OS cache dir, signed with a cheap fingerprint of the system
+// font directories.  Subsequent launches read the JSON in
+// microseconds; we only re-run font-kit when the fingerprint
+// changes (i.e. the user actually installed or removed a font).
+//
+// The fingerprint is a SHA-256 of every font-directory mtime
+// found by recursive walk.  Adding or removing a file inside any
+// directory updates that directory's mtime on every common
+// filesystem, so directory mtimes alone catch both additions and
+// removals without us needing to stat every individual font file.
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FontCacheFile {
+    fingerprint: String,
+    fonts: Vec<String>,
+}
+
+fn font_cache_path() -> Option<std::path::PathBuf> {
+    dirs::cache_dir().map(|d| d.join("nimbus-mail").join("system_fonts.json"))
+}
+
+/// Standard system font directories per OS.  Used for the
+/// fingerprint walk; font-kit itself looks at more places, but
+/// these cover where additions / removals actually happen.
+fn font_search_dirs() -> Vec<std::path::PathBuf> {
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(w) = std::env::var_os("WINDIR") {
+            out.push(std::path::PathBuf::from(w).join("Fonts"));
+        }
+        if let Some(d) = dirs::data_local_dir() {
+            out.push(d.join("Microsoft").join("Windows").join("Fonts"));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        out.push(std::path::PathBuf::from("/System/Library/Fonts"));
+        out.push(std::path::PathBuf::from("/Library/Fonts"));
+        if let Some(h) = dirs::home_dir() {
+            out.push(h.join("Library").join("Fonts"));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        out.push(std::path::PathBuf::from("/usr/share/fonts"));
+        out.push(std::path::PathBuf::from("/usr/local/share/fonts"));
+        if let Some(h) = dirs::home_dir() {
+            out.push(h.join(".fonts"));
+            out.push(h.join(".local/share/fonts"));
+        }
+    }
+    out
+}
+
+fn collect_dir_mtimes(dir: &std::path::Path, out: &mut Vec<(String, u64)>) {
+    let Ok(meta) = std::fs::metadata(dir) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    out.push((dir.to_string_lossy().into_owned(), mtime));
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        if let Ok(m) = entry.metadata()
+            && m.is_dir()
+        {
+            collect_dir_mtimes(&entry.path(), out);
+        }
+    }
+}
+
+fn compute_font_fingerprint() -> String {
+    use sha2::{Digest, Sha256};
+    let mut pairs: Vec<(String, u64)> = Vec::new();
+    for d in font_search_dirs() {
+        collect_dir_mtimes(&d, &mut pairs);
+    }
+    pairs.sort();
+    let mut hasher = Sha256::new();
+    for (p, m) in &pairs {
+        hasher.update(p.as_bytes());
+        hasher.update(b"|");
+        hasher.update(m.to_string().as_bytes());
+        hasher.update(b"\n");
+    }
+    hex::encode(hasher.finalize())
+}
+
+fn load_font_cache_file() -> Option<FontCacheFile> {
+    let path = font_cache_path()?;
+    let bytes = std::fs::read(&path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn save_font_cache_file(file: &FontCacheFile) {
+    let Some(path) = font_cache_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(file) {
+        let _ = std::fs::write(&path, bytes);
+    }
+}
+
 /// Return the cached font list to the frontend.  Reads from
 /// the shared `SystemFontsCache` populated at startup; if the
 /// cache is somehow empty (startup warmer failed or hasn't run
@@ -6957,24 +7079,43 @@ fn main() {
 
             // Warm the system-fonts cache off the main thread so
             // the first compose-toolbar font-dropdown open is
-            // instant.  Errors only log — empty cache means the
-            // `list_system_fonts` command falls back to a
-            // synchronous enumeration on the next request.
+            // instant.  Two-tier strategy:
             //
-            // Has to run on a plain OS thread (not tokio::spawn /
-            // spawn_blocking) because Tauri's setup callback fires
-            // before the async runtime is mounted, so calling into
-            // tokio here would panic with "no reactor running".
+            //   1. Compute a cheap fingerprint of the system font
+            //      directories (recursive dir-mtime hash).
+            //   2. If a JSON cache exists at the same fingerprint,
+            //      load it — saves font-kit's catalogue walk
+            //      entirely on every launch where the user hasn't
+            //      installed or removed a font.
+            //   3. Otherwise run font-kit fresh and persist the
+            //      result so the next launch hits the fast path.
+            //
+            // Runs on a plain OS thread because Tauri's setup
+            // callback fires before the async runtime is mounted
+            // — calling tokio here would panic with "no reactor
+            // running".  We park on the tokio RwLock via
+            // `blocking_write`; the lock is uncontended at startup
+            // so this is effectively immediate.
             let fonts_cache = app.state::<SystemFontsCache>().inner().clone();
             std::thread::spawn(move || {
+                let fingerprint = compute_font_fingerprint();
+                if let Some(disk) = load_font_cache_file()
+                    && disk.fingerprint == fingerprint
+                    && !disk.fonts.is_empty()
+                {
+                    let count = disk.fonts.len();
+                    *fonts_cache.blocking_write() = disk.fonts;
+                    tracing::info!("system fonts loaded from disk cache: {count} families");
+                    return;
+                }
                 let list = enumerate_system_fonts();
                 let count = list.len();
-                // The shared lock is a tokio RwLock; from a sync
-                // context we use blocking_write, which parks until
-                // the lock is free.  Nothing else holds it during
-                // startup, so this is effectively immediate.
+                save_font_cache_file(&FontCacheFile {
+                    fingerprint,
+                    fonts: list.clone(),
+                });
                 *fonts_cache.blocking_write() = list;
-                tracing::info!("system fonts cached: {count} families");
+                tracing::info!("system fonts enumerated fresh: {count} families");
             });
 
             // ── Tray menu + icon ────────────────────────────────
