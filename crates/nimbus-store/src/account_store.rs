@@ -54,9 +54,10 @@ pub fn load_accounts(cache: &Cache) -> Result<Vec<Account>, NimbusError> {
     let accounts = read_all(cache)?;
     #[cfg(not(test))]
     if accounts.is_empty()
-        && let Some(imported) = migrate_from_legacy_json(cache)? {
-            return Ok(imported);
-        }
+        && let Some(imported) = migrate_from_legacy_json(cache)?
+    {
+        return Ok(imported);
+    }
     Ok(accounts)
 }
 
@@ -323,10 +324,7 @@ fn migrate_from_legacy_json(cache: &Cache) -> Result<Option<Vec<Account>>, Nimbu
 /// callers can use `?` without sprinkling `.map_err` everywhere.
 fn conn(
     cache: &Cache,
-) -> Result<
-    r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>,
-    NimbusError,
-> {
+) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, NimbusError> {
     cache
         .pool()
         .get()

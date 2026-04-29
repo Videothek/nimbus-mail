@@ -51,10 +51,9 @@ pub fn read_text_until(
         match reader.read_event() {
             Ok(Event::Text(t)) => buf.push_str(&t.unescape().unwrap_or_default()),
             Ok(Event::CData(c)) => buf.push_str(&String::from_utf8_lossy(&c)),
-            Ok(Event::End(end))
-                if local_name_end(&end).eq_ignore_ascii_case(start_local) => {
-                    return Ok(buf);
-                }
+            Ok(Event::End(end)) if local_name_end(&end).eq_ignore_ascii_case(start_local) => {
+                return Ok(buf);
+            }
             Ok(Event::Eof) => return Ok(buf),
             Err(e) => return Err(e),
             _ => {}
@@ -68,17 +67,15 @@ pub fn skip_subtree(reader: &mut Reader<&[u8]>, start_local: &str) -> Result<(),
     let mut depth = 1;
     loop {
         match reader.read_event() {
-            Ok(Event::Start(s))
-                if local_name(&s) == start_local => {
-                    depth += 1;
+            Ok(Event::Start(s)) if local_name(&s) == start_local => {
+                depth += 1;
+            }
+            Ok(Event::End(e)) if local_name_end(&e).eq_ignore_ascii_case(start_local) => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(());
                 }
-            Ok(Event::End(e))
-                if local_name_end(&e).eq_ignore_ascii_case(start_local) => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Ok(());
-                    }
-                }
+            }
             Ok(Event::Eof) => return Ok(()),
             Err(e) => return Err(e),
             _ => {}

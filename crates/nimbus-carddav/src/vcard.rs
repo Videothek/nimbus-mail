@@ -619,12 +619,24 @@ mod tests {
             uid: "abc-123".into(),
             display_name: "Alice Example".into(),
             emails: vec![
-                VcardEmail { kind: "home".into(), value: "alice@example.com".into() },
-                VcardEmail { kind: "work".into(), value: "alice@work.com".into() },
+                VcardEmail {
+                    kind: "home".into(),
+                    value: "alice@example.com".into(),
+                },
+                VcardEmail {
+                    kind: "work".into(),
+                    value: "alice@work.com".into(),
+                },
             ],
             phones: vec![
-                VcardPhone { kind: "cell".into(), value: "+1 555 0100".into() },
-                VcardPhone { kind: "work".into(), value: "+1 555 0200".into() },
+                VcardPhone {
+                    kind: "cell".into(),
+                    value: "+1 555 0100".into(),
+                },
+                VcardPhone {
+                    kind: "work".into(),
+                    value: "+1 555 0200".into(),
+                },
             ],
             organization: Some("Example Corp".into()),
             ..Default::default()

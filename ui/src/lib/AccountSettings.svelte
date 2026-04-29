@@ -292,7 +292,9 @@
         filters: [{ name: 'CSS theme', extensions: ['css'] }],
       })
       if (!picked) return
-      const path = typeof picked === 'string' ? picked : picked.path
+      // tauri-plugin-dialog returns the path as a plain string when
+      // `multiple: false, directory: false` is set.
+      const path = picked
       const fileName = path.split(/[\\/]/).pop() ?? ''
       const stem = fileName.replace(/\.css$/i, '')
       // Reasonable default label — the user can rename later.

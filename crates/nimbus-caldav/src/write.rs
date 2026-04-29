@@ -164,8 +164,7 @@ async fn delete_event_inner(
     let status = resp.status();
     if status == StatusCode::PRECONDITION_FAILED {
         return Err(NimbusError::Nextcloud(
-            "event was modified on the server since last sync — refresh and try again"
-                .to_string(),
+            "event was modified on the server since last sync — refresh and try again".to_string(),
         ));
     }
     // 404 is fine — already gone is the state we wanted.

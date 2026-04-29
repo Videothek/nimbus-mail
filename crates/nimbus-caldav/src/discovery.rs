@@ -144,10 +144,9 @@ fn parse_response(
                     // match either.
                     loop {
                         match reader.read_event()? {
-                            Event::Empty(e) | Event::Start(e)
-                                if local_name(&e) == "calendar" => {
-                                    is_calendar = true;
-                                }
+                            Event::Empty(e) | Event::Start(e) if local_name(&e) == "calendar" => {
+                                is_calendar = true;
+                            }
                             Event::End(e) if local_name_end(&e) == "resourcetype" => break,
                             Event::Eof => break,
                             _ => {}

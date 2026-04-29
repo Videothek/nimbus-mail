@@ -191,9 +191,10 @@ fn attendee_from_property(prop: &Property, value: &str) -> Option<EventAttendee>
 /// that we skip them rather than misinterpret them. Skipped alarms log
 /// a warning and round-trip via `ics_raw` instead of vanishing on PUT.
 fn reminder_from_alarm(alarm: &IcalAlarm) -> Option<EventReminder> {
-    let trigger = alarm.properties.iter().find(|p| {
-        p.name.eq_ignore_ascii_case("TRIGGER")
-    })?;
+    let trigger = alarm
+        .properties
+        .iter()
+        .find(|p| p.name.eq_ignore_ascii_case("TRIGGER"))?;
     let value = trigger.value.as_deref()?;
 
     let is_date_time = property_param(trigger, "VALUE")
@@ -392,9 +393,7 @@ fn parse_datetime_list(prop: &Property, value: &str) -> Result<Vec<DateTime<Utc>
     for item in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         let parsed = if is_date_only {
             NaiveDate::parse_from_str(item, "%Y%m%d")
-                .map(|d| {
-                    Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).expect("midnight is valid"))
-                })
+                .map(|d| Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).expect("midnight is valid")))
                 .map_err(|e| format!("DATE list item {item:?}: {e}"))
         } else {
             parse_single_datetime(item, tzid)
@@ -582,8 +581,15 @@ pub fn build_ics_with_method(
         // DTEND for VALUE=DATE is exclusive, so the day after the
         // last-covered day. Our parser snapped end to 23:59:59 of the
         // last day, so step forward one day for the wire format.
-        let exclusive_end = event.end.date_naive().succ_opt().unwrap_or(event.end.date_naive());
-        lines.push(format!("DTEND;VALUE=DATE:{}", exclusive_end.format("%Y%m%d")));
+        let exclusive_end = event
+            .end
+            .date_naive()
+            .succ_opt()
+            .unwrap_or(event.end.date_naive());
+        lines.push(format!(
+            "DTEND;VALUE=DATE:{}",
+            exclusive_end.format("%Y%m%d")
+        ));
     } else {
         lines.push(format!("DTSTART:{}", format_utc_dt(&event.start)));
         lines.push(format!("DTEND:{}", format_utc_dt(&event.end)));
@@ -629,13 +635,14 @@ pub fn build_ics_with_method(
         lines.push(format!("RECURRENCE-ID:{}", format_utc_dt(&rid)));
     }
     if !event.attendees.is_empty()
-        && let Some(email) = organizer_email {
-            let mut params = String::new();
-            if let Some(cn) = organizer_name {
-                params.push_str(&format!(";CN={cn}"));
-            }
-            lines.push(format!("ORGANIZER{params}:mailto:{email}"));
+        && let Some(email) = organizer_email
+    {
+        let mut params = String::new();
+        if let Some(cn) = organizer_name {
+            params.push_str(&format!(";CN={cn}"));
         }
+        lines.push(format!("ORGANIZER{params}:mailto:{email}"));
+    }
     // For iMIP REQUESTs we enrich each ATTENDEE with the params
     // Apple Mail / Outlook need to surface RSVP UI: ROLE,
     // CUTYPE, and especially `RSVP=TRUE` (Apple Mail hides the
@@ -698,8 +705,14 @@ pub fn build_ics_with_method(
 
     for r in &event.reminders {
         lines.push("BEGIN:VALARM".into());
-        lines.push(format!("ACTION:{}", r.action.as_deref().unwrap_or("DISPLAY")));
-        lines.push(format!("TRIGGER:{}", duration_to_trigger(r.trigger_minutes_before)));
+        lines.push(format!(
+            "ACTION:{}",
+            r.action.as_deref().unwrap_or("DISPLAY")
+        ));
+        lines.push(format!(
+            "TRIGGER:{}",
+            duration_to_trigger(r.trigger_minutes_before)
+        ));
         lines.push(format!("DESCRIPTION:{}", escape_text(&event.summary)));
         lines.push("END:VALARM".into());
     }
@@ -906,8 +919,12 @@ fn split_params(head: &str) -> Vec<String> {
 fn is_all_day_window(start: DateTime<Utc>, end: DateTime<Utc>) -> bool {
     let s = start.time();
     let e = end.time();
-    s.hour() == 0 && s.minute() == 0 && s.second() == 0
-        && e.hour() == 23 && e.minute() == 59 && e.second() == 59
+    s.hour() == 0
+        && s.minute() == 0
+        && s.second() == 0
+        && e.hour() == 23
+        && e.minute() == 59
+        && e.second() == 59
 }
 
 fn format_utc_dt(dt: &DateTime<Utc>) -> String {

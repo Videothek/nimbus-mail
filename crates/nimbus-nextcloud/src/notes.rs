@@ -273,9 +273,7 @@ fn expect_success(resp: &reqwest::Response, op: &str) -> Result<(), NimbusError>
         // Reuse the same etag-collision variant CalDAV uses so
         // future "refresh and retry" plumbing in the UI can match
         // on a single error type across protocols.
-        412 => NimbusError::EtagMismatch(format!(
-            "{op}: note was modified by another client"
-        )),
+        412 => NimbusError::EtagMismatch(format!("{op}: note was modified by another client")),
         _ => NimbusError::Network(format!("{op}: HTTP {status}")),
     })
 }

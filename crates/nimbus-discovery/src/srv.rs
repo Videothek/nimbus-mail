@@ -51,10 +51,7 @@ pub async fn discover(domain: &str) -> Result<DiscoveredAccount, DiscoveryError>
     // STARTTLS fallback.
     let imap_starttls = lookup_first_srv(&resolver, "_imap._tcp", domain).await;
     let smtp_starttls = lookup_first_srv(&resolver, "_submission._tcp", domain).await;
-    if let (Some(i), Some(s)) = (
-        imap_tls.or(imap_starttls),
-        smtp_tls.or(smtp_starttls),
-    ) {
+    if let (Some(i), Some(s)) = (imap_tls.or(imap_starttls), smtp_tls.or(smtp_starttls)) {
         debug!("SRV: mixed/STARTTLS pair imap={i:?} smtp={s:?}");
         return Ok(DiscoveredAccount {
             imap_host: i.host,
@@ -95,7 +92,10 @@ async fn lookup_first_srv(
                 if host.is_empty() {
                     continue;
                 }
-                let candidate = SrvEndpoint { host, port: r.port() };
+                let candidate = SrvEndpoint {
+                    host,
+                    port: r.port(),
+                };
                 let key = (r.priority(), u16::MAX - r.weight());
                 if best.as_ref().map(|(p, _, _)| key < (*p, 0)).unwrap_or(true) {
                     best = Some((key.0, key.1, candidate));
