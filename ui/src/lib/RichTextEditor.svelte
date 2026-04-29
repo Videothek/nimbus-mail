@@ -1,3 +1,13 @@
+<script lang="ts" module>
+  // Module-scope cache for the system font list (#142).  Shared
+  // across every RichTextEditor instance in the session so
+  // re-opening compose doesn't re-pay the IPC cost.  Filled by
+  // the first instance that resolves `list_system_fonts`; the
+  // backend cache itself is warmed at app startup, so this ends
+  // up being a single ~1ms IPC for the lifetime of the app.
+  let systemFontsCache = $state<string[]>([])
+</script>
+
 <script lang="ts">
   /**
    * RichTextEditor — Tiptap-based WYSIWYG editor for composing emails.
@@ -775,17 +785,22 @@
   /** OS-installed font families discovered via the
    *  `list_system_fonts` Tauri command (#142).  Loaded once on
    *  mount; failures (sandboxed dev / missing perm) leave the
-   *  list empty so the dropdown still shows the curated stacks. */
-  let systemFonts = $state<string[]>([])
+   *  list empty so the dropdown still shows the curated stacks.
+   *  Module-scope cached so multiple compose windows in one
+   *  session don't each round-trip to the backend. */
+  let systemFonts = $state<string[]>(systemFontsCache)
   $effect(() => {
+    if (systemFontsCache.length > 0) {
+      systemFonts = systemFontsCache
+      return
+    }
     void invoke<string[]>('list_system_fonts')
       .then((rows) => {
-        // Drop any name that already maps to a curated entry so
-        // the dropdown doesn't render the same family twice.
         const curatedLabels = new Set(
           CURATED_FONTS.map((f) => f.label.toLowerCase()),
         )
-        systemFonts = rows.filter((f) => !curatedLabels.has(f.toLowerCase()))
+        systemFontsCache = rows.filter((f) => !curatedLabels.has(f.toLowerCase()))
+        systemFonts = systemFontsCache
       })
       .catch((e) => {
         console.warn('list_system_fonts failed', e)
