@@ -168,7 +168,7 @@ you group them.
 
 Tags applied to individual contacts. They are stored as the `CATEGORIES`
 property on each vCard, so they sync through CardDAV automatically and show
-up in Nextcloud as *Kontaktgruppen* and on iOS as *Groups*. A contact can
+up in Nextcloud as *Contact Groups* and on iOS as *Groups*. A contact can
 belong to many groups, and a contact group can span multiple addressbooks
 (it's a tag, not a folder).
 
