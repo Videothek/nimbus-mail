@@ -23,6 +23,91 @@
     if (typeof key === 'string') FRAME_CACHE_KEY.set(key, val)
     else if (key && typeof key === 'object') FRAME_CACHE_REF.set(key as object, val)
   }
+
+  // Image blob URLs cached so re-mounts (e.g. opening the `/`
+  // picker repeatedly) reuse the same Blob URL instead of
+  // building a fresh one each time — building a Blob from a
+  // multi-MB number[] is an O(n) copy that adds up across a
+  // dropdown of attachments.
+  const IMAGE_BLOB_REF = new WeakMap<object, string>()
+  const IMAGE_BLOB_KEY = new Map<string, string>()
+  function imageBlobGet(key: unknown): string | undefined {
+    if (typeof key === 'string') return IMAGE_BLOB_KEY.get(key)
+    if (key && typeof key === 'object') return IMAGE_BLOB_REF.get(key as object)
+    return undefined
+  }
+  function imageBlobPut(key: unknown, val: string): void {
+    if (typeof key === 'string') IMAGE_BLOB_KEY.set(key, val)
+    else if (key && typeof key === 'object') IMAGE_BLOB_REF.set(key as object, val)
+  }
+
+  function isImageGuess(contentType: string | null | undefined, filename: string): boolean {
+    const ct = (contentType ?? '').toLowerCase()
+    if (ct.startsWith('image/')) return true
+    const dot = filename.lastIndexOf('.')
+    const ext = dot >= 0 ? filename.slice(dot + 1).toLowerCase() : ''
+    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'tif', 'tiff', 'heic', 'heif', 'svg'].includes(ext)
+  }
+  function isVideoGuess(contentType: string | null | undefined, filename: string): boolean {
+    const ct = (contentType ?? '').toLowerCase()
+    if (ct.startsWith('video/')) return true
+    const dot = filename.lastIndexOf('.')
+    const ext = dot >= 0 ? filename.slice(dot + 1).toLowerCase() : ''
+    return ['mp4', 'mkv', 'mov', 'avi', 'webm', 'm4v', 'mpg', 'mpeg', '3gp', 'wmv', 'flv'].includes(ext)
+  }
+
+  /** Pre-warm the image blob URL + video first-frame caches for
+   *  an attachment off the critical path.  Compose calls this
+   *  the moment an attachment is added so the `/` picker, which
+   *  may open milliseconds later, sees fully-resolved thumbs
+   *  instead of icons that progressively swap in.
+   *
+   *  Runs through `requestIdleCallback` (with a setTimeout fallback)
+   *  so it never blocks the UI thread when a file is dropped. */
+  export function prewarm(opts: {
+    bytes: Uint8Array | number[]
+    contentType?: string | null
+    filename: string
+    cacheKey?: string | null
+  }): void {
+    const { bytes, contentType = null, filename, cacheKey = null } = opts
+    if (!bytes || bytes.length === 0) return
+    const key = cacheKey ?? bytes
+    const schedule = (cb: () => void) => {
+      const w = window as unknown as {
+        requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => void
+      }
+      if (typeof w.requestIdleCallback === 'function') {
+        w.requestIdleCallback(cb, { timeout: 200 })
+      } else {
+        setTimeout(cb, 0)
+      }
+    }
+    schedule(() => {
+      if (isImageGuess(contentType, filename)) {
+        if (!imageBlobGet(key)) {
+          let ct = contentType ?? ''
+          if (!ct) ct = 'image/png'
+          const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+          const url = URL.createObjectURL(new Blob([u8], { type: ct }))
+          imageBlobPut(key, url)
+        }
+      } else if (isVideoGuess(contentType, filename)) {
+        if (!cacheGet(key)) {
+          let ct = contentType ?? ''
+          if (!ct) ct = 'video/mp4'
+          const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+          const url = URL.createObjectURL(new Blob([u8], { type: ct }))
+          extractionChain = extractionChain
+            .then(async () => {
+              const frame = await extractFirstFrame(url)
+              if (frame) cachePut(key, frame)
+            })
+            .finally(() => URL.revokeObjectURL(url))
+        }
+      }
+    })
+  }
   // Serialise extractions so a folder full of videos doesn't
   // spin up N pipelines simultaneously — Linux WebKit hits a
   // visible stall when more than two or three pipelines are
@@ -170,12 +255,18 @@
       return
     }
     let cancelled = false
-    let createdBlobUrl: string | null = null
     const apply = async (b: Uint8Array | number[] | null | undefined) => {
       if (!b || b.length === 0 || cancelled) return
       if (isImage()) {
-        createdBlobUrl = makeBlobUrl(b)
-        imgUrl = createdBlobUrl
+        const key = cacheKey ?? b
+        const cached = imageBlobGet(key)
+        if (cached) {
+          imgUrl = cached
+          return
+        }
+        const url = makeBlobUrl(b)
+        imageBlobPut(key, url)
+        imgUrl = url
       } else if (isVideo()) {
         const frame = await loadFrame(b)
         if (cancelled) return
@@ -199,7 +290,11 @@
     }
     return () => {
       cancelled = true
-      if (createdBlobUrl) URL.revokeObjectURL(createdBlobUrl)
+      // Image blob URLs live in the cache and are reused across
+      // mounts; we don't revoke them here.  When the bytes ref
+      // becomes unreferenced (Compose unmounts and drops the
+      // Attachment), the WeakMap entry is GC'd, which makes the
+      // blob URL unreachable and the browser reclaims it.
     }
   })
 </script>

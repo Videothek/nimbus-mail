@@ -26,7 +26,7 @@
   import AddressAutocomplete from './AddressAutocomplete.svelte'
   import NextcloudFilePicker, { type ShareLink } from './NextcloudFilePicker.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
-  import AttachmentThumb from './AttachmentThumb.svelte'
+  import AttachmentThumb, { prewarm as prewarmAttachmentThumb } from './AttachmentThumb.svelte'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
   import { openComposeInStandaloneWindow } from './standaloneComposeWindow'
 
@@ -188,6 +188,19 @@
   let body = $state(initial?.body ?? '')
   // svelte-ignore state_referenced_locally
   let attachments = $state<Attachment[]>(initial?.attachments ?? [])
+  // Pre-warm thumb caches for any attachments seeded by the
+  // host (FilesView's "New mail with attachment", reply-with-
+  // attachment paths) so the `/` picker is instant on its
+  // first open.
+  $effect(() => {
+    for (const a of initial?.attachments ?? []) {
+      prewarmAttachmentThumb({
+        bytes: a.data,
+        contentType: a.content_type,
+        filename: a.filename,
+      })
+    }
+  })
 
 
   /** Human-readable label attached to every Nextcloud share minted
@@ -906,6 +919,16 @@
       })
     }
     attachments = [...attachments, ...picked]
+    // Pre-warm the thumbnail cache off the critical path so the
+    // editor's `/` picker opens to fully-rendered tiles instead
+    // of icons that progressively swap in.
+    for (const a of picked) {
+      prewarmAttachmentThumb({
+        bytes: a.data,
+        contentType: a.content_type,
+        filename: a.filename,
+      })
+    }
     input.value = ''
   }
 
@@ -1408,6 +1431,13 @@
       // Compose is the earliest point where we can assign one.
       const stamped = picked.map((a) => ({ ...a, content_id: makeContentId() }))
       attachments = [...attachments, ...stamped]
+      for (const a of stamped) {
+        prewarmAttachmentThumb({
+          bytes: a.data,
+          contentType: a.content_type,
+          filename: a.filename,
+        })
+      }
     }}
     onlinks={(links) => {
       // Track every share that's been minted from this Compose so a
