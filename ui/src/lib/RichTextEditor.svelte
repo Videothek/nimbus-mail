@@ -582,7 +582,7 @@
       // tooltip identifying it as an attachment.  Clients that
       // resolve `cid:` (Apple Mail, Thunderbird, our own renderer)
       // get a direct jump to the part; Gmail / Outlook strip
-      // cid: but the recipient still sees a styled "📎 filename
+      // cid: but the recipient still sees a styled "🖇️ filename
       // (attached)" badge and the file is in the message's
       // attachment tray anyway.
       //
@@ -606,7 +606,7 @@
                 'background:rgba(245,158,11,0.15);color:#b45309;' +
                 'text-decoration:none;font-weight:500;',
             },
-            `📎 ${label}`,
+            `🖇️ ${label}`,
           ]
         },
         renderText({ node }) {
@@ -621,7 +621,7 @@
                 const href = (el as HTMLElement).getAttribute('href') ?? ''
                 const id = href.replace(/^cid:/, '')
                 const text = (el as HTMLElement).textContent ?? ''
-                const label = text.replace(/^📎\s*/, '') || id
+                const label = text.replace(/^🖇️\s*/, '') || id
                 return { id, label }
               },
             },
@@ -1779,7 +1779,7 @@
             attachmentPicker.command?.(a)
           }}
         >
-          <span class="text-base shrink-0">📎</span>
+          <span class="text-base shrink-0">🖇️</span>
           <span class="truncate">{a.filename}</span>
         </li>
       {/each}

@@ -223,7 +223,7 @@
             ? 'Folders can be shared as a link, but not attached as bytes'
             : 'Open a new mail with the selected files attached'}
         >
-          {attaching ? 'Downloading…' : '📎 New mail with attachment'}
+          {attaching ? 'Downloading…' : '🖇️ New mail with attachment'}
         </button>
       </footer>
     {/if}
