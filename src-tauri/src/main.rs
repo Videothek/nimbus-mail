@@ -6629,34 +6629,55 @@ async fn background_sync_loop(app: AppHandle) {
 
 // ── App-settings commands ──────────────────────────────────────
 
-/// List every font family installed on the user's system.
-/// Backs the compose toolbar's font picker (#142) — the curated
-/// stacks are still the default, this just lets the user reach
-/// for whatever else is on their machine.
-///
-/// Runs on a blocking thread because font-kit walks the OS font
-/// catalogue synchronously (DirectWrite / Core Text / fontconfig
-/// on Win/Mac/Linux respectively).  Hidden families (those whose
-/// name starts with `.`) are filtered out; the list is sorted
-/// case-insensitively and de-duplicated so the dropdown reads
-/// alphabetically.
+/// Shared cache for the user's installed font families (#142).
+/// Populated once at app startup on a blocking thread so the
+/// compose toolbar's font picker reads instantly — re-running
+/// font-kit's catalogue walk per dropdown open was visibly
+/// laggy on machines with hundreds of fonts.
+type SystemFontsCache = Arc<RwLock<Vec<String>>>;
+
+/// Walk the OS font catalogue and return the sorted, de-duped
+/// family list.  Pure helper — used by both the startup warmer
+/// and a manual refresh path.
+fn enumerate_system_fonts() -> Vec<String> {
+    let source = font_kit::source::SystemSource::new();
+    let families = match source.all_families() {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("font enumeration failed: {e}");
+            return Vec::new();
+        }
+    };
+    let mut out: Vec<String> = families
+        .into_iter()
+        .filter(|f| !f.starts_with('.') && !f.trim().is_empty())
+        .collect();
+    out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    out.dedup();
+    out
+}
+
+/// Return the cached font list to the frontend.  Reads from
+/// the shared `SystemFontsCache` populated at startup; if the
+/// cache is somehow empty (startup warmer failed or hasn't run
+/// yet), runs the enumeration once on a blocking thread and
+/// memoises the result before returning.
 #[tauri::command]
-async fn list_system_fonts() -> Result<Vec<String>, NimbusError> {
-    tokio::task::spawn_blocking(|| {
-        let source = font_kit::source::SystemSource::new();
-        let families = source
-            .all_families()
-            .map_err(|e| NimbusError::Other(format!("font enumeration: {e}")))?;
-        let mut out: Vec<String> = families
-            .into_iter()
-            .filter(|f| !f.starts_with('.') && !f.trim().is_empty())
-            .collect();
-        out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-        out.dedup();
-        Ok(out)
-    })
-    .await
-    .map_err(|e| NimbusError::Other(format!("font enumeration join: {e}")))?
+async fn list_system_fonts(
+    cache: State<'_, SystemFontsCache>,
+) -> Result<Vec<String>, NimbusError> {
+    {
+        let snap = cache.read().await;
+        if !snap.is_empty() {
+            return Ok(snap.clone());
+        }
+    }
+    // Cold path: warm the cache synchronously this once.
+    let fonts = tokio::task::spawn_blocking(enumerate_system_fonts)
+        .await
+        .map_err(|e| NimbusError::Other(format!("font enumeration join: {e}")))?;
+    *cache.write().await = fonts.clone();
+    Ok(fonts)
 }
 
 #[tauri::command]
@@ -6900,6 +6921,7 @@ fn main() {
         ))
         .manage(cache)
         .manage(shared_settings)
+        .manage::<SystemFontsCache>(Arc::new(RwLock::new(Vec::new())))
         .register_uri_scheme_protocol("contact-photo", contact_photo_protocol)
         .setup(|app| {
             // Windows toast attribution.  Without an explicit
@@ -6932,6 +6954,24 @@ fn main() {
             // sets at startup, populated as the background scan
             // discovers upcoming events with VALARM triggers.
             app.manage(TalkReminderState::default());
+
+            // Warm the system-fonts cache off the main thread so
+            // the first compose-toolbar font-dropdown open is
+            // instant.  Errors only log — empty cache means the
+            // command falls back to a synchronous enumeration on
+            // the next request.
+            let fonts_cache = app.state::<SystemFontsCache>().inner().clone();
+            tokio::spawn(async move {
+                let fonts = tokio::task::spawn_blocking(enumerate_system_fonts).await;
+                match fonts {
+                    Ok(list) => {
+                        let count = list.len();
+                        *fonts_cache.write().await = list;
+                        tracing::info!("system fonts cached: {count} families");
+                    }
+                    Err(e) => tracing::warn!("font enumeration spawn_blocking failed: {e}"),
+                }
+            });
 
             // ── Tray menu + icon ────────────────────────────────
             //
