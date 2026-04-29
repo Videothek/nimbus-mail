@@ -530,6 +530,11 @@
           ]
         },
       }).configure({
+        // Backspace deletes the whole mention node without re-
+        // inserting the trigger character — without this, a
+        // user removing a contact pill ends up with a stray `@`
+        // glyph after the deletion.
+        deleteTriggerWithBackspace: true,
         HTMLAttributes: {
           'data-contact-mention': '',
           class:
@@ -747,6 +752,10 @@
           ]
         },
       }).configure({
+        // Backspace removes the whole reference node without
+        // dropping a stray `/` glyph — same reasoning as the
+        // contactMention configure block above.
+        deleteTriggerWithBackspace: true,
         // Use a truthy marker value rather than the empty
         // string — some HTML serialisers drop empty-valued
         // attributes during round-trip, which would silently
