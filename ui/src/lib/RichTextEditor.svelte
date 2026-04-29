@@ -837,7 +837,12 @@
   // spacer reserving the full scroll height.
   const FONT_ROW_H = 28
   const FONT_VIEWPORT_H = 288 // mirrors `max-h-72`
-  const FONT_BUFFER = 6
+  // Buffer is sized so a fast flick stays inside the mounted
+  // window — at ~28px row height, 40 rows above / below covers
+  // ~1100px of overshoot on either side, which beats the
+  // browser's frame-pacing on a fast scroll.  Mounting 100ish
+  // rows is still trivially cheap vs. mounting all 500.
+  const FONT_BUFFER = 40
   let fontScrollY = $state(0)
   let fontScrollEl: HTMLDivElement | null = $state(null)
   const fontWindow = $derived.by(() => {
@@ -1389,10 +1394,17 @@
                 {:else}
                   <div style="position: relative; height: {fontWindow.total * FONT_ROW_H}px;">
                     {#each fontWindow.slice as f, i (f.label)}
+                      <!-- Append `, sans-serif` to the preview's
+                           font-family stack so the row paints in
+                           a generic face *immediately* on mount;
+                           when the platform finishes resolving
+                           the requested family the glyphs swap
+                           in.  Beats the previous "blank row
+                           briefly visible after scroll" flash. -->
                       <button
                         type="button"
                         class="absolute left-0 right-0 text-left px-3 text-sm leading-tight hover:bg-surface-200 dark:hover:bg-surface-800 truncate"
-                        style="top: {(fontWindow.start + i) * FONT_ROW_H}px; height: {FONT_ROW_H}px;{f.css ? ` font-family: ${f.css};` : ''}"
+                        style="top: {(fontWindow.start + i) * FONT_ROW_H}px; height: {FONT_ROW_H}px;{f.css ? ` font-family: ${f.css}, sans-serif;` : ''}"
                         onclick={() => { setFont(f.css); fontPickerQuery = '' }}
                       >{f.label}</button>
                     {/each}
