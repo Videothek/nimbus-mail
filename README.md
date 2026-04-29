@@ -205,12 +205,12 @@ autocomplete dropdown — useful for hiding noisy auto-generated groups.
 ```
 Addressbook (storage)
    └── Contact (vCard)
-           ├── CATEGORIES: ["Family", "Book club"]   ← Contact Groups
-           └── lives in   ─→ "Mailing Lists" Kontaktgruppe (auto-tag)
+           ├── CATEGORIES: ["Family", "Book club"]  ←  Contact Groups
+           └── lives in   → "Mailing Lists" Contact Group (auto-tag)
 
-Contact Group  ─── mirrored as ──→  Mailing List (category source)
-Manual mailing list (KIND:group vCard)  ──→  Mailing List (manual source)
-Nextcloud user group / Circle           ──→  Mailing List (team source)
+Contact Group  ─── mirrored as →  Mailing List (category source)
+Manual mailing list (KIND:group vCard)  →  Mailing List (manual source)
+Nextcloud user group / Circle           →  Mailing List (team source)
 ```
 
 Rule of thumb: **addressbooks** decide *where the data lives*, **contact
