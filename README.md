@@ -206,7 +206,7 @@ autocomplete dropdown — useful for hiding noisy auto-generated groups.
 Addressbook (storage)
    └── Contact (vCard)
            ├── CATEGORIES: ["Family", "Book club"]   ← Contact Groups
-           └── lives in   ─→ "Mailing Lists" Kontaktgruppe (auto-tag)
+           └── lives in   ─→ "Mailing Lists" Contact Group (auto-tag)
 
 Contact Group  ─── mirrored as ──→  Mailing List (category source)
 Manual mailing list (KIND:group vCard)  ──→  Mailing List (manual source)
