@@ -37,6 +37,7 @@
   import DateField from './DateField.svelte'
   import TimeField from './TimeField.svelte'
   import Select from './Select.svelte'
+  import EmailKindChip from './EmailKindChip.svelte'
 
   // ── Types (kept local; these mirror the Rust models) ──────────
   interface EventAttendee {
@@ -1526,10 +1527,10 @@
                     {/if}
                     <div class="flex-1 min-w-0">
                       <p class="font-medium truncate">{c.display_name}</p>
-                      <p class="text-xs text-surface-500 truncate">
-                        {#if s.email.kind}<span class="uppercase tracking-wide mr-1 text-[10px]">{s.email.kind}</span>{/if}
-                        {s.email.value}
-                        {#if c.organization}· {c.organization}{/if}
+                      <p class="text-xs text-surface-500 truncate flex items-center gap-1.5">
+                        <EmailKindChip kind={s.email.kind} />
+                        <span class="truncate">{s.email.value}</span>
+                        {#if c.organization}<span class="shrink-0">· {c.organization}</span>{/if}
                       </p>
                     </div>
                   {:else}
