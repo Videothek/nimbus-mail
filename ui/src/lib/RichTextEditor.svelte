@@ -615,21 +615,31 @@
           if (ext === 'pdf') {
             badgeText = 'PDF'
             badgeBg = '#e11d48' // rose
-          } else if (['doc', 'docx', 'odt', 'rtf'].includes(ext)) {
+          } else if (
+            ['doc', 'docx', 'docm', 'dot', 'dotx', 'dotm', 'odt', 'ott', 'rtf'].includes(ext)
+          ) {
             badgeText = 'DOC'
             badgeBg = '#2563eb' // blue
-          } else if (['xls', 'xlsx', 'ods'].includes(ext)) {
+          } else if (['xls', 'xlsx', 'xlsm', 'xlt', 'xltx', 'xltm', 'ods', 'ots'].includes(ext)) {
             badgeText = 'XLS'
             badgeBg = '#059669' // emerald-600
-          } else if (ext === 'csv') {
+          } else if (['csv', 'tsv'].includes(ext)) {
             badgeText = 'CSV'
             badgeBg = '#10b981' // emerald-500
-          } else if (['ppt', 'pptx', 'odp'].includes(ext)) {
+          } else if (['ppt', 'pptx', 'pptm', 'pot', 'potx', 'potm', 'odp', 'otp'].includes(ext)) {
             badgeText = 'PPT'
             badgeBg = '#f59e0b' // amber
-          } else if (['zip', '7z', 'rar', 'tar', 'gz', 'xz'].includes(ext)) {
+          } else if (['zip', '7z', 'rar', 'tar', 'gz', 'xz', 'bz2', 'tgz'].includes(ext)) {
             badgeText = 'ZIP'
             badgeBg = '#7c3aed' // violet
+          } else if (['md', 'markdown', 'mdx', 'mkd'].includes(ext)) {
+            badgeText = 'MD'
+            badgeBg = '#0ea5e9' // sky
+          } else if (
+            ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'tif', 'tiff', 'svg', 'heic', 'heif', 'ico'].includes(ext)
+          ) {
+            badgeText = (ext === 'jpeg' ? 'JPG' : ext.toUpperCase()).slice(0, 4)
+            badgeBg = '#06b6d4' // cyan
           }
           const badgeStyle =
             'display:inline-block;min-width:2.2em;padding:1px 4px;margin-right:6px;' +
@@ -674,7 +684,11 @@
                 const text = e.textContent ?? ''
                 const label =
                   text
-                    .replace(/^(?:PDF|DOC|XLS|XLSX|CSV|PPT|PPTX|ZIP|FILE)\s*/i, '')
+                    // Strip any 2–4 letter ALL-CAPS leader
+                    // (PDF / DOC / XLS / CSV / PPT / ZIP / MD /
+                    // JPG / PNG / SVG / TIFF / FILE / …) the
+                    // wire-format renderer might have prepended.
+                    .replace(/^[A-Z]{2,4}\s+/, '')
                     .replace(/^(?:🖇️|📕|📘|📗|📙|🗜️|📎)\s*/, '') || id
                 return { id, label }
               },

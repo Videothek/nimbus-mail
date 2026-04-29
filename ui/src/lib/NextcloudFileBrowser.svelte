@@ -183,15 +183,17 @@
   }
 
   /** Emoji glyph for entries that read better as pictographs
-   *  (folders + media types).  Documents fall through to `null`
-   *  so the row renders the typed `FileTypeIcon` SVG instead. */
+   *  (folders + media types).  Documents (images, markdown,
+   *  office, archives) fall through to `null` so the row
+   *  renders the typed `FileTypeIcon` SVG instead. */
   function iconEmojiFor(entry: FileEntry): string | null {
     if (entry.is_dir) return '📁'
     const ct = entry.content_type ?? ''
-    if (ct.startsWith('image/')) return '🖼️'
+    const fn = entry.name.toLowerCase()
     if (ct.startsWith('video/')) return '🎞️'
     if (ct.startsWith('audio/')) return '🎵'
-    if (ct.startsWith('text/')) return '📝'
+    if (ct.startsWith('text/') && !ct.includes('markdown') && !fn.endsWith('.md') && !fn.endsWith('.markdown'))
+      return '📝'
     return null
   }
 
