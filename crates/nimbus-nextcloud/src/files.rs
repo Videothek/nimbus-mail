@@ -297,6 +297,77 @@ pub async fn download_file(
     Ok(bytes.to_vec())
 }
 
+/// Fetch a server-rendered preview thumbnail of a file via
+/// `/index.php/core/preview.png?file=<path>&x=…&y=…`.  Used by
+/// the Nextcloud file picker to render an inline thumbnail on
+/// image and video rows.
+///
+/// `path` is relative to the user's root (the same form
+/// `download_file` takes).  `size` caps the long edge in pixels;
+/// Nextcloud renders a smaller image to fit and we let the
+/// browser scale it down further.  Returns the raw bytes — the
+/// caller decides whether to base64 it for a `data:` URL or
+/// stream it through a custom URI scheme.
+///
+/// Errors mirror `download_file`: 401 → `Auth`, 404 → `Nextcloud`,
+/// other non-2xx → `Nextcloud`.  Files with no available preview
+/// (e.g. ones the server hasn't generated thumbnails for yet)
+/// surface as 404 too; the caller treats that as "skip preview,
+/// fall back to the typed icon".
+pub async fn fetch_preview(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    path: &str,
+    size: u32,
+) -> Result<Vec<u8>, NimbusError> {
+    let server = client::normalize_server_url(server_url);
+    let inner = normalise_input_path(path);
+    // The preview endpoint accepts the path relative to the
+    // user's root in the `file` query parameter.  `forceIcon=0`
+    // means "return 404 if no preview exists" rather than serving
+    // the generic mimetype icon, so we know to fall back.
+    // `a=1` keeps aspect ratio so portraits don't get cropped.
+    let url = format!(
+        "{server}/index.php/core/preview.png?file={}&x={size}&y={size}&a=1&forceIcon=0",
+        encode_path(&inner),
+    );
+
+    tracing::debug!("GET preview {url}");
+
+    let http = client::build()?;
+    let resp = http
+        .get(&url)
+        .header("OCS-APIRequest", "true")
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("preview GET failed: {e}")))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(NimbusError::Auth(
+            "Nextcloud rejected app password (revoked or expired)".into(),
+        ));
+    }
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(NimbusError::Nextcloud(format!(
+            "no preview available for {path}"
+        )));
+    }
+    if !status.is_success() {
+        return Err(NimbusError::Nextcloud(format!(
+            "preview GET returned HTTP {status}"
+        )));
+    }
+
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| NimbusError::Network(format!("preview body read failed: {e}")))?;
+    Ok(bytes.to_vec())
+}
+
 /// Upload (or overwrite) a file via WebDAV PUT.
 ///
 /// `path` is the destination, relative to the user's root — e.g.

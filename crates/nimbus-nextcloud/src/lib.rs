@@ -26,8 +26,8 @@ pub mod user;
 pub use auth::{LoginFlowInit, LoginFlowResult, poll_login, start_login};
 pub use capabilities::fetch_capabilities;
 pub use files::{
-    FileEntry, create_directory, delete_path, download_file, list_directory, propfind_fileid,
-    upload_file,
+    FileEntry, create_directory, delete_path, download_file, fetch_preview, list_directory,
+    propfind_fileid, upload_file,
 };
 pub use notes::{
     NewNote, Note, NoteUpdate, create_note, delete_note, get_note, list_notes, update_note,
