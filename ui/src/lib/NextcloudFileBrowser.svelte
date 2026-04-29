@@ -30,6 +30,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import FileTypeIcon from './FileTypeIcon.svelte'
 
   interface NextcloudCapabilities {
     version?: string | null
@@ -181,16 +182,17 @@
     return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
   }
 
-  function iconFor(entry: FileEntry): string {
+  /** Emoji glyph for entries that read better as pictographs
+   *  (folders + media types).  Documents fall through to `null`
+   *  so the row renders the typed `FileTypeIcon` SVG instead. */
+  function iconEmojiFor(entry: FileEntry): string | null {
     if (entry.is_dir) return '📁'
     const ct = entry.content_type ?? ''
     if (ct.startsWith('image/')) return '🖼️'
     if (ct.startsWith('video/')) return '🎞️'
     if (ct.startsWith('audio/')) return '🎵'
-    if (ct.includes('pdf')) return '📄'
-    if (ct.includes('zip') || ct.includes('compressed')) return '🗜️'
     if (ct.startsWith('text/')) return '📝'
-    return '🖇️'
+    return null
   }
 
   function navigateTo(path: string) {
@@ -353,7 +355,12 @@
                     onchange={() => toggleSelected(entry.path)}
                   />
                 {/if}
-                <span class="text-lg">{iconFor(entry)}</span>
+                {@const emoji = iconEmojiFor(entry)}
+                {#if emoji}
+                  <span class="text-lg">{emoji}</span>
+                {:else}
+                  <FileTypeIcon contentType={entry.content_type} filename={entry.name} class="w-5 h-5" />
+                {/if}
                 <span class="flex-1 truncate text-sm">{entry.name}</span>
                 <span class="text-xs text-surface-500">{formatSize(entry.size)}</span>
               </button>
