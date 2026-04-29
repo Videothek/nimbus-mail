@@ -144,13 +144,28 @@
       }
       const draw = () => {
         try {
+          // Scale the canvas to a thumbnail-sized output rather
+          // than drawing at the source video's full resolution.
+          // A 4K clip would otherwise produce a 3840×2160 PNG
+          // encode per file — hundreds of ms each, serialised
+          // through the extractionChain, which is exactly what
+          // made the picker feel slow with video attachments.
+          // 192 px on the long edge fits the largest preview
+          // we render (NC picker) with room for high-DPI.
+          const MAX_DIM = 192
+          const sw = v.videoWidth || MAX_DIM
+          const sh = v.videoHeight || MAX_DIM
+          const scale = Math.min(1, MAX_DIM / Math.max(sw, sh))
           const canvas = document.createElement('canvas')
-          canvas.width = v.videoWidth || 192
-          canvas.height = v.videoHeight || 192
+          canvas.width = Math.max(1, Math.round(sw * scale))
+          canvas.height = Math.max(1, Math.round(sh * scale))
           const ctx = canvas.getContext('2d')
           if (!ctx) return finish(null)
           ctx.drawImage(v, 0, 0, canvas.width, canvas.height)
-          finish(canvas.toDataURL('image/png'))
+          // JPEG rather than PNG — ~10× smaller, a fraction of
+          // the encode cost, and we don't need transparency for
+          // a video frame.
+          finish(canvas.toDataURL('image/jpeg', 0.78))
         } catch {
           finish(null)
         }
