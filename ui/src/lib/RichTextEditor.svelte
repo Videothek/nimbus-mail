@@ -456,10 +456,16 @@
       // Renamed from the default `mention` so it can coexist with
       // the `/` attachment-ref extension below (Tiptap's Mention is
       // a single Node type — to register two we extend twice with
-      // different `name`s). Renders to the wire as
-      // `<a href="mailto:…" data-contact-mention>@Alice</a>` so
-      // non-Tiptap clients see a clickable mailto link, while the
-      // `data-` marker lets us re-parse it on draft round-trip.
+      // different `name`s).
+      //
+      // Wire format (#93): mailto-anchor wrapping the pill, plus
+      // *inline* styles that mirror our editor's Tailwind look.
+      // Email clients (Gmail, Outlook web, Apple Mail) strip
+      // class= and external CSS but keep `style` attrs and
+      // `title` tooltips, so recipients on those clients see a
+      // styled pill + can hover to read the full address.  The
+      // `data-contact-mention` marker survives the round-trip so
+      // a Nimbus reply re-parses our own pills.
       Mention.extend({
         name: 'contactMention',
         renderHTML({ node, HTMLAttributes }) {
@@ -467,7 +473,15 @@
           const label = node.attrs.label ?? email
           return [
             'a',
-            { ...HTMLAttributes, href: `mailto:${email}` },
+            {
+              ...HTMLAttributes,
+              href: `mailto:${email}`,
+              title: label && email && label !== email ? `${label} <${email}>` : email,
+              style:
+                'display:inline-block;padding:0 4px;border-radius:4px;' +
+                'background:rgba(59,130,246,0.12);color:#1d4ed8;' +
+                'text-decoration:none;font-weight:500;',
+            },
             `@${label}`,
           ]
         },
@@ -562,12 +576,20 @@
       }),
 
       // ── `/` attachment reference ───────────────────────────
-      // Same Mention machinery, different node + char + render. The
-      // inserted node is a clickable `cid:` link — recipients on
-      // Nimbus (or any client that resolves `cid:` href) get a
-      // direct jump to the attachment; on Gmail / web clients it
-      // falls back to plain link text with the attachment still
-      // visible in the message's attachment tray.
+      // Same Mention machinery, different node + char + render.
+      //
+      // Wire format (#93): cid-anchor + inline styles + a title
+      // tooltip identifying it as an attachment.  Clients that
+      // resolve `cid:` (Apple Mail, Thunderbird, our own renderer)
+      // get a direct jump to the part; Gmail / Outlook strip
+      // cid: but the recipient still sees a styled "📎 filename
+      // (attached)" badge and the file is in the message's
+      // attachment tray anyway.
+      //
+      // The plain-text fallback annotates the filename with
+      // "(attached)" so a recipient reading the text/plain part
+      // immediately knows the reference points at the attachment
+      // tray, not a missing inline link.
       Mention.extend({
         name: 'attachmentRef',
         renderHTML({ node, HTMLAttributes }) {
@@ -575,14 +597,21 @@
           const label = node.attrs.label ?? cid
           return [
             'a',
-            { ...HTMLAttributes, href: `cid:${cid}` },
+            {
+              ...HTMLAttributes,
+              href: `cid:${cid}`,
+              title: `Attached file: ${label}`,
+              style:
+                'display:inline-block;padding:0 4px;border-radius:4px;' +
+                'background:rgba(245,158,11,0.15);color:#b45309;' +
+                'text-decoration:none;font-weight:500;',
+            },
             `📎 ${label}`,
           ]
         },
         renderText({ node }) {
-          // Plain-text fallback is just the filename — `cid:` URIs
-          // mean nothing to a human reading the text/plain part.
-          return node.attrs.label ?? ''
+          const label = node.attrs.label ?? ''
+          return label ? `${label} (attached)` : ''
         },
         parseHTML() {
           return [
