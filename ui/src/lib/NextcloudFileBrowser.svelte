@@ -87,6 +87,28 @@
   }: Props = $props()
 
   let loading = $state(false)
+  /** Per-`${accountId}::${path}` cache of folder listings.
+   *  Re-visiting a folder during the same picker session
+   *  (very common while ticking files across folders) is now
+   *  synchronous — no blank flash, no IPC.  Stale data is
+   *  refreshed in the background so the user sees additions
+   *  / removals without having to manually reload. */
+  const FOLDER_CACHE = new Map<string, FileEntry[]>()
+  function folderCacheKey(p: string): string {
+    return `${accountId}::${p}`
+  }
+  function sortEntries(list: FileEntry[]) {
+    // Folders first, then files.  Within each group, natural
+    // sort so numbered names (1, 2, 9, 10, 11) come out the
+    // way humans expect — matches the NC web UI ordering.
+    list.sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
+      return a.name.localeCompare(b.name, undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      })
+    })
+  }
   // "+ New folder" inline input — hidden until the user clicks the
   // button. Driven by component state so we can validate and show
   // errors inline rather than via a blocking `prompt()`.
@@ -126,27 +148,37 @@
 
   async function loadFolder(path: string) {
     if (!accountId) return
-    loading = true
     error = ''
+    const cacheKey = folderCacheKey(path)
+    const cached = FOLDER_CACHE.get(cacheKey)
+    if (cached) {
+      // Cached — paint immediately, refresh in the background.
+      // Re-visiting a folder during the same picker session is
+      // synchronous, no blank flash and no spinner.  If the
+      // server-side listing has changed since the last visit
+      // the background refresh below silently updates entries.
+      entries = cached
+      currentPath = path
+      loading = false
+    } else {
+      // First visit — clear entries so the breadcrumb and the
+      // list stay in sync.  Showing the previous folder's
+      // entries under a new breadcrumb path is more confusing
+      // than a brief loading state.
+      entries = []
+      currentPath = path
+      loading = true
+    }
     try {
       const list = await invoke<FileEntry[]>('list_nextcloud_files', {
         ncId: accountId,
         path,
       })
-      // Folders first, then files. Within each group, natural sort so
-      // numbered names (1, 2, 9, 10, 11) come out the way humans expect
-      // — `numeric: true` reads runs of digits as whole numbers, and
-      // `sensitivity: 'base'` makes it case-insensitive. Matches the
-      // Nextcloud web UI ordering.
-      list.sort((a, b) => {
-        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
-        return a.name.localeCompare(b.name, undefined, {
-          numeric: true,
-          sensitivity: 'base',
-        })
-      })
-      entries = list
-      currentPath = path
+      sortEntries(list)
+      FOLDER_CACHE.set(cacheKey, list)
+      // Race-guard: the user may have navigated again before
+      // this refresh returned.
+      if (currentPath === path) entries = list
     } catch (e) {
       error = formatError(e) || 'Failed to list folder'
     } finally {
@@ -258,6 +290,9 @@
       })
       creatingFolder = false
       newFolderName = ''
+      // Invalidate the parent's cached listing so loadFolder
+      // re-fetches and shows the new directory.
+      FOLDER_CACHE.delete(folderCacheKey(currentPath))
       await loadFolder(currentPath)
       const folderPath = `${fullPath}/`
       const next = new Set(selected)
