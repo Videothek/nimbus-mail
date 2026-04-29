@@ -595,6 +595,19 @@
         renderHTML({ node, HTMLAttributes }) {
           const cid = node.attrs.id ?? ''
           const label = node.attrs.label ?? cid
+          // Pick a per-format emoji so the recipient sees a typed
+          // glyph (📕 PDF / 📘 DOC / 📗 XLS / 📙 PPT / 🗜️ ZIP) —
+          // pure-emoji rather than inline SVG because Gmail and
+          // Outlook strip <svg> from message bodies.
+          const ext = label.includes('.')
+            ? label.slice(label.lastIndexOf('.') + 1).toLowerCase()
+            : ''
+          let glyph = '🖇️'
+          if (ext === 'pdf') glyph = '📕'
+          else if (['doc', 'docx', 'odt', 'rtf'].includes(ext)) glyph = '📘'
+          else if (['xls', 'xlsx', 'ods', 'csv'].includes(ext)) glyph = '📗'
+          else if (['ppt', 'pptx', 'odp'].includes(ext)) glyph = '📙'
+          else if (['zip', '7z', 'rar', 'tar', 'gz', 'xz'].includes(ext)) glyph = '🗜️'
           return [
             'a',
             {
@@ -606,7 +619,7 @@
                 'background:rgba(245,158,11,0.15);color:#b45309;' +
                 'text-decoration:none;font-weight:500;',
             },
-            `🖇️ ${label}`,
+            `${glyph} ${label}`,
           ]
         },
         renderText({ node }) {
@@ -621,7 +634,7 @@
                 const href = (el as HTMLElement).getAttribute('href') ?? ''
                 const id = href.replace(/^cid:/, '')
                 const text = (el as HTMLElement).textContent ?? ''
-                const label = text.replace(/^🖇️\s*/, '') || id
+                const label = text.replace(/^(?:🖇️|📕|📘|📗|📙|🗜️|📎)\s*/, '') || id
                 return { id, label }
               },
             },

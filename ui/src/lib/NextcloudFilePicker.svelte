@@ -353,7 +353,7 @@
             ? 'Folders can be shared as a link, but not attached as bytes'
             : 'Download selected files and attach them to the email'}
         >
-          {downloading ? 'Downloading…' : '🖇️ Attach'}
+          {downloading ? 'Downloading…' : '📎 Attach'}
         </button>
       {/if}
     </footer>

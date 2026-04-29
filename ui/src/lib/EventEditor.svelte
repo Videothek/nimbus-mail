@@ -499,7 +499,7 @@
     emoji: string | null
   }
   type Suggestion =
-    | { kind: 'contact'; contact: Contact }
+    | { kind: 'contact'; contact: Contact; email: ContactEmail }
     | { kind: 'list'; list: MailingListSuggestion }
   let activeSuggestionRole = $state<Role | null>(null)
   let dropdownSuggestions = $state<Suggestion[]>([])
@@ -538,9 +538,20 @@
         const listHits = allLists
           .filter((m) => m.name.toLowerCase().includes(ql))
           .slice(0, SUGGESTION_LIMIT)
+        // Expand each contact into one suggestion per email so
+        // multi-address contacts (Home + Work) surface every
+        // address in the dropdown.
+        const contactSuggestions: Suggestion[] = []
+        for (const c of rows) {
+          const emails = c.email.filter((e) => e.value.length > 0)
+          if (emails.length === 0) continue
+          for (const e of emails) {
+            contactSuggestions.push({ kind: 'contact', contact: c, email: e })
+          }
+        }
         const merged: Suggestion[] = [
           ...listHits.map((m) => ({ kind: 'list' as const, list: m })),
-          ...rows.map((c) => ({ kind: 'contact' as const, contact: c })),
+          ...contactSuggestions,
         ]
         dropdownSuggestions = merged.slice(0, SUGGESTION_LIMIT)
         activeIndex = 0
@@ -576,7 +587,7 @@
   function pickSuggestion(role: Role, s: Suggestion) {
     if (s.kind === 'contact') {
       const c = s.contact
-      const addr = primaryEmail(c)
+      const addr = s.email.value
       clearSuggestionInput(role)
       if (!addr) return
       const exists = [...requiredAttendees, ...optionalAttendees, ...chairAttendees].some(
@@ -1485,7 +1496,7 @@
               class="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-700 rounded-md shadow-lg"
               role="listbox"
             >
-              {#each dropdownSuggestions as s, i (s.kind === 'contact' ? s.contact.id : s.list.id)}
+              {#each dropdownSuggestions as s, i (s.kind === 'contact' ? `${s.contact.id}::${s.email.value}` : s.list.id)}
                 <li
                   role="option"
                   aria-selected={i === activeIndex}
@@ -1516,7 +1527,8 @@
                     <div class="flex-1 min-w-0">
                       <p class="font-medium truncate">{c.display_name}</p>
                       <p class="text-xs text-surface-500 truncate">
-                        {primaryEmail(c)}
+                        {#if s.email.kind}<span class="uppercase tracking-wide mr-1 text-[10px]">{s.email.kind}</span>{/if}
+                        {s.email.value}
                         {#if c.organization}· {c.organization}{/if}
                       </p>
                     </div>

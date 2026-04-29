@@ -25,6 +25,7 @@
   } from './RichTextEditor.svelte'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
   import NextcloudFilePicker, { type ShareLink } from './NextcloudFilePicker.svelte'
+  import FileTypeIcon from './FileTypeIcon.svelte'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
   import { openComposeInStandaloneWindow } from './standaloneComposeWindow'
 
@@ -215,7 +216,7 @@
     {
       id: 'attach',
       label: 'Attach',
-      icon: '🖇️',
+      icon: '📎',
       content: attachTabContent,
     },
     {
@@ -1290,7 +1291,8 @@
         <div class="flex flex-wrap gap-2">
           {#each attachments as att, i (i)}
             <span class="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-surface-200 dark:bg-surface-800 text-xs">
-              <span>🖇️ {att.filename}</span>
+              <FileTypeIcon contentType={att.content_type ?? null} filename={att.filename} class="w-4 h-4" />
+              <span>{att.filename}</span>
               <button class="text-surface-500 hover:text-red-500" onclick={() => removeAttachment(i)} aria-label="Remove">✕</button>
             </span>
           {/each}
@@ -1319,7 +1321,7 @@
      reads as visually indistinguishable from a built-in. -->
 {#snippet attachTabContent()}
   <label class="rt-btn cursor-pointer" title="Attach a file from your computer">
-    <span class="rt-btn-icon">🖇️</span>
+    <span class="rt-btn-icon">📎</span>
     <span class="rt-btn-label">Attach</span>
     <input type="file" multiple class="hidden" onchange={onPickFiles} />
   </label>
