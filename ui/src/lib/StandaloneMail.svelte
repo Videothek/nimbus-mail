@@ -99,6 +99,11 @@
       console.warn('edit-draft-from-mail emit failed', e)
     })
   }
+  function onMailto(init: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string }) {
+    void emit('mailto-from-mail', { init }).catch((e) => {
+      console.warn('mailto-from-mail emit failed', e)
+    })
+  }
 
   function closeWindow() {
     void getCurrentWindow().close()
@@ -117,5 +122,6 @@
     onforward={onForward}
     oneditdraft={onEditDraft}
     onmessageremoved={closeWindow}
+    onmailto={onMailto}
   />
 </div>

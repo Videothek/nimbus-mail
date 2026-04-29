@@ -434,6 +434,7 @@
     let unlistenCompose: UnlistenFn | null = null
     let unlistenComposeFromMail: UnlistenFn | null = null
     let unlistenEditDraftFromMail: UnlistenFn | null = null
+    let unlistenMailtoFromMail: UnlistenFn | null = null
     ;(async () => {
       unlistenNewMail = await listen<NewMail>('new-mail', (e) =>
         handleNewMail(e.payload),
@@ -468,6 +469,9 @@
         'edit-draft-from-mail',
         (e) => onEditDraft(e.payload.mail),
       )
+      unlistenMailtoFromMail = await listen<{
+        init: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string }
+      }>('mailto-from-mail', (e) => openCompose(e.payload.init))
     })()
     return () => {
       unlistenNewMail?.()
@@ -476,6 +480,7 @@
       unlistenCompose?.()
       unlistenComposeFromMail?.()
       unlistenEditDraftFromMail?.()
+      unlistenMailtoFromMail?.()
       if (pendingSummaryTimer) clearTimeout(pendingSummaryTimer)
     }
   })
@@ -1134,6 +1139,7 @@
         isSentFolder={isSentFolder}
         oneditdraft={onEditDraft}
         onmessageremoved={onMessageRemoved}
+        onmailto={(init) => openCompose(init)}
       />
     {/if}
 
