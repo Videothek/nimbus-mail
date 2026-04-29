@@ -256,10 +256,8 @@ pub async fn create_room(
     tracing::debug!("POST {url} (room_name={room_name:?})");
     let http = client::build()?;
     let room_type = options.room_type.unwrap_or(ROOM_TYPE_GROUP).to_string();
-    let mut form: Vec<(&str, &str)> = vec![
-        ("roomType", room_type.as_str()),
-        ("roomName", room_name),
-    ];
+    let mut form: Vec<(&str, &str)> =
+        vec![("roomType", room_type.as_str()), ("roomName", room_name)];
     if let Some(t) = options.object_type {
         form.push(("objectType", t));
     }
@@ -466,10 +464,7 @@ async fn ocs_text(resp: reqwest::Response, ctx: &str) -> Result<String, NimbusEr
 /// meaningful error. Mirrors `shares::parse_share_response` — meta is
 /// inspected first because on OCS-level failures `data` may be `[]`,
 /// which would never deserialize into a payload struct.
-fn parse_ocs_data<T: serde::de::DeserializeOwned>(
-    body: &str,
-    ctx: &str,
-) -> Result<T, NimbusError> {
+fn parse_ocs_data<T: serde::de::DeserializeOwned>(body: &str, ctx: &str) -> Result<T, NimbusError> {
     let raw: OcsRaw = serde_json::from_str(body)
         .map_err(|e| NimbusError::Protocol(format!("{ctx} bad JSON: {e}")))?;
 
@@ -534,7 +529,9 @@ mod tests {
         assert_eq!(r0.unread_messages, 4);
         assert!(r0.unread_mention);
 
-        let mapped = rooms[0].clone_for_test().into_room("https://cloud.example.com");
+        let mapped = rooms[0]
+            .clone_for_test()
+            .into_room("https://cloud.example.com");
         assert_eq!(mapped.web_url, "https://cloud.example.com/call/abc123");
         assert_eq!(mapped.room_type, RoomType::Group);
     }
@@ -580,7 +577,10 @@ mod tests {
         match err {
             NimbusError::Nextcloud(msg) => {
                 assert!(msg.contains("403"), "expected status 403 in error: {msg}");
-                assert!(msg.contains("Permission denied"), "expected server msg: {msg}");
+                assert!(
+                    msg.contains("Permission denied"),
+                    "expected server msg: {msg}"
+                );
             }
             other => panic!("expected Nextcloud error, got {other:?}"),
         }

@@ -169,13 +169,15 @@ pub async fn create_public_share(
         ("permissions", &permissions_s),
     ];
     if let Some(pw) = password
-        && !pw.is_empty() {
-            form.push(("password", pw));
-        }
+        && !pw.is_empty()
+    {
+        form.push(("password", pw));
+    }
     if let Some(lbl) = label
-        && !lbl.is_empty() {
-            form.push(("label", lbl));
-        }
+        && !lbl.is_empty()
+    {
+        form.push(("label", lbl));
+    }
 
     let resp = http
         .post(&url)
@@ -251,12 +253,9 @@ fn friendly_share_error(raw: &str) -> String {
     // ("Password needs to be at least N characters long.",
     // "Password is too short", "The password is too short.") so we
     // pull the digits when we can and fall back to a generic floor.
-    if lower.contains("password") && (lower.contains("short") || lower.contains("at least"))
-    {
+    if lower.contains("password") && (lower.contains("short") || lower.contains("at least")) {
         if let Some(min_len) = first_number(raw) {
-            return format!(
-                "Password is too short. Choose at least {min_len} characters."
-            );
+            return format!("Password is too short. Choose at least {min_len} characters.");
         }
         return "Password is too short. Try a longer one.".to_string();
     }
@@ -377,9 +376,8 @@ pub async fn update_share_label(
         return Err(NimbusError::Other("share_id is empty".into()));
     }
     let server = client::normalize_server_url(server_url);
-    let url = format!(
-        "{server}/ocs/v2.php/apps/files_sharing/api/v1/shares/{share_id}?format=json"
-    );
+    let url =
+        format!("{server}/ocs/v2.php/apps/files_sharing/api/v1/shares/{share_id}?format=json");
 
     tracing::debug!("PUT {url} for share {share_id} (label len {})", label.len());
 
