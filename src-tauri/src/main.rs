@@ -6629,6 +6629,36 @@ async fn background_sync_loop(app: AppHandle) {
 
 // ── App-settings commands ──────────────────────────────────────
 
+/// List every font family installed on the user's system.
+/// Backs the compose toolbar's font picker (#142) — the curated
+/// stacks are still the default, this just lets the user reach
+/// for whatever else is on their machine.
+///
+/// Runs on a blocking thread because font-kit walks the OS font
+/// catalogue synchronously (DirectWrite / Core Text / fontconfig
+/// on Win/Mac/Linux respectively).  Hidden families (those whose
+/// name starts with `.`) are filtered out; the list is sorted
+/// case-insensitively and de-duplicated so the dropdown reads
+/// alphabetically.
+#[tauri::command]
+async fn list_system_fonts() -> Result<Vec<String>, NimbusError> {
+    tokio::task::spawn_blocking(|| {
+        let source = font_kit::source::SystemSource::new();
+        let families = source
+            .all_families()
+            .map_err(|e| NimbusError::Other(format!("font enumeration: {e}")))?;
+        let mut out: Vec<String> = families
+            .into_iter()
+            .filter(|f| !f.starts_with('.') && !f.trim().is_empty())
+            .collect();
+        out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        out.dedup();
+        Ok(out)
+    })
+    .await
+    .map_err(|e| NimbusError::Other(format!("font enumeration join: {e}")))?
+}
+
 #[tauri::command]
 async fn get_app_settings(settings: State<'_, SharedSettings>) -> Result<AppSettings, NimbusError> {
     Ok(settings.read().await.clone())
@@ -7151,6 +7181,7 @@ fn main() {
             is_invite_cancelled,
             // Issue #16: tray + notifications + preferences
             get_app_settings,
+            list_system_fonts,
             update_app_settings,
             import_custom_theme,
             remove_custom_theme,
