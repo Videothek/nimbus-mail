@@ -61,7 +61,15 @@
    *  which case selecting it expands every member into the
    *  field rather than inserting a single address. */
   type Suggestion =
-    | { kind: 'contact'; contact: Contact }
+    | {
+        kind: 'contact'
+        contact: Contact
+        /** Specific email of the contact this row represents.
+         *  Each contact expands into one suggestion per email
+         *  address so users can pick a Home vs Work address
+         *  directly from the dropdown. */
+        email: { kind: string; value: string }
+      }
     | { kind: 'list'; list: MailingListSuggestion }
   interface MailingListSuggestion {
     id: string
@@ -129,9 +137,22 @@
       // almost always intent to address the bundle), then
       // individual contacts.  Matches Outlook / Apple Mail's
       // ranking.
+      // Expand each contact into one suggestion per email
+      // address so a contact with both home and work emails
+      // shows up twice — the user can pick the address they
+      // want without first selecting the contact and then
+      // editing.
+      const contactSuggestions: Suggestion[] = []
+      for (const c of rows) {
+        const emails = c.email.filter((e) => e.value.length > 0)
+        if (emails.length === 0) continue
+        for (const e of emails) {
+          contactSuggestions.push({ kind: 'contact', contact: c, email: e })
+        }
+      }
       const merged: Suggestion[] = [
         ...listHits.map((m) => ({ kind: 'list' as const, list: m })),
-        ...rows.map((c) => ({ kind: 'contact' as const, contact: c })),
+        ...contactSuggestions,
       ]
       suggestions = merged.slice(0, LIMIT)
       activeIndex = 0
@@ -151,32 +172,24 @@
     debounceTimer = window.setTimeout(() => runSearch(token), DEBOUNCE_MS)
   }
 
-  /** Pick the first non-empty email address. Each entry now
-      carries a kind hint (Home / Work / Other from vCard
-      `EMAIL;TYPE=…`); the autocomplete only needs the value. */
-  function primaryEmail(c: Contact): string {
-    return c.email.find((e) => e.value.length > 0)?.value ?? ''
-  }
-
   /**
-   * Format a contact as an RFC-style address. We prefer
-   * `"Display Name" <addr@x>` when a display name is present so the
-   * SMTP send path gets a friendly From header; bare address if not.
+   * Format a contact + chosen email into an RFC-style address.
+   * Prefer `"Display Name" <addr@x>` when a display name is
+   * present so the SMTP send path gets a friendly From header;
+   * bare address if not.
    */
-  function formatAddress(c: Contact): string {
-    const addr = primaryEmail(c)
+  function formatAddress(c: Contact, addr: string): string {
     if (!addr) return ''
     if (c.display_name && c.display_name !== addr) {
-      // Escape embedded quotes; most names don't have them but be safe.
       const safe = c.display_name.replace(/"/g, '\\"')
       return `"${safe}" <${addr}>`
     }
     return addr
   }
 
-  function pickContact(c: Contact) {
+  function pickContact(c: Contact, email: string) {
     const { prefix } = currentToken(value)
-    const formatted = formatAddress(c)
+    const formatted = formatAddress(c, email)
     if (!formatted) return
     // Insert the selected address and a trailing `, ` so the user can
     // keep typing the next one without extra keystrokes.
@@ -211,7 +224,7 @@
   }
 
   function pick(s: Suggestion) {
-    if (s.kind === 'contact') pickContact(s.contact)
+    if (s.kind === 'contact') pickContact(s.contact, s.email.value)
     else pickList(s.list)
   }
 
@@ -296,7 +309,7 @@
              dark:border-surface-700 rounded-md shadow-lg"
       role="listbox"
     >
-      {#each suggestions as s, i (s.kind === 'contact' ? s.contact.id : s.list.id)}
+      {#each suggestions as s, i (s.kind === 'contact' ? `${s.contact.id}::${s.email.value}` : s.list.id)}
         <li
           role="option"
           aria-selected={i === activeIndex}
@@ -324,7 +337,8 @@
             <div class="flex-1 min-w-0">
               <p class="font-medium truncate">{c.display_name}</p>
               <p class="text-xs text-surface-500 truncate">
-                {primaryEmail(c)}
+                {#if s.email.kind}<span class="uppercase tracking-wide mr-1 text-[10px]">{s.email.kind}</span>{/if}
+                {s.email.value}
                 {#if c.organization}· {c.organization}{/if}
               </p>
             </div>
