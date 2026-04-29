@@ -425,6 +425,11 @@
     dayKey: string
     startMinute: number
     currentMinute: number
+    /** Event id the drag started on top of, if any.  Lets a
+     *  no-movement mouseup fall back to "open this event"
+     *  while still allowing real drags that originate inside
+     *  an event block to create a new draft. */
+    startEventId: string | null
   }
   let drag = $state<DragState | null>(null)
 
@@ -1016,17 +1021,21 @@
   }
 
   function onDayMouseDown(ev: MouseEvent, bucket: WeekBucket) {
-    // Left-click on empty space only. If the user clicked an existing
-    // event block, that block's own click handler runs and stops
-    // propagation — so a missed click here always means "blank area".
     if (ev.button !== 0) return
     const target = ev.currentTarget as HTMLElement
     const rect = target.getBoundingClientRect()
     const minute = pxToMinuteSnapped(ev.clientY - rect.top)
+    // If the press lands inside an event block we still start a
+    // drag — that lets the user sweep across an existing event
+    // to create a new one in the same slot.  The event id is
+    // remembered so a no-movement mouseup falls back to "open
+    // this event" instead of creating a one-hour overlay.
+    const evEl = (ev.target as HTMLElement).closest('[data-event-id]') as HTMLElement | null
     drag = {
       dayKey: bucket.dayKey,
       startMinute: minute,
       currentMinute: minute,
+      startEventId: evEl?.dataset.eventId ?? null,
     }
   }
 
@@ -1044,12 +1053,23 @@
     if (!drag || drag.dayKey !== bucket.dayKey) return
     const a = Math.min(drag.startMinute, drag.currentMinute)
     const b = Math.max(drag.startMinute, drag.currentMinute)
-    // Treat a bare click (no movement) as a 1-hour event starting at
-    // the click point. A real drag uses whatever the user swept,
-    // floored to a 15-minute minimum so a tiny accidental drag still
-    // produces a clickable block in the editor.
+    const moved = b - a >= 15
+    // Click (no movement) on top of an existing event opens it
+    // for editing — preserves the previous "click an event to
+    // open it" affordance now that the event block no longer
+    // swallows mousedown.
+    if (!moved && drag.startEventId) {
+      const id = drag.startEventId
+      drag = null
+      const ev = events.find((e) => e.id === id)
+      if (ev) openEditor(ev)
+      return
+    }
+    // Otherwise: bare click on empty space → 1-hour event,
+    // real drag → swept range.  Either way we open the editor
+    // with a fresh draft.
     const startMinute = a
-    const endMinute = b - a < 15 ? a + 60 : b
+    const endMinute = moved ? b : a + 60
     const start = new Date(bucket.date)
     start.setHours(0, startMinute, 0, 0)
     const end = new Date(bucket.date)
@@ -1447,14 +1467,13 @@
                   {@const meetingUrl = extractMeetingUrl(p.event)}
                   {@const showJoin = !!meetingUrl && inJoinWindow(p.event)}
                   <div
+                    data-event-id={p.event.id}
                     class="ev-block ev-timed absolute rounded-md text-[11px] overflow-hidden px-1.5 py-1 cursor-pointer leading-tight {userTentative(p.event) ? 'ev-tentative' : ''} {userDeclined(p.event) ? 'ev-declined' : ''}"
                     style="--ev-color: {eventColor(p.event)}; top: {p.topPx}px; height: {p.heightPx}px; left: calc({(p.lane / p.laneCount) * 100}% + 2px); width: calc({(1 / p.laneCount) * 100}% - 4px);"
                     title={`${p.event.summary || '(no title)'} — ${fmtTime(p.event.start)}–${fmtTime(p.event.end)}${p.event.location ? ` @ ${p.event.location}` : ''}`}
-                    onmousedown={(ev) => ev.stopPropagation()}
-                    onclick={(ev) => { ev.stopPropagation(); openEditor(p.event) }}
                     role="button"
                     tabindex="0"
-                    onkeydown={(ev) => { if (ev.key === 'Enter') openEditor(p.event) }}
+                    onkeydown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEditor(p.event) } }}
                   >
                     <div
                       class="font-medium wrap-break-word"
