@@ -762,6 +762,32 @@ const MIGRATIONS: &[&str] = &[
         capabilities_json  TEXT
     );
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v21 → v22: optimistic-action tombstone column (#174).
+    //
+    // The mail-triage IPCs (`delete_message`, `move_message`,
+    // `move_messages`) used to await the IMAP roundtrip before
+    // returning, so the UI couldn't drop the row until the server
+    // confirmed.  We now want optimistic UI: the row disappears
+    // immediately and the IMAP work runs in the background.
+    //
+    // To keep the optimistic state consistent across folder
+    // switches (where a fresh `get_envelopes` would otherwise
+    // resurrect the row from the cache), each in-flight action
+    // marks the cache row with a `pending_action` string before
+    // the IMAP call.  Envelope-list queries filter out rows
+    // where `pending_action IS NOT NULL`.  On IMAP success the
+    // existing post-action cleanup already drops or moves the
+    // row; on failure the IPC clears `pending_action` so the
+    // row reappears in the next list pull.
+    //
+    // Values: `'delete'` for delete/move-to-trash, `'move:<dest>'`
+    // for explicit folder moves.  Rolling our own enum-as-text
+    // keeps the migration trivial — no new table, no FK pain.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    ALTER TABLE messages ADD COLUMN pending_action TEXT;
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

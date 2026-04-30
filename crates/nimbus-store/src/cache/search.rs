@@ -142,7 +142,8 @@ impl Cache {
                    ON b.account_id = m.account_id
                    AND b.folder = m.folder
                    AND b.uid = m.uid
-                 WHERE search_index MATCH ?",
+                 WHERE search_index MATCH ?
+                   AND m.pending_action IS NULL",
             );
             params.push(Box::new(parsed.match_expression()));
         } else {
@@ -153,7 +154,8 @@ impl Cache {
                    ON b.account_id = m.account_id
                    AND b.folder = m.folder
                    AND b.uid = m.uid
-                 WHERE 1 = 1",
+                 WHERE 1 = 1
+                   AND m.pending_action IS NULL",
             );
         }
 

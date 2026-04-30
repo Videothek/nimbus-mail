@@ -5243,26 +5243,58 @@ async fn delete_message(
     };
 
     let password = credentials::get_imap_password(&account.id)?;
-    let mut client = ImapClient::connect(
+
+    // Optimistic-UI tombstone (#174): mark the cache row as
+    // pending-delete BEFORE the IMAP roundtrip so a folder-switch
+    // mid-flight doesn't resurrect the row.  The mark survives an
+    // app crash too; the next launch's reconciler will drop the
+    // row if the server confirmed the delete, or a manual refresh
+    // from the lock screen / menu will re-run the IMAP path.
+    if let Err(e) = cache.mark_message_pending(&account_id, &folder, uid, "delete") {
+        tracing::warn!("mark_message_pending(delete) failed: {e}");
+    }
+
+    let connect_result = ImapClient::connect(
         &account.imap_host,
         account.imap_port,
         &account.email,
         &password,
         &account.trusted_certs,
     )
-    .await?;
+    .await;
+    let mut client = match connect_result {
+        Ok(c) => c,
+        Err(e) => {
+            // IMAP wasn't reachable at all — un-tombstone the row
+            // so the next folder pull restores it.
+            if let Err(c) = cache.clear_message_pending(&account_id, &folder, uid) {
+                tracing::warn!("clear_message_pending after connect failure: {c}");
+            }
+            return Err(e.into());
+        }
+    };
     let result = match destination.as_deref() {
         Some(trash) => client.move_message(&folder, uid, trash).await,
         None => client.delete_message(&folder, uid).await,
     };
     let _ = client.logout().await;
 
+    if result.is_err() && !should_clean_cache_for_delete(&result) {
+        // True IMAP failure (not the stale-UID case the cache-
+        // cleanup heuristic absorbs).  Drop the tombstone so the
+        // row reappears in the user's next folder pull.
+        if let Err(c) = cache.clear_message_pending(&account_id, &folder, uid) {
+            tracing::warn!("clear_message_pending after IMAP failure: {c}");
+        }
+    }
+
     // Clear the cache row whether the delete succeeded OR failed with
     // "UID not on the server" — in the success case the cache would
     // otherwise hang onto a ghost row (incremental envelope fetch
     // never re-examines existing UIDs), and in the failure case the
     // reason we hit that error *is* a stale cache row, so dropping it
-    // unblocks the user's next refresh.
+    // unblocks the user's next refresh.  `remove_envelope` clears the
+    // pending tombstone implicitly by deleting the whole row.
     if should_clean_cache_for_delete(&result)
         && let Err(e) = cache.remove_envelope(&account_id, &folder, uid)
     {
@@ -5356,14 +5388,30 @@ async fn archive_message(
     }
 
     let password = credentials::get_imap_password(&account.id)?;
-    let mut client = ImapClient::connect(
+
+    // Optimistic-UI tombstone (#174) — see `delete_message`.
+    let pending = format!("move:{archive}");
+    if let Err(e) = cache.mark_message_pending(&account_id, &folder, uid, &pending) {
+        tracing::warn!("mark_message_pending(archive) failed: {e}");
+    }
+
+    let connect_result = ImapClient::connect(
         &account.imap_host,
         account.imap_port,
         &account.email,
         &password,
         &account.trusted_certs,
     )
-    .await?;
+    .await;
+    let mut client = match connect_result {
+        Ok(c) => c,
+        Err(e) => {
+            if let Err(c) = cache.clear_message_pending(&account_id, &folder, uid) {
+                tracing::warn!("clear_message_pending after archive connect failure: {c}");
+            }
+            return Err(e.into());
+        }
+    };
     let result = client.move_message(&folder, uid, &archive).await;
     let _ = client.logout().await;
 
@@ -5374,6 +5422,8 @@ async fn archive_message(
         if let Err(e) = cache.remove_envelope(&account_id, &folder, uid) {
             tracing::warn!("remove_envelope after archive_message failed: {e}");
         }
+    } else if let Err(c) = cache.clear_message_pending(&account_id, &folder, uid) {
+        tracing::warn!("clear_message_pending after archive failure: {c}");
     }
 
     result
@@ -5410,14 +5460,30 @@ async fn move_message(
     }
 
     let password = credentials::get_imap_password(&account.id)?;
-    let mut client = ImapClient::connect(
+
+    // Optimistic-UI tombstone (#174) — see `delete_message`.
+    let pending = format!("move:{dest_folder}");
+    if let Err(e) = cache.mark_message_pending(&account_id, &folder, uid, &pending) {
+        tracing::warn!("mark_message_pending(move) failed: {e}");
+    }
+
+    let connect_result = ImapClient::connect(
         &account.imap_host,
         account.imap_port,
         &account.email,
         &password,
         &account.trusted_certs,
     )
-    .await?;
+    .await;
+    let mut client = match connect_result {
+        Ok(c) => c,
+        Err(e) => {
+            if let Err(c) = cache.clear_message_pending(&account_id, &folder, uid) {
+                tracing::warn!("clear_message_pending after connect failure: {c}");
+            }
+            return Err(e.into());
+        }
+    };
     let result = client.move_message(&folder, uid, &dest_folder).await;
     let _ = client.logout().await;
 
@@ -5428,6 +5494,8 @@ async fn move_message(
         if let Err(e) = cache.remove_envelope(&account_id, &folder, uid) {
             tracing::warn!("remove_envelope after move_message failed: {e}");
         }
+    } else if let Err(c) = cache.clear_message_pending(&account_id, &folder, uid) {
+        tracing::warn!("clear_message_pending after move failure: {c}");
     }
 
     result
@@ -5470,20 +5538,52 @@ async fn move_messages(
     }
 
     let password = credentials::get_imap_password(&account.id)?;
-    let mut client = ImapClient::connect(
+
+    // Optimistic-UI tombstones (#174) — see `delete_message` for
+    // the lifecycle.  Marking each UID before the IMAP roundtrip
+    // means a folder switch mid-batch won't briefly show the
+    // moved rows in their old folder.
+    let pending = format!("move:{dest_folder}");
+    for uid in &uids {
+        if let Err(e) = cache.mark_message_pending(&account_id, &folder, *uid, &pending) {
+            tracing::warn!("mark_message_pending(move-batch) failed: {e}");
+        }
+    }
+
+    let connect_result = ImapClient::connect(
         &account.imap_host,
         account.imap_port,
         &account.email,
         &password,
         &account.trusted_certs,
     )
-    .await?;
+    .await;
+    let mut client = match connect_result {
+        Ok(c) => c,
+        Err(e) => {
+            for uid in &uids {
+                if let Err(c) = cache.clear_message_pending(&account_id, &folder, *uid) {
+                    tracing::warn!("clear_message_pending after batch connect failure: {c}");
+                }
+            }
+            return Err(e.into());
+        }
+    };
     let result = client
         .move_messages_batch(&folder, &uids, &dest_folder)
         .await;
     let _ = client.logout().await;
 
-    result?;
+    if let Err(e) = result {
+        // IMAP failed — un-tombstone every UID so the next list
+        // pull restores them.
+        for uid in &uids {
+            if let Err(c) = cache.clear_message_pending(&account_id, &folder, *uid) {
+                tracing::warn!("clear_message_pending after batch failure: {c}");
+            }
+        }
+        return Err(e);
+    }
 
     // Drop the source-folder envelope rows for each successful UID so
     // the next incremental `fetch_envelopes` doesn't have to.  The
