@@ -1221,7 +1221,7 @@
             onclick={() => email && oncreatetalk?.(email)}
             title="Create a Nextcloud Talk room with the participants of this thread"
             aria-label="Create Talk room"
-          ><Icon name="meetings" size={16} /></button>
+          ><Icon name="respond-with-meeting" size={16} /></button>
         {/if}
         {#if onsavenote}
           <button
