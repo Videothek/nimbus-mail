@@ -1213,6 +1213,19 @@
     }
   }
 
+  /** Pull a `/call/<token>` token out of an arbitrary string.
+      Matches both pretty (`/call/abc`) and ugly (`/index.php/call/abc`)
+      URLs — Talk uses one or the other depending on the server's
+      `htaccess` setup.  Returns null when nothing looks like a Talk
+      URL, or when the token wouldn't be a valid identifier
+      (length-bounded so a stray `/call/` followed by junk doesn't
+      get treated as a real token). */
+  function extractTalkToken(s: string | null | undefined): string | null {
+    if (!s) return null
+    const m = s.match(/\/call\/([A-Za-z0-9]{4,32})\b/)
+    return m ? m[1] : null
+  }
+
   async function remove() {
     if (mode !== 'edit' || !event) return
     if (!confirm(`Delete "${event.summary || '(no title)'}"?`)) return
@@ -1220,6 +1233,33 @@
     error = ''
     try {
       await invoke('delete_calendar_event', { eventId: event.id })
+
+      // Best-effort tear down the associated Talk room (#172).
+      // Nextcloud doesn't auto-delete rooms attached to a deleted
+      // event, so without this the user accumulates dangling
+      // meeting rooms in their Talk list.  We look for a `/call/`
+      // token in LOCATION first (where Nimbus + NC Calendar both
+      // write the join URL), falling back to URL / DESCRIPTION
+      // for events created elsewhere.  A 404 (room already gone)
+      // or 403 (not the owner) is normal — log + move on.
+      const token =
+        extractTalkToken(event.location) ??
+        extractTalkToken(event.url) ??
+        extractTalkToken(event.description)
+      if (token) {
+        const cal = calendars.find((c) => c.id === calendarId)
+        if (cal) {
+          try {
+            await invoke('delete_talk_room', {
+              ncId: cal.nextcloud_account_id,
+              roomToken: token,
+            })
+          } catch (e) {
+            console.warn('delete_talk_room (event remove cleanup) failed:', e)
+          }
+        }
+      }
+
       onsaved()
       onclose()
     } catch (e) {
