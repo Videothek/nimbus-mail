@@ -739,6 +739,29 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_attachment_previews_msg
         ON attachment_previews(account_id, folder, uid);
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v20 → v21: move Nextcloud connections from
+    // `<config-dir>/nimbus-mail/nextcloud_accounts.json` into the
+    // encrypted cache (#155).  Mirrors what #60 did for the mail
+    // accounts table.
+    //
+    // - `id` is the stable UUID also used as the keychain account
+    //   key for the app password.  Keychain entry is unchanged.
+    // - `capabilities_json` is the `NextcloudCapabilities` struct
+    //   serialised as JSON.  We never query into it from SQL —
+    //   the UI deserialises the whole thing — so a single TEXT
+    //   column is simpler than splitting each cap into its own
+    //   column and re-serialising.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    CREATE TABLE IF NOT EXISTS nextcloud_accounts (
+        id                 TEXT PRIMARY KEY,
+        server_url         TEXT NOT NULL,
+        username           TEXT NOT NULL,
+        display_name       TEXT,
+        capabilities_json  TEXT
+    );
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

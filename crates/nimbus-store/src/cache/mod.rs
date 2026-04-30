@@ -9,10 +9,6 @@
 //!
 //! # What does not live here
 //!
-//! - **Accounts**: still in `accounts.json`. Moving them into the DB is a
-//!   future exercise — worth doing once we need foreign keys from emails
-//!   to accounts or transactional account edits. See the README for the
-//!   motivation.
 //! - **Passwords**: always in the OS keychain (`credentials.rs`). Never
 //!   the DB, never disk.
 //!
