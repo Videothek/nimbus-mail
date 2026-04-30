@@ -16,7 +16,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
-  import Icon from './Icon.svelte'
+  import Icon, { type IconName } from './Icon.svelte'
 
   /** Mirrors the Rust `EventAttendee` struct.  Optional fields
    *  are `null` over IPC; we treat them as missing. */
@@ -424,15 +424,17 @@
       : null,
   )
 
-  /** Emoji indicator for an attendee's PARTSTAT — matches the
-   *  same alphabet used by the RSVP dropdown in EventEditor so
-   *  the visual language carries across the app. */
-  function attendeeStatusEmoji(a: InviteAttendee): string {
+  /** Stroke-icon + colour token pair for an attendee's PARTSTAT.
+   *  Matches the alphabet the RSVP dropdown in EventEditor uses
+   *  so the visual language carries across the app — and lets
+   *  callers drop the `<Icon>` inside a `class="text-…"` wrapper
+   *  to colour it without having to repeat the mapping. */
+  function attendeeStatusGlyph(a: InviteAttendee): { name: IconName; colorClass: string } {
     const s = effectiveStatus(a)
-    if (s === 'ACCEPTED') return '✅'
-    if (s === 'DECLINED') return '❌'
-    if (s === 'TENTATIVE') return '❓'
-    return '❔'
+    if (s === 'ACCEPTED') return { name: 'rsvp-accept', colorClass: 'text-success-500' }
+    if (s === 'DECLINED') return { name: 'rsvp-decline', colorClass: 'text-error-500' }
+    if (s === 'TENTATIVE') return { name: 'rsvp-tentative', colorClass: 'text-warning-500' }
+    return { name: 'help', colorClass: 'text-surface-500' }
   }
 
   // Fetch calendars + the user's default-calendar setting on
@@ -678,9 +680,18 @@
 
   /** Pre-reply (or "change to") imperative label for each option. */
   function actionLabel(p: Partstat): string {
-    if (p === 'ACCEPTED') return '✓ Accept'
-    if (p === 'DECLINED') return '✗ Decline'
-    return '? Tentative'
+    if (p === 'ACCEPTED') return 'Accept'
+    if (p === 'DECLINED') return 'Decline'
+    return 'Tentative'
+  }
+
+  /** Same RSVP icon family the chip render uses, indexed by
+   *  PARTSTAT.  Pulled out so the post-reply "Change to …"
+   *  buttons share the visual language with everything else. */
+  function partstatGlyph(p: Partstat): { name: IconName; colorClass: string } {
+    if (p === 'ACCEPTED') return { name: 'rsvp-accept', colorClass: 'text-success-500' }
+    if (p === 'DECLINED') return { name: 'rsvp-decline', colorClass: 'text-error-500' }
+    return { name: 'rsvp-tentative', colorClass: 'text-warning-500' }
   }
 
   /** Format the meeting slot the user is being asked to commit to.
@@ -801,7 +812,9 @@
               : 'border border-primary-500/40 bg-primary-500/5'}">
   <div class="flex items-start justify-between gap-3 mb-2">
     <div class="flex items-center gap-2">
-      <span class="text-lg">{isCancel ? '🚫' : '📅'}</span>
+      <span class={isCancel ? 'text-error-500' : 'text-primary-500'}>
+        <Icon name={isCancel ? 'rsvp-canceled' : 'calendar'} size={18} />
+      </span>
       <span class="font-semibold {isCancel ? 'line-through' : ''}">
         {invite.summary || '(untitled meeting)'}
       </span>
@@ -918,44 +931,58 @@
     <div class="flex flex-wrap items-center gap-2 mt-2">
       {#each (['ACCEPTED', 'TENTATIVE', 'DECLINED'] as Partstat[]) as p}
         {@const isCurrent = respondedAs === p}
+        {@const g = partstatGlyph(p)}
         <button
-          class="btn btn-sm disabled:opacity-50 {isCurrent
+          class="btn btn-sm disabled:opacity-50 inline-flex items-center gap-1.5 {isCurrent
             ? 'border-2 border-primary-500 text-primary-500 bg-transparent hover:bg-primary-500/5 font-semibold'
             : 'preset-outlined-surface-500'}"
           disabled={busy !== null}
           onclick={() => void rsvp(p)}
           title={isCurrent ? 'Your current response' : `Change response to ${verbFor(p)}`}
         >
-          {busy === p
-            ? 'Sending…'
-            : isCurrent
-              ? verbFor(p)
-              : `Change to ${actionLabel(p)}`}
+          {#if busy === p}
+            Sending…
+          {:else}
+            <span class={g.colorClass}><Icon name={g.name} size={14} /></span>
+            {isCurrent ? verbFor(p) : `Change to ${actionLabel(p)}`}
+          {/if}
         </button>
       {/each}
     </div>
   {:else}
     <div class="flex flex-wrap items-center gap-2 mt-3">
       <button
-        class="btn btn-sm preset-filled-primary-500 disabled:opacity-50"
+        class="btn btn-sm preset-filled-primary-500 disabled:opacity-50 inline-flex items-center gap-1.5"
         disabled={busy !== null}
         onclick={() => void rsvp('ACCEPTED')}
       >
-        {busy === 'ACCEPTED' ? 'Sending…' : '✓ Accept'}
+        {#if busy === 'ACCEPTED'}
+          Sending…
+        {:else}
+          <Icon name="rsvp-accept" size={14} /> Accept
+        {/if}
       </button>
       <button
-        class="btn btn-sm preset-outlined-surface-500 disabled:opacity-50"
+        class="btn btn-sm preset-outlined-surface-500 disabled:opacity-50 inline-flex items-center gap-1.5"
         disabled={busy !== null}
         onclick={() => void rsvp('TENTATIVE')}
       >
-        {busy === 'TENTATIVE' ? 'Sending…' : '? Tentative'}
+        {#if busy === 'TENTATIVE'}
+          Sending…
+        {:else}
+          <span class="text-warning-500"><Icon name="rsvp-tentative" size={14} /></span> Tentative
+        {/if}
       </button>
       <button
-        class="btn btn-sm preset-outlined-surface-500 disabled:opacity-50"
+        class="btn btn-sm preset-outlined-surface-500 disabled:opacity-50 inline-flex items-center gap-1.5"
         disabled={busy !== null}
         onclick={() => void rsvp('DECLINED')}
       >
-        {busy === 'DECLINED' ? 'Sending…' : '✗ Decline'}
+        {#if busy === 'DECLINED'}
+          Sending…
+        {:else}
+          <span class="text-error-500"><Icon name="rsvp-decline" size={14} /></span> Decline
+        {/if}
       </button>
     </div>
   {/if}
@@ -988,11 +1015,12 @@
           </div>
           <div class="flex flex-wrap gap-1.5">
             {#each invite.attendees as a (a.email)}
+              {@const g = attendeeStatusGlyph(a)}
               <span
                 class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs bg-surface-200 dark:bg-surface-700"
                 title={a.email + ` — ${effectiveStatus(a).toLowerCase()}`}
               >
-                <span class="text-[11px] leading-none shrink-0" aria-hidden="true">{attendeeStatusEmoji(a)}</span>
+                <span class="shrink-0 {g.colorClass}" aria-hidden="true"><Icon name={g.name} size={12} /></span>
                 <span class="truncate max-w-[180px]">{attendeeName(a)}</span>
               </span>
             {/each}
