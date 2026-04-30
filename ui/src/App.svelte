@@ -681,11 +681,20 @@
     selectedUid = null
   }
 
-  // MailView fires this after it successfully marks a message \Seen on
-  // the server. Bumping the token makes MailList + Sidebar re-fetch so
-  // the bold "unread" styling and the folder badge update immediately.
-  function onMessageRead(_uid: number) {
-    refreshToken++
+  // MailView fires this after it successfully marks a message \Seen
+  // on the server.  Used to bump `refreshToken` to force a full
+  // MailList reload, but that races against the user's next click —
+  // the `fetch_envelopes` IMAP call is in flight when the next
+  // optimistic action runs, then lands and overwrites the local
+  // list (#174 follow-up).  Flip the matching envelope's flag in
+  // the bound list directly instead; the cache row was already
+  // updated by the backend, and the per-account unread badge is
+  // driven by its own `unread-count-by-account-updated` event.
+  function onMessageRead(uid: number) {
+    const idx = mailListEnvelopes.findIndex((e) => e.uid === uid)
+    if (idx >= 0 && !mailListEnvelopes[idx].is_read) {
+      mailListEnvelopes[idx].is_read = true
+    }
   }
 
   /** The currently shown message has been archived or deleted on the
@@ -729,7 +738,14 @@
       selectedMessageAccountId = nextAccountId
     }
 
-    refreshToken++
+    // Deliberately *not* bumping `refreshToken` here (#174 follow-
+    // up).  After the optimistic flow Phase 1 already dropped the
+    // row from MailList's local list and Phase 2 tombstoned the
+    // cache row, so any reload would just race a `fetch_envelopes`
+    // IMAP call against the next click — making sequential deletes
+    // feel laggy because the second click hits a list mid-network-
+    // refresh.  Background sync's `new-mail` event drives the
+    // genuine refresh path; this one's purely local.
   }
 
   // Open the Compose modal. Called with no arg for a blank new message,
