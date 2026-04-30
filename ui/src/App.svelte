@@ -34,7 +34,7 @@
   import FilesView from './lib/FilesView.svelte'
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
-  import CreateTalkRoomModal, { type TalkRoom } from './lib/CreateTalkRoomModal.svelte'
+  import EventEditor, { type SavedEvent } from './lib/EventEditor.svelte'
   import SearchBar, {
     type SearchScope,
     type SearchFilters,
@@ -1003,20 +1003,33 @@
     })
   }
 
-  // ── "Create Talk room from this thread" flow ────────────────
-  // Triggered from MailView's 💬 Talk button. Opens a modal seeded
-  // with the email's subject and the thread's participants; on
-  // create, chains into Compose with the room link in the body and
-  // the same recipients in the To field, satisfying issue #13's
-  // "create a Talk room from an email thread" task in one user
-  // gesture.
-  let talkRoomDraft = $state<{
-    ncId: string
-    initialName: string
-    initialParticipants: string[]
-    /** Pre-fills Compose's `To` after the room is created — kept on
-        the draft so we don't have to re-derive it from the email. */
-    composeTo: string
+  // ── "Respond with meeting" flow ────────────────────────────
+  // Triggered from MailView's meeting button. Opens the full
+  // EventEditor pre-filled with the email subject as the title, the
+  // thread's From/To as required attendees, Cc as optional, and
+  // (via `createTalkRoom: true`) auto-creates a Nextcloud Talk room
+  // whose join URL lands in the event's location.  One gesture
+  // turns an email into a calendar invite plus a meeting link.
+  interface CalendarSummary {
+    id: string
+    nextcloud_account_id: string
+    display_name: string
+    color: string | null
+    last_synced_at: string | null
+    hidden?: boolean
+    muted?: boolean
+  }
+  let meetingDraft = $state<{
+    calendars: CalendarSummary[]
+    draft: {
+      calendarId: string
+      start: Date
+      end: Date
+      summary: string
+      requiredAttendees: string[]
+      optionalAttendees: string[]
+      createTalkRoom: boolean
+    }
   } | null>(null)
 
   /** Strip an `"Name" <addr>` wrapper down to the bare email. */
@@ -1027,9 +1040,18 @@
     return m ? m[1].trim() : t
   }
 
-  async function onCreateTalkFromMail(mail: OpenMail) {
-    // For the MVP we use the first connected Nextcloud account. A
-    // multi-account picker can land later — most users have one NC.
+  /** Round a Date up to the next half-hour boundary.  Mirrors what
+      a user would type when scheduling a fresh meeting "now-ish":
+      11:07 → 11:30, 11:30 → 12:00. */
+  function nextHalfHour(d: Date): Date {
+    const out = new Date(d)
+    out.setSeconds(0, 0)
+    const m = out.getMinutes()
+    out.setMinutes(m < 30 ? 30 : 60)
+    return out
+  }
+
+  async function onRespondWithMeeting(mail: OpenMail) {
     let ncId = ''
     try {
       const list = await invoke<{ id: string }[]>('get_nextcloud_accounts')
@@ -1043,47 +1065,74 @@
       return
     }
 
-    // Build the participant set: From + To + Cc, deduped, minus the
-    // current user (who's already in the room as the creator).
+    let calendars: CalendarSummary[] = []
+    try {
+      calendars = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
+    } catch (e) {
+      alert(`Failed to load calendars: ${e}`)
+      return
+    }
+    const visible = calendars.filter((c) => !c.hidden)
+    if (visible.length === 0) {
+      alert('No writable calendars found on your Nextcloud account.')
+      return
+    }
+    let initialCalendarId = visible[0].id
+    try {
+      const s = await invoke<{ default_calendar_id: string | null }>('get_app_settings')
+      if (s.default_calendar_id && visible.some((c) => c.id === s.default_calendar_id)) {
+        initialCalendarId = s.default_calendar_id!
+      }
+    } catch {}
+
+    // Split the thread's participants — From + To go required,
+    // Cc goes optional.  Skip the active account (the user is the
+    // organizer; the editor adds them as CHAIR).  De-dupe across
+    // buckets so an address that appears in both To and Cc only
+    // shows up once in the higher-priority bucket.
+    const self = activeAccountEmail.toLowerCase()
     const seen = new Set<string>()
-    const participants: string[] = []
-    for (const piece of [mail.from, ...mail.to, ...mail.cc]) {
+    const required: string[] = []
+    for (const piece of [mail.from, ...mail.to]) {
       const addr = bareEmail(piece)
       if (!addr) continue
       const key = addr.toLowerCase()
-      if (key === activeAccountEmail.toLowerCase()) continue
-      if (seen.has(key)) continue
+      if (key === self || seen.has(key)) continue
       seen.add(key)
-      participants.push(addr)
+      required.push(piece)
+    }
+    const optional: string[] = []
+    for (const piece of mail.cc) {
+      const addr = bareEmail(piece)
+      if (!addr) continue
+      const key = addr.toLowerCase()
+      if (key === self || seen.has(key)) continue
+      seen.add(key)
+      optional.push(piece)
     }
 
-    // The Compose `To` field happily accepts the original
-    // `"Name" <addr>` strings, so display names round-trip into the
-    // sent invite without us having to re-format.
-    const composeTo = [mail.from, ...mail.to, ...mail.cc]
-      .filter((a) => {
-        const e = bareEmail(a)
-        return e && e.toLowerCase() !== activeAccountEmail.toLowerCase()
-      })
-      .join(', ')
+    const start = nextHalfHour(new Date())
+    const end = new Date(start.getTime() + 30 * 60 * 1000)
 
-    talkRoomDraft = {
-      ncId,
-      initialName: mail.subject || 'Talk',
-      initialParticipants: participants,
-      composeTo,
+    meetingDraft = {
+      calendars: visible,
+      draft: {
+        calendarId: initialCalendarId,
+        start,
+        end,
+        summary: mail.subject || 'Meeting',
+        requiredAttendees: required,
+        optionalAttendees: optional,
+        createTalkRoom: true,
+      },
     }
   }
 
-  function onTalkRoomCreatedFromMail(room: TalkRoom) {
-    const draft = talkRoomDraft
-    talkRoomDraft = null
-    if (!draft) return
-    openCompose({
-      to: draft.composeTo,
-      subject: `Join Talk: ${room.display_name}`,
-      talkLink: { name: room.display_name, url: room.web_url },
-    })
+  function onMeetingEditorClose() {
+    meetingDraft = null
+  }
+  function onMeetingEditorSaved(_saved?: SavedEvent) {
+    meetingDraft = null
   }
 
   /** "Save as note" handler — issue #67's email→note bridge. Builds
@@ -1295,7 +1344,7 @@
         onreply={onReply}
         onreplyall={onReplyAll}
         onforward={onForward}
-        oncreatetalk={onCreateTalkFromMail}
+        onrespondwithmeeting={onRespondWithMeeting}
         onsavenote={onSaveMailAsNote}
         isDraftsFolder={isDraftsFolder}
         isSentFolder={isSentFolder}
@@ -1322,16 +1371,17 @@
   </div>
 {/if}
 
-<!-- Talk-room creation modal — mounted at the app level so it can
-     overlay any view. Driven entirely by `talkRoomDraft`: setting it
-     opens the modal pre-filled, clearing it (or `oncreated`)
-     dismisses. -->
-{#if talkRoomDraft}
-  <CreateTalkRoomModal
-    ncId={talkRoomDraft.ncId}
-    initialName={talkRoomDraft.initialName}
-    initialParticipants={talkRoomDraft.initialParticipants}
-    onclose={() => (talkRoomDraft = null)}
-    oncreated={onTalkRoomCreatedFromMail}
+<!-- "Respond with meeting" event editor — mounted at the app level
+     so it can overlay any view. Driven entirely by `meetingDraft`:
+     setting it opens the editor pre-filled (subject as title,
+     From/To as required attendees, Cc as optional, auto-created
+     Talk room), clearing it dismisses. -->
+{#if meetingDraft}
+  <EventEditor
+    mode="create"
+    calendars={meetingDraft.calendars}
+    draft={meetingDraft.draft}
+    onclose={onMeetingEditorClose}
+    onsaved={onMeetingEditorSaved}
   />
 {/if}
