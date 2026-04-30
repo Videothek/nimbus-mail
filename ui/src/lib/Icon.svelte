@@ -48,7 +48,7 @@
     | 'undo' | 'redo'
     | 'passphrase' | 'security-key'
     // v5 — people categories + map + time
-    | 'group' | 'address-book' | 'team' | 'location' | 'time'
+    | 'group' | 'address-book' | 'team' | 'location' | 'time' | 'sun'
 </script>
 
 <script lang="ts">
@@ -159,6 +159,7 @@
   import Team from './icons/Team.svelte'
   import Location from './icons/Location.svelte'
   import Time from './icons/Time.svelte'
+  import Sun from './icons/Sun.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -275,6 +276,7 @@
     'team': Team,
     'location': Location,
     'time': Time,
+    'sun': Sun,
   }
   const Cmp = $derived(map[name])
 </script>
