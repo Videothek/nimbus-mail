@@ -1217,7 +1217,7 @@
         ><Icon name="forward" size={16} /></button>
         {#if oncreatetalk}
           <button
-            class="btn btn-sm preset-outlined-primary-500 inline-flex items-center justify-center"
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
             onclick={() => email && oncreatetalk?.(email)}
             title="Create a Nextcloud Talk room with the participants of this thread"
             aria-label="Create Talk room"
@@ -1225,7 +1225,7 @@
         {/if}
         {#if onsavenote}
           <button
-            class="btn btn-sm preset-outlined-primary-500 inline-flex items-center justify-center"
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
             onclick={() => email && onsavenote?.(email)}
             title="Save this email as a Nextcloud note"
             aria-label="Save as note"
