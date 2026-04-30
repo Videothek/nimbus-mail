@@ -738,14 +738,31 @@
       selectedMessageAccountId = nextAccountId
     }
 
-    // Deliberately *not* bumping `refreshToken` here (#174 follow-
-    // up).  After the optimistic flow Phase 1 already dropped the
-    // row from MailList's local list and Phase 2 tombstoned the
-    // cache row, so any reload would just race a `fetch_envelopes`
-    // IMAP call against the next click — making sequential deletes
-    // feel laggy because the second click hits a list mid-network-
-    // refresh.  Background sync's `new-mail` event drives the
-    // genuine refresh path; this one's purely local.
+    // Drop the matching envelope from the bound list (#174
+    // follow-up).  MailList's own optimistic delete/move already
+    // removed the row from its internal `envelopes`, in which
+    // case this is a no-op.  The path that *needs* this is
+    // Sidebar's drag-and-drop drop handler — it fires
+    // `onmessagemoved` per UID but doesn't touch MailList's
+    // state directly, so without this splice the moved row stays
+    // visible until a folder switch, and clicking it lands on a
+    // UID the cache has already dropped → "no message with UID".
+    const idx = mailListEnvelopes.findIndex((e) => e.uid === removedUid)
+    if (idx >= 0) {
+      mailListEnvelopes = [
+        ...mailListEnvelopes.slice(0, idx),
+        ...mailListEnvelopes.slice(idx + 1),
+      ]
+    }
+
+    // Deliberately *not* bumping `refreshToken` here.  After the
+    // optimistic flow Phase 1 already dropped the row from
+    // MailList's local list and Phase 2 tombstoned the cache row,
+    // so any reload would just race a `fetch_envelopes` IMAP
+    // call against the next click — making sequential deletes
+    // feel laggy because the second click hits a list mid-
+    // network-refresh.  Background sync's `new-mail` event drives
+    // the genuine refresh path; this one's purely local.
   }
 
   // Open the Compose modal. Called with no arg for a blank new message,
