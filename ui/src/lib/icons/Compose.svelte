@@ -1,0 +1,23 @@
+<script lang="ts">
+  export let size: number | string = 20;
+  let className = '';
+  export { className as class };
+</script>
+
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width={size}
+  height={size}
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="1.6"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  class={className}
+  aria-hidden="true"
+>
+  <path d="M4 20h4L19 9l-4-4L4 16v4z"/>
+  <path d="M14 6l4 4"/>
+  <path d="M3 22h18"/>
+</svg>

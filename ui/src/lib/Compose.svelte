@@ -25,6 +25,7 @@
   } from './RichTextEditor.svelte'
   import AddressAutocomplete from './AddressAutocomplete.svelte'
   import NextcloudFilePicker, { type ShareLink } from './NextcloudFilePicker.svelte'
+  import Icon from './Icon.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
   import AttachmentThumb, { prewarm as prewarmAttachmentThumb } from './AttachmentThumb.svelte'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
@@ -1299,10 +1300,10 @@
                Hidden inside the standalone window itself — there's
                nothing to pop out of when you're already a window. -->
           <button
-            class="btn btn-sm preset-outlined-surface-500 text-xs"
+            class="btn btn-sm preset-outlined-surface-500 text-xs inline-flex items-center gap-1.5"
             onclick={() => void popoutCompose()}
             title="Open this draft in a separate window"
-          >↗ Pop out</button>
+          ><Icon name="share-links" size={14} /> Pop out</button>
         {/if}
         <button class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100" onclick={cancel} aria-label="Close">✕</button>
       </div>
@@ -1435,7 +1436,7 @@
      reads as visually indistinguishable from a built-in. -->
 {#snippet attachTabContent()}
   <label class="rt-btn cursor-pointer" title="Attach a file from your computer">
-    <span class="rt-btn-icon">📎</span>
+    <span class="rt-btn-icon"><Icon name="attachment" size={16} /></span>
     <span class="rt-btn-label">Attach</span>
     <input type="file" multiple class="hidden" onchange={onPickFiles} />
   </label>
@@ -1460,7 +1461,7 @@
     title="Create a Nextcloud Talk room with the current recipients"
     onclick={openTalkModal}
   >
-    <span class="rt-btn-icon">💬</span>
+    <span class="rt-btn-icon"><Icon name="meetings" size={16} /></span>
     <span class="rt-btn-label">Talk</span>
   </button>
 {/snippet}
@@ -1476,7 +1477,7 @@
     title="Save the current draft to the Drafts folder"
     onclick={saveDraft}
   >
-    <span class="ctb-icon">💾</span>
+    <span class="ctb-icon"><Icon name="drafts" size={16} /></span>
     <span class="ctb-label">Save</span>
   </button>
   <button
@@ -1486,7 +1487,7 @@
     title="Discard this draft and close the window"
     onclick={cancel}
   >
-    <span class="ctb-icon">🗑</span>
+    <span class="ctb-icon"><Icon name="trash" size={16} /></span>
     <span class="ctb-label">Discard</span>
   </button>
   <button
@@ -1496,7 +1497,7 @@
     title="Send the message"
     onclick={send}
   >
-    <span class="ctb-icon">📤</span>
+    <span class="ctb-icon"><Icon name="sent" size={16} /></span>
     <span class="ctb-label">{sending ? 'Sending…' : 'Send'}</span>
   </button>
 {/snippet}

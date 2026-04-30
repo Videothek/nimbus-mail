@@ -41,6 +41,7 @@
   import type { Range } from '@tiptap/core'
   import EmojiPicker from './EmojiPicker.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
+  import Icon from './Icon.svelte'
   import { thumbUrlSync } from './AttachmentThumb.svelte'
   import { invoke } from '@tauri-apps/api/core'
 
@@ -1759,7 +1760,7 @@
           <span class="rt-btn-label">Clear fill</span>
         </button>
         <button class="rt-btn" title="Delete entire table" disabled={!tblOn} onclick={tblDelete}>
-          <span class="rt-btn-icon">🗑</span>
+          <span class="rt-btn-icon"><Icon name="trash" size={16} /></span>
           <span class="rt-btn-label">Del table</span>
         </button>
       {:else if activeTab === 'layout'}

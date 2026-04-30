@@ -13,6 +13,7 @@
   import NextcloudSettings from './NextcloudSettings.svelte'
   import SecuritySettings from './SecuritySettings.svelte'
   import EmojiPicker from './EmojiPicker.svelte'
+  import Icon, { type IconName } from './Icon.svelte'
   import Toggle from './Toggle.svelte'
   import {
     STOCK_THEMES,
@@ -87,15 +88,18 @@
   interface CategoryEntry {
     id: SettingsCategory
     label: string
-    icon: string
+    icon: IconName
   }
+  // Design/Nextcloud don't have dedicated icons in the family —
+  // we reuse `share-links` and `global-inbox` which read close
+  // enough at the size the nav uses (16-18 px).
   const CATEGORIES: CategoryEntry[] = [
-    { id: 'general', label: 'General', icon: '⚙️' },
-    { id: 'design', label: 'Design', icon: '🎨' },
-    { id: 'mail', label: 'E-Mail', icon: '📧' },
-    { id: 'calendar', label: 'Calendar', icon: '📅' },
-    { id: 'nextcloud', label: 'Nextcloud', icon: '☁️' },
-    { id: 'security', label: 'Security', icon: '🔒' },
+    { id: 'general', label: 'General', icon: 'settings' },
+    { id: 'design', label: 'Design', icon: 'share-links' },
+    { id: 'mail', label: 'E-Mail', icon: 'sent' },
+    { id: 'calendar', label: 'Calendar', icon: 'calendar' },
+    { id: 'nextcloud', label: 'Nextcloud', icon: 'global-inbox' },
+    { id: 'security', label: 'Security', icon: 'lock' },
   ]
 
   // ── State ───────────────────────────────────────────────────
@@ -757,7 +761,7 @@
               onclick={() => (activeCategory = cat.id)}
               aria-current={active ? 'page' : undefined}
             >
-              <span aria-hidden="true">{cat.icon}</span>
+              <Icon name={cat.icon} size={16} />
               <span>{cat.label}</span>
             </button>
           </li>
@@ -1135,12 +1139,12 @@
               </div>
               <div class="flex flex-col items-end gap-1">
                 <button
-                  class="btn btn-sm preset-outlined-surface-500 text-base px-2 py-1"
+                  class="btn btn-sm preset-outlined-surface-500 px-2 py-1 inline-flex items-center justify-center"
                   title="Connection settings — edit server hostnames, ports, password, and trust certificates"
                   aria-label="Connection settings"
                   onclick={() => openServerEdit(account)}
                 >
-                  ⚙️
+                  <Icon name="settings" size={18} />
                 </button>
                 <button
                   class="btn btn-sm preset-outlined-error-500"
@@ -1364,11 +1368,11 @@
           {/if}
           <button
             type="button"
-            class="btn btn-sm preset-outlined-surface-500"
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
             disabled={trustBusy}
             title="Probe the IMAP server's current TLS certificate and add it to this account's trust list. Use after a server cert renewal if connections start failing with 'invalid peer certificate / UnknownIssuer'."
             onclick={() => void startRetrust(acc)}
-          >{trustBusy ? '…' : '🔒 Trust server cert'}</button>
+          ><Icon name="lock" size={16} /> {trustBusy ? '…' : 'Trust server cert'}</button>
         </div>
       </div>
 

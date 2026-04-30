@@ -16,6 +16,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import Icon from './Icon.svelte'
 
   /** Mirrors the Rust `EventAttendee` struct.  Optional fields
    *  are `null` over IPC; we treat them as missing. */
@@ -896,7 +897,11 @@
           disabled={dismissingCancel || eventInCalendar === null}
           onclick={() => void dismissCancelledEvent()}
         >
-          {dismissingCancel ? 'Removing…' : '🗑 Remove from my calendar'}
+          {#if dismissingCancel}
+            Removing…
+          {:else}
+            <Icon name="trash" size={14} class="inline-block align-text-bottom mr-1.5" />Remove from my calendar
+          {/if}
         </button>
       {/if}
     </div>

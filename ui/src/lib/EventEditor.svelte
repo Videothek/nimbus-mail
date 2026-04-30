@@ -34,6 +34,7 @@
 
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import Icon from './Icon.svelte'
   import DateField from './DateField.svelte'
   import TimeField from './TimeField.svelte'
   import Select from './Select.svelte'
@@ -1383,7 +1384,11 @@
           title="Create a Nextcloud Talk room and use its link"
           onclick={() => void addTalkLink()}
         >
-          {creatingTalkRoom ? 'Creating…' : '💬 Talk meeting'}
+          {#if creatingTalkRoom}
+            Creating…
+          {:else}
+            <Icon name="meetings" size={14} class="inline-block align-text-bottom mr-1.5" />Talk meeting
+          {/if}
         </button>
       </div>
 

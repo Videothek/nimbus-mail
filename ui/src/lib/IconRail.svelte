@@ -31,6 +31,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { listen, type UnlistenFn } from '@tauri-apps/api/event'
   import { onDestroy } from 'svelte'
+  import Icon, { type IconName } from './Icon.svelte'
 
   interface Account {
     id: string
@@ -204,18 +205,18 @@
   interface NavEntry {
     match: RailView
     label: string
-    icon: string
+    icon: IconName
   }
   // No 'inbox' entry here (#161 follow-up): the account avatars
   // above the divider already navigate to mail, so a dedicated
   // mail icon would be redundant.  Use `onselectaccount` (with the
   // `'__all__'` sentinel for unified mode) to land in the inbox.
   const MAIN_NAV: NavEntry[] = [
-    { match: 'contacts', label: 'Contacts', icon: '\u{1F464}' }, // 👤
-    { match: 'calendar', label: 'Calendar', icon: '\u{1F4C5}' }, // 📅
-    { match: 'files', label: 'Files', icon: '\u{1F4C1}' },       // 📁
-    { match: 'talk', label: 'Talk', icon: '\u{1F4AC}' },         // 💬
-    { match: 'notes', label: 'Notes', icon: '\u{1F4DD}' },       // 📝
+    { match: 'contacts', label: 'Contacts', icon: 'contacts' },
+    { match: 'calendar', label: 'Calendar', icon: 'calendar' },
+    { match: 'files', label: 'Files', icon: 'files' },
+    { match: 'talk', label: 'Talk', icon: 'meetings' },
+    { match: 'notes', label: 'Notes', icon: 'notes' },
   ]
 </script>
 
@@ -252,8 +253,7 @@
              A 2px upward translate lands the visible centre on the
              box's geometric centre across Linux/macOS/Windows emoji
              fonts. -->
-        <span class="absolute inset-0 flex items-center justify-center text-lg leading-none -translate-y-[6px]">&#x1F4E5;</span>
-        <span class="absolute bottom-0 right-0 text-[0.65rem] leading-none drop-shadow">&#x1F310;</span>
+        <span class="absolute inset-0 flex items-center justify-center"><Icon name="global-inbox" size={20} /></span>
       </span>
       {#if totalUnread > 0}
         <span
@@ -341,7 +341,7 @@
       aria-label={entry.label}
       onclick={() => onselectview(entry.match)}
     >
-      <span>{entry.icon}</span>
+      <Icon name={entry.icon} size={20} />
       <!-- Talk-specific unread badge, pinned to the top-right
            corner of the icon. Red tint when there's a mention,
            primary otherwise. -->
@@ -371,7 +371,7 @@
       aria-label="Settings"
       onclick={() => onselectview('settings')}
     >
-      <span>&#9881;</span>
+      <Icon name="settings" size={20} />
     </button>
   </div>
 </aside>
