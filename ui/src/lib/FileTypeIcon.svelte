@@ -114,49 +114,72 @@
 </script>
 
 {#if kind}
-  <!-- Tabler-style file outline (corner fold) + a tiny per-type
-       label centred near the bottom. -->
+  <!-- Modern filled-document mark (#158): the whole document
+       shape is filled with the format colour, the corner-fold
+       reads as a translucent overlay, and the format code lives
+       in white inside.  Same visual language modern file
+       pickers (VSCode Material Icons, Gmail, Apple Files) all
+       use — faster to recognise at a glance than the previous
+       outline-with-tiny-label and instantly tells you the
+       format from across the screen. -->
   <svg
     xmlns="http://www.w3.org/2000/svg"
     viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="1.6"
-    stroke-linecap="round"
-    stroke-linejoin="round"
     class="{cls} {kind.colorClass} shrink-0"
     aria-label={kind.label}
   >
-    <path d="M14 3v4a1 1 0 0 0 1 1h4" />
-    <path d="M17 21H7a2 2 0 0 1 -2 -2V5a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z" />
+    <!-- Document body, filled -->
+    <path
+      d="M6.5 2.5h7L19 8v12.5a1.5 1.5 0 0 1 -1.5 1.5h-11A1.5 1.5 0 0 1 5 20.5v-16.5A1.5 1.5 0 0 1 6.5 2.5z"
+      fill="currentColor"
+      stroke="currentColor"
+      stroke-width="0.8"
+      stroke-linejoin="round"
+    />
+    <!-- Translucent corner fold -->
+    <path
+      d="M13.5 2.5v4.5a1 1 0 0 0 1 1H19"
+      fill="rgba(255,255,255,0.32)"
+      stroke="rgba(255,255,255,0.5)"
+      stroke-width="0.6"
+      stroke-linejoin="round"
+    />
+    <!-- Format label -->
     <text
       x="12"
-      y="17.5"
+      y="17.4"
       text-anchor="middle"
-      font-size="6.5"
-      font-weight="700"
+      font-size="5.4"
+      font-weight="800"
+      letter-spacing="0.4"
+      fill="white"
       stroke="none"
-      fill="currentColor"
-      font-family="ui-sans-serif, system-ui, sans-serif"
+      font-family="ui-sans-serif, system-ui, -apple-system, sans-serif"
     >{kind.label}</text>
   </svg>
 {:else}
-  <!-- Generic file outline.  Surface-toned so it doesn't compete
-       with the typed icons; callers that prefer an emoji for
-       images / video / audio can branch before mounting this
-       component. -->
+  <!-- Untyped fallback: same filled-document silhouette in a
+       neutral surface tone so it sits visually next to the
+       coloured siblings without competing with them. -->
   <svg
     xmlns="http://www.w3.org/2000/svg"
     viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="1.6"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    class="{cls} text-surface-500 shrink-0"
+    class="{cls} text-surface-400 dark:text-surface-500 shrink-0"
     aria-hidden="true"
   >
-    <path d="M14 3v4a1 1 0 0 0 1 1h4" />
-    <path d="M17 21H7a2 2 0 0 1 -2 -2V5a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z" />
+    <path
+      d="M6.5 2.5h7L19 8v12.5a1.5 1.5 0 0 1 -1.5 1.5h-11A1.5 1.5 0 0 1 5 20.5v-16.5A1.5 1.5 0 0 1 6.5 2.5z"
+      fill="currentColor"
+      stroke="currentColor"
+      stroke-width="0.8"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M13.5 2.5v4.5a1 1 0 0 0 1 1H19"
+      fill="rgba(255,255,255,0.32)"
+      stroke="rgba(255,255,255,0.5)"
+      stroke-width="0.6"
+      stroke-linejoin="round"
+    />
   </svg>
 {/if}
