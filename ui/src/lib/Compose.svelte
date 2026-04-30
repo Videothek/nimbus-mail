@@ -1303,7 +1303,7 @@
             class="btn btn-sm preset-outlined-surface-500 text-xs inline-flex items-center gap-1.5"
             onclick={() => void popoutCompose()}
             title="Open this draft in a separate window"
-          ><Icon name="share-links" size={14} /> Pop out</button>
+          ><Icon name="open-on-desktop" size={14} /> Pop out</button>
         {/if}
         <button class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100" onclick={cancel} aria-label="Close">✕</button>
       </div>
@@ -1477,7 +1477,7 @@
     title="Save the current draft to the Drafts folder"
     onclick={saveDraft}
   >
-    <span class="ctb-icon"><Icon name="drafts" size={16} /></span>
+    <span class="ctb-icon"><Icon name="save-draft" size={16} /></span>
     <span class="ctb-label">Save</span>
   </button>
   <button

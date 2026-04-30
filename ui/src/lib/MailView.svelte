@@ -1237,7 +1237,7 @@
           class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
           onclick={() => email && uid != null && openMailInStandaloneWindow(email.account_id, email.folder, uid)}
           title="Open this mail in a separate window"
-        ><Icon name="share-links" size={16} /> Open in window</button>
+        ><Icon name="open-on-desktop" size={16} /> Open in window</button>
       {/if}
       {#if email.body_html}
         <!-- Per-message background toggle — flips the white-canvas

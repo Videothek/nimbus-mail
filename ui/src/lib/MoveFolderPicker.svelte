@@ -16,6 +16,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import Icon, { type IconName } from './Icon.svelte'
 
   interface Folder {
     name: string
@@ -76,28 +77,38 @@
   // Same folder-icon resolution chain Sidebar uses.  Lifted here so
   // the picker stays self-contained — pulling it into a shared util
   // is a follow-up if a third caller appears.
-  function folderIcon(f: Folder): string {
+  /** Discriminated union mirroring `Sidebar.folderIcon` so the
+   *  picker and the sidebar render folder rows with identical
+   *  iconography (#179).  Standard folders → `Icon`; user-picked
+   *  override / keyword rule → emoji string. */
+  type FolderGlyph =
+    | { kind: 'icon'; name: IconName }
+    | { kind: 'emoji'; value: string }
+
+  function folderIcon(f: Folder): FolderGlyph {
     const account = accounts.find((a) => a.id === accountId)
     const override = account?.folder_icon_overrides?.[f.name]
-    if (override) return override
+    if (override) return { kind: 'emoji', value: override }
 
     const name = f.name.toLowerCase()
     const attrs = f.attributes.map((a) => a.toLowerCase())
     const has = (k: string) => attrs.some((a) => a.includes(k))
-    if (name === 'inbox' || has('inbox')) return '\u{1F4E5}'
-    if (has('sent')) return '\u{1F4E4}'
-    if (has('draft')) return '\u{1F4DD}'
-    if (has('trash') || has('deleted') || name === 'trash' || name === 'papierkorb') return '\u{1F5D1}\u{FE0F}'
-    if (has('junk') || has('spam') || name === 'spam' || name === 'junk') return '\u{1F6AB}'
-    if (has('flagged') || has('starred')) return '\u{2B50}'
-    if (has('archive')) return '\u{1F5C3}\u{FE0F}'
+    if (name === 'inbox' || has('inbox')) return { kind: 'icon', name: 'global-inbox' }
+    if (has('sent')) return { kind: 'icon', name: 'sent' }
+    if (has('draft')) return { kind: 'icon', name: 'drafts' }
+    if (has('trash') || has('deleted') || name === 'trash' || name === 'papierkorb')
+      return { kind: 'icon', name: 'trash' }
+    if (has('junk') || has('spam') || name === 'spam' || name === 'junk')
+      return { kind: 'icon', name: 'spam' }
+    if (has('flagged') || has('starred')) return { kind: 'icon', name: 'star' }
+    if (has('archive')) return { kind: 'icon', name: 'archive' }
 
     const rules = account?.folder_icons ?? []
     for (const rule of rules) {
       const kw = rule.keyword.trim().toLowerCase()
-      if (kw && name.includes(kw)) return rule.icon
+      if (kw && name.includes(kw)) return { kind: 'emoji', value: rule.icon }
     }
-    return '\u{1F4C1}'
+    return { kind: 'icon', name: 'files' }
   }
 
   function displayName(f: Folder): string {
@@ -209,7 +220,12 @@
             onclick={() => onPickFolder(f.name)}
             title={isCurrent ? 'Already in this folder' : `Move to ${f.name}`}
           >
-            <span>{folderIcon(f)}</span>
+            {@const glyph = folderIcon(f)}
+            {#if glyph.kind === 'icon'}
+              <Icon name={glyph.name} size={16} />
+            {:else}
+              <span>{glyph.value}</span>
+            {/if}
             <span class="flex-1 truncate">{displayName(f)}</span>
             {#if isCurrent}
               <span class="text-[10px] text-surface-500 uppercase tracking-wider">Current</span>

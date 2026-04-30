@@ -90,15 +90,15 @@
     label: string
     icon: IconName
   }
-  // Design/Nextcloud don't have dedicated icons in the family —
-  // we reuse `share-links` and `global-inbox` which read close
-  // enough at the size the nav uses (16-18 px).
+  // `cloud` from set v3 covers Nextcloud cleanly; Design still
+  // borrows `share-links` since the family has no
+  // theme/palette glyph yet.
   const CATEGORIES: CategoryEntry[] = [
     { id: 'general', label: 'General', icon: 'settings' },
     { id: 'design', label: 'Design', icon: 'share-links' },
     { id: 'mail', label: 'E-Mail', icon: 'sent' },
     { id: 'calendar', label: 'Calendar', icon: 'calendar' },
-    { id: 'nextcloud', label: 'Nextcloud', icon: 'global-inbox' },
+    { id: 'nextcloud', label: 'Nextcloud', icon: 'cloud' },
     { id: 'security', label: 'Security', icon: 'lock' },
   ]
 
