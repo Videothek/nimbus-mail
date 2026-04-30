@@ -208,23 +208,23 @@
     }
 
     // Optimistic UI (#174): snapshot the envelope set being moved
-    // and drop them from the local list immediately.  Any IMAP
-    // failure restores them in the original DOM order.  Each
+    // for restore-on-failure, then notify the parent for each
+    // moved UID FIRST so its auto-advance fires against the
+    // still-populated list.  The parent's
+    // `App.onMessageRemoved` splices `mailListEnvelopes` (which
+    // is bound back to our local `envelopes`), so the local
+    // list updates without a separate splice here.  Each
     // backend call's `move_messages` IPC also tombstones the
     // matching cache rows so a folder switch mid-flight doesn't
     // briefly resurrect them.
     const movedUidSet = new Set(group.map((e) => `${e.account_id}::${e.folder}::${e.uid}`))
-    const survivors: EmailEnvelope[] = []
     const removedSnapshot: { env: EmailEnvelope; idx: number }[] = []
     envelopes.forEach((e, i) => {
       const key = `${e.account_id}::${e.folder}::${e.uid}`
       if (movedUidSet.has(key)) {
         removedSnapshot.push({ env: e, idx: i })
-      } else {
-        survivors.push(e)
       }
     })
-    envelopes = survivors
     for (const { env: e } of removedSnapshot) {
       onmessagemoved?.(e.uid)
     }
@@ -425,18 +425,18 @@
   async function quickDelete(env: EmailEnvelope) {
     const srcAccountId = env.account_id || accountId
     const srcFolder = env.folder || folder
-    // Optimistic: drop the row from the local list immediately
-    // (#174) and tell the parent to auto-advance.  The IMAP call
-    // runs in the background — on failure we splice the row back
-    // in at its original index and surface the existing error
-    // banner.
+    // Optimistic: notify the parent FIRST so its auto-advance
+    // (`App.onMessageRemoved`) can find the next neighbour
+    // against the still-populated list, then splice the row out
+    // via the bound `mailListEnvelopes` mirror.  Doing the
+    // local splice before `onmessagemoved` left the parent
+    // unable to find the removed row by uid (it was already
+    // gone), so `selectedUid` defaulted to `null` and the
+    // reading pane went blank instead of advancing (#174 bug).
     const idx = envelopes.findIndex(
       (e) => e.uid === env.uid && e.folder === env.folder && e.account_id === env.account_id,
     )
     const removed = idx >= 0 ? envelopes[idx] : null
-    if (idx >= 0) {
-      envelopes = [...envelopes.slice(0, idx), ...envelopes.slice(idx + 1)]
-    }
     onmessagemoved?.(env.uid)
     try {
       await invoke('delete_message', {
