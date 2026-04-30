@@ -38,6 +38,7 @@
   import TimeField from './TimeField.svelte'
   import Select from './Select.svelte'
   import EmailKindChip from './EmailKindChip.svelte'
+  import Toggle from './Toggle.svelte'
 
   // ── Types (kept local; these mirror the Rust models) ──────────
   interface EventAttendee {
@@ -1298,15 +1299,14 @@
       <!-- All-day toggle on its own thin row above the
            date/time grid so Start and End sit symmetrically
            on the row beneath it. -->
-      <label class="flex items-center gap-2 text-xs text-surface-600 dark:text-surface-300">
-        <input
-          type="checkbox"
-          class="checkbox"
+      <div class="flex items-center gap-2 text-xs text-surface-600 dark:text-surface-300">
+        <Toggle
           bind:checked={allDay}
-          onchange={onToggleAllDay}
+          label="All-day event"
+          onchange={() => onToggleAllDay()}
         />
         All-day event
-      </label>
+      </div>
 
       <!-- Symmetric Start ↔ End row.  Two equal columns, each
            with its own date + (optional) time field.  When
