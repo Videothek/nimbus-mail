@@ -395,7 +395,7 @@
                  list and spot the one that errored. -->
             <div class="mt-1 ml-6 h-1 rounded-full overflow-hidden bg-surface-200 dark:bg-surface-700 relative">
               {#if status.kind === 'downloading'}
-                <span class="nc-indeterminate absolute inset-y-0 w-1/3 bg-primary-500 rounded-full"></span>
+                <span class="nc-indeterminate absolute inset-y-0 left-0 w-1/3 bg-primary-500 rounded-full"></span>
               {:else if status.kind === 'done'}
                 <span class="absolute inset-0 bg-success-500"></span>
               {:else if status.kind === 'failed'}
@@ -560,11 +560,19 @@
      short fill segment across the track so an active download
      reads as "in flight" even though the IPC has no chunked
      progress events to drive a real percentage. */
+  /* Animate `transform`, not `left`.  The IPC's structured-
+     clone of multi-MB payload bytes blocks the JS main thread
+     for hundreds of ms when each download lands; main-thread
+     animations (left / top / width) freeze for that whole
+     window, which read as "the bar is stuck at 30%".  Transform
+     animations stay on the GPU compositor and keep ticking
+     while the main thread chews the bytes. */
   @keyframes nc-indeterminate {
-    0% { left: -33%; }
-    100% { left: 100%; }
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
   }
   .nc-indeterminate {
     animation: nc-indeterminate 1.2s linear infinite;
+    will-change: transform;
   }
 </style>
