@@ -26,6 +26,7 @@
   } from './webauthnPrf'
 
   interface FidoCredential {
+    kind: 'fido_prf' | 'passphrase'
     credentialId: string
     label: string
     salt: string
@@ -46,6 +47,9 @@
   const webauthnAvailable = $state(isWebAuthnAvailable())
 
   let newLabel = $state('')
+  let passphraseLabel = $state('Recovery passphrase')
+  let passphraseValue = $state('')
+  let passphraseConfirm = $state('')
 
   async function loadStatus() {
     loading = true
@@ -84,6 +88,33 @@
       await loadStatus()
     } catch (e) {
       error = formatError(e) || 'Failed to enroll hardware key'
+    } finally {
+      busy = false
+    }
+  }
+
+  async function addPassphrase() {
+    if (busy) return
+    if (passphraseValue.length < 8) {
+      error = 'Passphrase must be at least 8 characters.'
+      return
+    }
+    if (passphraseValue !== passphraseConfirm) {
+      error = "Passphrase and confirmation don't match."
+      return
+    }
+    busy = true
+    error = ''
+    try {
+      await invoke('fido_enroll_passphrase', {
+        passphrase: passphraseValue,
+        label: passphraseLabel.trim() || 'Recovery passphrase',
+      })
+      passphraseValue = ''
+      passphraseConfirm = ''
+      await loadStatus()
+    } catch (e) {
+      error = formatError(e) || 'Failed to enroll passphrase'
     } finally {
       busy = false
     }
@@ -168,21 +199,65 @@
         </div>
       </div>
 
+      <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4">
+        <h3 class="font-medium mb-2">Add a recovery passphrase</h3>
+        <p class="text-xs text-surface-500 mb-3">
+          A passphrase derives the same kind of 32-byte key (via
+          PBKDF2-HMAC-SHA-256, 720 000 iterations) that a FIDO
+          authenticator's PRF output would. Useful as a fallback when a
+          hardware key is lost — and as the primary unlock method on
+          Linux until WebKitGTK ships the WebAuthn PRF extension.
+        </p>
+        <div class="space-y-2">
+          <input
+            type="text"
+            class="input w-full text-sm px-3 py-1.5 rounded-md"
+            placeholder="Label — e.g. “Recovery passphrase”"
+            bind:value={passphraseLabel}
+            disabled={busy}
+          />
+          <input
+            type="password"
+            class="input w-full text-sm px-3 py-1.5 rounded-md"
+            placeholder="Passphrase (8+ characters)"
+            bind:value={passphraseValue}
+            disabled={busy}
+            autocomplete="new-password"
+          />
+          <input
+            type="password"
+            class="input w-full text-sm px-3 py-1.5 rounded-md"
+            placeholder="Confirm passphrase"
+            bind:value={passphraseConfirm}
+            disabled={busy}
+            autocomplete="new-password"
+          />
+          <button
+            class="btn preset-filled-primary-500 w-full"
+            disabled={busy || passphraseValue.length < 8}
+            onclick={() => void addPassphrase()}
+          >{busy ? 'Working…' : 'Save passphrase'}</button>
+        </div>
+      </div>
+
       <div>
-        <h3 class="font-medium mb-2">Registered keys</h3>
+        <h3 class="font-medium mb-2">Registered methods</h3>
         {#if status && status.credentials.length === 0}
           <p class="text-sm text-surface-500 italic">
-            No hardware keys registered yet.
+            No unlock methods registered yet.
           </p>
         {:else if status}
           <ul class="divide-y divide-surface-200 dark:divide-surface-700 rounded-md border border-surface-200 dark:border-surface-700">
             {#each status.credentials as c (c.credentialId)}
               <li class="flex items-center gap-3 p-3">
-                <span class="text-lg" aria-hidden="true">🔑</span>
+                <span class="text-lg" aria-hidden="true">
+                  {c.kind === 'passphrase' ? '🔐' : '🔑'}
+                </span>
                 <div class="flex-1 min-w-0">
                   <p class="font-medium truncate">{c.label}</p>
                   <p class="text-xs text-surface-500 truncate">
-                    Added {fmtDate(c.createdAt)}
+                    {c.kind === 'passphrase' ? 'Passphrase' : 'Hardware key'}
+                    · Added {fmtDate(c.createdAt)}
                   </p>
                 </div>
                 <button
