@@ -128,7 +128,34 @@ pub async fn fetch_capabilities(
     let nav_apps = fetch_navigation_apps(&server, username, app_password)
         .await
         .unwrap_or_default();
-    let has_nav = |id: &str| nav_apps.iter().any(|a| a == id);
+    tracing::debug!("Nextcloud navigation/apps ids: {nav_apps:?}");
+    // Match navigation entries case-insensitively and on
+    // substring — the Tasks app has been registered under at
+    // least three ids over the years (`tasks`, `tasks-app`, and
+    // a versioned id on Nextcloud Hub releases) so a strict
+    // equality check misses real installs.
+    let nav_match = |needle: &str| {
+        nav_apps
+            .iter()
+            .any(|a| a.to_ascii_lowercase().contains(needle))
+    };
+
+    // Final fallback: probe the app's web entry point.  Both
+    // Notes and Tasks expose `/index.php/apps/<id>/` once the
+    // app is enabled for the current user, regardless of whether
+    // they publish a capability block or a navigation entry.  A
+    // 200 / 302 / 401 means "the route exists" — which is enough
+    // to claim the chip; 404 is the only definitive negative.
+    let notes_present = env.ocs.data.capabilities.notes.is_some()
+        || nav_match("notes")
+        || probe_app_route(&server, username, app_password, "notes")
+            .await
+            .unwrap_or(false);
+    let tasks_present = env.ocs.data.capabilities.tasks.is_some()
+        || nav_match("tasks")
+        || probe_app_route(&server, username, app_password, "tasks")
+            .await
+            .unwrap_or(false);
 
     let dav_present = env.ocs.data.capabilities.dav.is_some();
     let caps = NextcloudCapabilities {
@@ -138,8 +165,8 @@ pub async fn fetch_capabilities(
         caldav: dav_present,
         carddav: dav_present,
         office: env.ocs.data.capabilities.richdocuments.is_some(),
-        notes: env.ocs.data.capabilities.notes.is_some() || has_nav("notes"),
-        tasks: env.ocs.data.capabilities.tasks.is_some() || has_nav("tasks"),
+        notes: notes_present,
+        tasks: tasks_present,
     };
     tracing::info!(
         "Nextcloud capabilities: version={:?} talk={} files={} dav={} office={} notes={} tasks={}",
@@ -190,6 +217,34 @@ async fn fetch_navigation_apps(
 struct NavApp {
     #[serde(default)]
     id: Option<String>,
+}
+
+/// Probe `<server>/index.php/apps/<app_id>/` and return `true` when
+/// the response status looks like the route exists.  A 200 / 302 /
+/// 303 means the SPA loaded (or redirected to its login flow); a
+/// 401 means the route is gated by auth (still a positive signal —
+/// the app is wired up); only a 404 / network error counts as
+/// "definitely not installed".  Belt-and-suspenders detection for
+/// apps that don't expose a capability block AND aren't in the
+/// navigation list (Tasks under some Hub releases, custom NC
+/// configurations that hide nav entries).
+async fn probe_app_route(
+    server: &str,
+    username: &str,
+    app_password: &str,
+    app_id: &str,
+) -> Result<bool, NimbusError> {
+    let url = format!("{server}/index.php/apps/{app_id}/");
+    let http = client::build()?;
+    let resp = http
+        .head(&url)
+        .header("OCS-APIRequest", "true")
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("app probe failed: {e}")))?;
+    let s = resp.status().as_u16();
+    Ok(matches!(s, 200 | 302 | 303 | 401))
 }
 
 // ── Tests ──────────────────────────────────────────────────────
