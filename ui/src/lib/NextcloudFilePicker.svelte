@@ -350,8 +350,17 @@
            failed so the user can read the error before
            dismissing.  Successful runs auto-dismiss when the
            picker closes via `onpicked`. -->
-      <div class="px-5 py-2 border-t border-surface-200 dark:border-surface-700 max-h-40 overflow-y-auto space-y-1.5">
-        {#each [...downloadStatus] as [path, status] (path)}
+      <!-- Strip ordering (#160): completed rows pile up at the top,
+           the active download sits at the bottom of the visible
+           list, with pending rows below it.  No scrollbar — the
+           strip just grows to fit, so the user always sees every
+           in-flight + completed file without scrubbing. -->
+      <div class="px-5 py-2 border-t border-surface-200 dark:border-surface-700 space-y-1.5">
+        {#each [...downloadStatus].sort((a, b) => {
+          const rank = (k: DownloadStatus['kind']) =>
+            k === 'done' || k === 'failed' ? 0 : k === 'downloading' ? 1 : 2
+          return rank(a[1].kind) - rank(b[1].kind)
+        }) as [path, status] (path)}
           <div class="text-xs">
             <div class="flex items-center gap-2">
               <span class="shrink-0 w-4 h-4 flex items-center justify-center">

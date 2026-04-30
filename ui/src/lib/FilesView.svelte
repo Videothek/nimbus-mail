@@ -220,8 +220,15 @@
       <!-- Per-file download status strip (#160).  Mirrors the
            NextcloudFilePicker progress UI so the user sees exactly
            which file is being fetched and which (if any) errored. -->
-      <div class="px-5 py-2 border-t border-surface-200 dark:border-surface-700 max-h-40 overflow-y-auto space-y-1.5">
-        {#each [...downloadStatus] as [path, status] (path)}
+      <!-- Strip ordering (#160): completed rows pile up at the top,
+           the active download sits at the bottom, pending rows
+           below it.  No scrollbar — the strip grows to fit. -->
+      <div class="px-5 py-2 border-t border-surface-200 dark:border-surface-700 space-y-1.5">
+        {#each [...downloadStatus].sort((a, b) => {
+          const rank = (k: DownloadStatus['kind']) =>
+            k === 'done' || k === 'failed' ? 0 : k === 'downloading' ? 1 : 2
+          return rank(a[1].kind) - rank(b[1].kind)
+        }) as [path, status] (path)}
           <div class="text-xs">
             <div class="flex items-center gap-2">
               <span class="shrink-0 w-4 h-4 flex items-center justify-center">
