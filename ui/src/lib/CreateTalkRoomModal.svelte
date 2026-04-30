@@ -31,6 +31,8 @@
     unread_mention: boolean
     last_activity: number
     web_url: string
+    /** Talk 21+ "archived" flag.  Older servers default to false. */
+    is_archived?: boolean
   }
 
   interface Props {

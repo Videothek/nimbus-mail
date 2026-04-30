@@ -98,6 +98,13 @@ pub struct TalkRoom {
     /// doesn't have to reconstruct it on every render and so the
     /// "Share link in email" action has a single value to drop.
     pub web_url: String,
+    /// Talk 21+ "archived" flag.  Archived rooms still exist on the
+    /// server (and the user can still join + read history) but the
+    /// web UI dims them and pushes them to the bottom of the list.
+    /// Older Nextcloud / Talk versions don't send this field; serde
+    /// defaults it to `false`, which matches their UX (everything
+    /// active).
+    pub is_archived: bool,
 }
 
 /// Source of a new participant. Talk distinguishes between adding a
@@ -155,6 +162,8 @@ struct WireRoom {
     unread_mention: bool,
     #[serde(rename = "lastActivity", default)]
     last_activity: i64,
+    #[serde(rename = "isArchived", default)]
+    is_archived: bool,
 }
 
 impl WireRoom {
@@ -171,6 +180,7 @@ impl WireRoom {
             unread_messages: self.unread_messages,
             unread_mention: self.unread_mention,
             last_activity: self.last_activity,
+            is_archived: self.is_archived,
         }
     }
 }
