@@ -1385,14 +1385,14 @@
                    button so they read as one pill with a split
                    click target. -->
               <button
-                class="btn btn-sm preset-outlined-surface-500 text-xs px-2"
+                class="btn btn-sm preset-outlined-surface-500 text-xs px-2 inline-flex items-center"
                 disabled={busy}
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
                 aria-label="More attachment actions"
                 onclick={() => toggleMenu(att)}
                 title="More actions"
-              >▾</button>
+              ><Icon name="more" size={14} /></button>
 
               {#if menuOpen}
                 <!-- Click-outside catcher. Sits behind the menu so

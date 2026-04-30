@@ -95,8 +95,8 @@
   // theme/palette glyph yet.
   const CATEGORIES: CategoryEntry[] = [
     { id: 'general', label: 'General', icon: 'settings' },
-    { id: 'design', label: 'Design', icon: 'share-links' },
-    { id: 'mail', label: 'E-Mail', icon: 'sent' },
+    { id: 'design', label: 'Design', icon: 'design-palette' },
+    { id: 'mail', label: 'E-Mail', icon: 'email-envelope' },
     { id: 'calendar', label: 'Calendar', icon: 'calendar' },
     { id: 'nextcloud', label: 'Nextcloud', icon: 'cloud' },
     { id: 'security', label: 'Security', icon: 'lock' },

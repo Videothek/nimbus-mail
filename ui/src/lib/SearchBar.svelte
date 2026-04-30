@@ -10,6 +10,7 @@
    */
 
   import { onMount, onDestroy } from 'svelte'
+  import Icon from './Icon.svelte'
 
   export type SearchScope = {
     accountId?: string
@@ -140,10 +141,10 @@
   <div class="relative w-full">
     <!-- Magnifier icon on the left -->
     <span
-      class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none text-xs"
+      class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center"
       aria-hidden="true"
     >
-      &#x1F50D;
+      <Icon name="search" size={14} />
     </span>
     <input
       bind:this={inputEl}

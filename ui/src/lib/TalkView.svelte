@@ -20,7 +20,7 @@
   import { formatError } from './errors'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
   import type { ComposeInitial } from './Compose.svelte'
-  import Icon from './Icon.svelte'
+  import Icon, { type IconName } from './Icon.svelte'
 
   interface NextcloudAccount {
     id: string
@@ -139,11 +139,14 @@
     return new Date(unix * 1000).toLocaleDateString()
   }
 
-  function roomTypeIcon(t: TalkRoom['room_type']): string {
-    if (t === 'one_to_one') return '\u{1F464}' // 👤
-    if (t === 'public') return '\u{1F310}' // 🌐
-    if (t === 'changelog') return '\u{1F4DC}' // 📜
-    return '\u{1F465}' // 👥
+  /** Stroke-icon name for each Talk room kind.  One-to-one
+   *  rooms = single contact silhouette; group / public meeting
+   *  rooms = the calendar/meetings glyph (matches the "create
+   *  Talk meeting" icon used elsewhere); changelog = info. */
+  function roomTypeIcon(t: TalkRoom['room_type']): IconName {
+    if (t === 'one_to_one') return 'contacts'
+    if (t === 'changelog') return 'info'
+    return 'meetings'
   }
 </script>
 
@@ -207,7 +210,7 @@
       <ul class="flex-1 overflow-y-auto divide-y divide-surface-200 dark:divide-surface-800">
         {#each rooms as room (room.token)}
           <li class="px-5 py-3 flex items-center gap-3 hover:bg-surface-100 dark:hover:bg-surface-800">
-            <span class="text-xl flex-shrink-0">{roomTypeIcon(room.room_type)}</span>
+            <span class="flex-shrink-0 text-surface-600 dark:text-surface-300"><Icon name={roomTypeIcon(room.room_type)} size={20} /></span>
 
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2">
