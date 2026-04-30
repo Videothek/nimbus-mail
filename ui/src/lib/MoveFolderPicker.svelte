@@ -102,6 +102,7 @@
       return { kind: 'icon', name: 'spam' }
     if (has('flagged') || has('starred')) return { kind: 'icon', name: 'star' }
     if (has('archive')) return { kind: 'icon', name: 'archive' }
+    if (name === 'notes' || name.endsWith('/notes')) return { kind: 'icon', name: 'notes' }
 
     const rules = account?.folder_icons ?? []
     for (const rule of rules) {
