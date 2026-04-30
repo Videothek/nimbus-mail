@@ -24,6 +24,7 @@
     evaluateFidoPrf,
     isWebAuthnAvailable,
   } from './webauthnPrf'
+  import Toggle from './Toggle.svelte'
 
   interface FidoCredential {
     kind: 'fido_prf' | 'passphrase'
@@ -200,24 +201,11 @@
          accepting input — clear visual signal that the feature
          is opt-in. -->
     <div class="flex items-center gap-3">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={keyEncryptionEnabled}
-        aria-label="Enable key encryption"
-        onclick={() => setKeyEncryption(!keyEncryptionEnabled)}
-        class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-150
-               focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2
-               focus:ring-offset-surface-50 dark:focus:ring-offset-surface-900
-               {keyEncryptionEnabled
-                 ? 'bg-primary-500'
-                 : 'bg-surface-300 dark:bg-surface-600'}"
-      >
-        <span
-          class="inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform duration-150
-                 {keyEncryptionEnabled ? 'translate-x-5' : 'translate-x-0.5'}"
-        ></span>
-      </button>
+      <Toggle
+        checked={keyEncryptionEnabled}
+        label="Enable key encryption"
+        onchange={(v) => setKeyEncryption(v)}
+      />
       <div>
         <p class="font-medium leading-tight">Key Encryption</p>
         <p class="text-xs text-surface-500 leading-tight">

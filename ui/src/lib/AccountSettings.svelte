@@ -13,6 +13,7 @@
   import NextcloudSettings from './NextcloudSettings.svelte'
   import SecuritySettings from './SecuritySettings.svelte'
   import EmojiPicker from './EmojiPicker.svelte'
+  import Toggle from './Toggle.svelte'
   import {
     STOCK_THEMES,
     applyTheme,
@@ -719,33 +720,30 @@
         </div>
       </div>
 
-      <div class="space-y-2 text-sm">
-        <label class="flex items-center gap-2">
-          <input
-            type="checkbox"
-            class="checkbox"
+      <div class="space-y-3 text-sm">
+        <div class="flex items-start gap-3">
+          <Toggle
             bind:checked={appSettings.minimize_to_tray}
-            onchange={scheduleSave}
+            label="Minimize to tray when closing the window"
+            onchange={() => scheduleSave()}
           />
           <span>Minimize to tray when closing the window</span>
-        </label>
+        </div>
 
-        <label class="flex items-center gap-2">
-          <input
-            type="checkbox"
-            class="checkbox"
+        <div class="flex items-start gap-3">
+          <Toggle
             bind:checked={appSettings.start_minimized}
-            onchange={scheduleSave}
+            label="Start minimized to tray"
+            onchange={() => scheduleSave()}
           />
           <span>Start minimized to tray</span>
-        </label>
+        </div>
 
-        <label class="flex items-center gap-2">
-          <input
-            type="checkbox"
-            class="checkbox"
+        <div class="flex items-start gap-3">
+          <Toggle
             checked={appSettings.autostart_enabled}
-            onchange={(e) => void onAutostartToggle((e.currentTarget as HTMLInputElement).checked)}
+            label="Launch Nimbus when I sign in"
+            onchange={(v) => void onAutostartToggle(v)}
           />
           <span>
             Launch Nimbus when I sign in
@@ -753,17 +751,16 @@
               Adds an entry to your OS's autostart list. Combine with "Start minimized to tray" for a quiet boot.
             </span>
           </span>
-        </label>
+        </div>
 
-        <label class="flex items-center gap-2">
-          <input
-            type="checkbox"
-            class="checkbox"
+        <div class="flex items-start gap-3">
+          <Toggle
             bind:checked={appSettings.auto_advance_after_remove}
-            onchange={scheduleSave}
+            label="After delete / archive, open the next message automatically"
+            onchange={() => scheduleSave()}
           />
           <span>After delete / archive, open the next message automatically</span>
-        </label>
+        </div>
       </div>
     </div>
     {/if}
@@ -790,18 +787,17 @@
           </button>
         </div>
       </div>
-      <div class="space-y-2 text-sm">
-        <label class="flex items-center gap-2">
-          <input
-            type="checkbox"
-            class="checkbox"
+      <div class="space-y-3 text-sm">
+        <div class="flex items-start gap-3">
+          <Toggle
             bind:checked={appSettings.background_sync_enabled}
-            onchange={scheduleSave}
+            label="Run background mail sync"
+            onchange={() => scheduleSave()}
           />
           <span>Run background mail sync</span>
-        </label>
+        </div>
 
-        <label class="flex items-center gap-2 pl-6">
+        <label class="flex items-center gap-2 pl-12">
           <span class="text-surface-500">Interval (seconds):</span>
           <input
             type="number"
@@ -815,15 +811,14 @@
           <span class="text-xs text-surface-400">min. 30</span>
         </label>
 
-        <label class="flex items-center gap-2">
-          <input
-            type="checkbox"
-            class="checkbox"
+        <div class="flex items-start gap-3">
+          <Toggle
             bind:checked={appSettings.notifications_enabled}
-            onchange={scheduleSave}
+            label="Show desktop notifications for new mail"
+            onchange={() => scheduleSave()}
           />
           <span>Show desktop notifications for new mail</span>
-        </label>
+        </div>
       </div>
     </div>
     {/if}
@@ -841,13 +836,12 @@
           <span class="text-xs text-success-500">Saved</span>
         {/if}
       </div>
-      <div class="space-y-2 text-sm">
-        <label class="flex items-center gap-2">
-          <input
-            type="checkbox"
-            class="checkbox"
+      <div class="space-y-3 text-sm">
+        <div class="flex items-start gap-3">
+          <Toggle
             bind:checked={appSettings.talk_reminder_enabled}
-            onchange={scheduleSave}
+            label="Notify me before meetings with a Talk room"
+            onchange={() => scheduleSave()}
           />
           <span>
             Notify me before meetings with a Talk room

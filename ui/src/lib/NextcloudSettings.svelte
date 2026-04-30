@@ -16,6 +16,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
   import SyncStatusRow from './SyncStatusRow.svelte'
+  import Toggle from './Toggle.svelte'
 
   // ── Types (mirror the Rust models) ──────────────────────────
   interface NextcloudCapabilities {
@@ -445,19 +446,14 @@
                     <ul class="space-y-0.5">
                       {#each calendarsList[acct.id] as c (c.id)}
                         <li>
-                          <label
-                            class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-200/60 dark:hover:bg-surface-700/40 cursor-pointer text-xs"
+                          <div
+                            class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-200/60 dark:hover:bg-surface-700/40 text-xs"
                           >
-                            <input
-                              type="checkbox"
-                              class="checkbox"
+                            <Toggle
                               checked={!c.hidden}
-                              onchange={(e) =>
-                                void toggleCalendarHidden(
-                                  acct.id,
-                                  c.id,
-                                  !(e.currentTarget as HTMLInputElement).checked,
-                                )}
+                              label={c.display_name}
+                              onchange={(v) =>
+                                void toggleCalendarHidden(acct.id, c.id, !v)}
                             />
                             <span
                               class="w-2.5 h-2.5 rounded-sm shrink-0"
@@ -466,7 +462,7 @@
                             <span class="truncate" title={c.display_name}>
                               {c.display_name}
                             </span>
-                          </label>
+                          </div>
                         </li>
                       {/each}
                     </ul>
