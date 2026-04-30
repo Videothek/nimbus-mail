@@ -93,10 +93,16 @@
     if (!opts.silent) error = ''
     try {
       const list = await invoke<TalkRoom[]>('list_talk_rooms', { ncId: accountId })
-      // Sort by last activity desc so the freshest conversation is on
-      // top. Rooms with zero last_activity (newly created, no messages
-      // yet) sink to the bottom.
-      list.sort((a, b) => b.last_activity - a.last_activity)
+      // Sort: active rooms first, archived rooms grouped at the
+      // bottom — same UX Nextcloud's web Talk surfaces.  Within each
+      // group, newest activity wins so the freshest conversation
+      // floats to the top.
+      list.sort((a, b) => {
+        const aArch = a.is_archived ? 1 : 0
+        const bArch = b.is_archived ? 1 : 0
+        if (aArch !== bArch) return aArch - bArch
+        return b.last_activity - a.last_activity
+      })
       rooms = list
     } catch (e) {
       if (!opts.silent) error = formatError(e) || 'Failed to load Talk rooms'
@@ -234,12 +240,15 @@
     {:else}
       <ul class="flex-1 overflow-y-auto divide-y divide-surface-200 dark:divide-surface-800">
         {#each rooms as room (room.token)}
-          <li class="px-5 py-3 flex items-center gap-3 hover:bg-surface-100 dark:hover:bg-surface-800">
+          <li class="px-5 py-3 flex items-center gap-3 hover:bg-surface-100 dark:hover:bg-surface-800 {room.is_archived ? 'opacity-60' : ''}">
             <span class="flex-shrink-0 text-surface-600 dark:text-surface-300"><Icon name={roomTypeIcon(room.room_type)} size={20} /></span>
 
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2">
                 <span class="font-medium truncate">{room.display_name}</span>
+                {#if room.is_archived}
+                  <span class="badge text-xs flex-shrink-0 preset-tonal-surface" title="This Talk room is archived">Archived</span>
+                {/if}
                 {#if room.unread_messages > 0}
                   <span
                     class="badge text-xs flex-shrink-0
