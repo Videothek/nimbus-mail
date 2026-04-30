@@ -197,11 +197,38 @@
         return
       }
       e.preventDefault()
-      onclose()
+      void cancel()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   })
+
+  /** Cancel = onclose + best-effort cleanup of any Talk room we
+      created during this session.  Only relevant in create-mode:
+      the event was never saved, so the room would otherwise
+      linger empty on the server.  Edit-mode keeps existing rooms
+      untouched (the user might have created the room days ago and
+      just opened the event to tweak the time). */
+  async function cancel() {
+    const room = pendingTalkRoom
+    pendingTalkRoom = null
+    if (mode === 'create' && room) {
+      const cal = calendars.find((c) => c.id === calendarId)
+      if (cal) {
+        try {
+          await invoke('delete_talk_room', {
+            ncId: cal.nextcloud_account_id,
+            roomToken: room.token,
+          })
+        } catch {
+          // Best-effort — leaving an empty room behind is annoying
+          // but not user-blocking, and the user can delete it from
+          // TalkView if they care.
+        }
+      }
+    }
+    onclose()
+  }
 
   // Async-load the default-calendar setting and switch to it if the
   // user hasn't manually changed the picker yet.  In create-mode
@@ -1227,7 +1254,7 @@
     ) {
       return
     }
-    onclose()
+    void cancel()
   }}
 >
   <div class="w-[640px] max-h-[90vh] bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl flex flex-col">
@@ -1237,7 +1264,7 @@
       </h2>
       <button
         class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100"
-        onclick={onclose}
+        onclick={() => void cancel()}
         aria-label="Close"
       >✕</button>
     </header>
@@ -1718,7 +1745,7 @@
         </button>
       {/if}
       <div class="flex-1"></div>
-      <button class="btn preset-outlined-surface-500" disabled={saving || deleting} onclick={onclose}>
+      <button class="btn preset-outlined-surface-500" disabled={saving || deleting} onclick={() => void cancel()}>
         Cancel
       </button>
     </footer>
