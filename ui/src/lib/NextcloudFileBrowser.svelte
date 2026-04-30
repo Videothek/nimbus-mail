@@ -425,17 +425,28 @@
                   ></button>
                 {/if}
                 {#if iconName}
+                  <!-- Folder / plaintext icon at 20 px inside a
+                       36 px slot — visibly smaller than the file
+                       thumbnail beside it so the user can
+                       differentiate at a glance (#160). -->
                   <span class="w-9 h-9 flex items-center justify-center shrink-0 text-surface-500">
                     <Icon name={iconName} size={20} />
                   </span>
                 {:else}
-                  <NcPreview
-                    {accountId}
-                    path={entry.path}
-                    contentType={entry.content_type}
-                    filename={entry.name}
-                    class="w-9 h-9"
-                  />
+                  <!-- File preview — sits inside the same 36 px
+                       slot for row alignment, but the visible
+                       thumbnail / typed icon caps at 28 px so it
+                       matches the rest of the new icon sizes
+                       without dominating the row. -->
+                  <span class="w-9 h-9 flex items-center justify-center shrink-0">
+                    <NcPreview
+                      {accountId}
+                      path={entry.path}
+                      contentType={entry.content_type}
+                      filename={entry.name}
+                      class="w-7 h-7"
+                    />
+                  </span>
                 {/if}
                 <span class="flex-1 truncate text-sm">{entry.name}</span>
                 <span class="text-xs text-surface-500">{formatSize(entry.size)}</span>
