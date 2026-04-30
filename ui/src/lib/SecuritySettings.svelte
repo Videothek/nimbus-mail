@@ -65,6 +65,14 @@
   const PASSPHRASE_LABEL = 'Recovery passphrase'
   let passphraseValue = $state('')
   let passphraseConfirm = $state('')
+  /** Editing a passphrase that's already registered.  When false
+   *  and a passphrase exists, the form collapses to a "Change
+   *  passphrase" affordance on the registered-methods row. */
+  let passphraseEditing = $state(false)
+  /** Has a passphrase already been enrolled? */
+  const hasPassphrase = $derived(
+    !!status?.credentials.some((c) => c.kind === 'passphrase'),
+  )
   /** Master "Key Encryption" toggle.  Drives both the
    *  registration UI gate AND the backend FIDO-only-mode
    *  switch:
@@ -109,13 +117,24 @@
       // The backend flip happens in the $effect below once the
       // user has actually registered a recovery method.
     } else {
-      // Turning off: if we're still in plain mode (no FIDO-only
-      // activation has happened yet) the toggle is purely a UI
-      // gate — flip it freely.  If FIDO-only mode is active we
-      // need a real disable path, which isn't wired yet.
+      // Turning off: if FIDO-only mode is active, ask the
+      // backend to write the in-memory master key back into the
+      // keychain envelope so cold launches stop showing the
+      // lock screen.  Cache must be unlocked (it is — the user
+      // is in Settings, which lives behind the unlock screen)
+      // for the master key to be in memory.
       if (status && !status.hasPlainKey) {
-        error =
-          'Disabling key encryption while the cache is in FIDO-only mode is not yet supported. Re-add your accounts to revert.'
+        busy = true
+        try {
+          await invoke('disable_fido_only_mode')
+          keyEncryptionEnabled = false
+          persistToggle(false)
+          await loadStatus()
+        } catch (e) {
+          error = formatError(e) || 'Failed to disable key encryption'
+        } finally {
+          busy = false
+        }
         return
       }
       keyEncryptionEnabled = false
@@ -156,6 +175,62 @@
   $effect(() => {
     void loadStatus()
   })
+
+  // ── Wipe-on-failed-authentication policy ────────────────────
+  // Stored in the keychain envelope (so it survives across
+  // FIDO-only / plain transitions).  `wipeMaxAttemptsRaw` is a
+  // string so we can render an empty input as "unlimited".
+  interface WipePolicy {
+    enabled: boolean
+    maxAttempts: number | null
+  }
+  let wipePolicy = $state<WipePolicy>({ enabled: false, maxAttempts: null })
+  let wipeMaxAttemptsRaw = $state('')
+  let wipeSaving = $state(false)
+
+  async function loadWipePolicy() {
+    try {
+      const p = await invoke<WipePolicy>('get_wipe_policy')
+      wipePolicy = p
+      wipeMaxAttemptsRaw = p.maxAttempts != null ? String(p.maxAttempts) : ''
+    } catch (e) {
+      console.warn('get_wipe_policy failed', e)
+    }
+  }
+  $effect(() => {
+    void loadWipePolicy()
+  })
+
+  async function saveWipePolicy(next: WipePolicy) {
+    wipeSaving = true
+    try {
+      await invoke('set_wipe_policy', {
+        policy: { enabled: next.enabled, maxAttempts: next.maxAttempts },
+      })
+      wipePolicy = next
+    } catch (e) {
+      error = formatError(e) || 'Failed to save wipe policy'
+    } finally {
+      wipeSaving = false
+    }
+  }
+
+  function onWipeToggle(checked: boolean) {
+    const parsed = parseInt(wipeMaxAttemptsRaw, 10)
+    void saveWipePolicy({
+      enabled: checked,
+      maxAttempts: checked && Number.isFinite(parsed) && parsed > 0 ? parsed : null,
+    })
+  }
+
+  function onWipeMaxAttemptsChange() {
+    if (!wipePolicy.enabled) return
+    const parsed = parseInt(wipeMaxAttemptsRaw, 10)
+    void saveWipePolicy({
+      enabled: true,
+      maxAttempts: Number.isFinite(parsed) && parsed > 0 ? parsed : null,
+    })
+  }
 
   async function addKey() {
     if (busy) return
@@ -203,6 +278,7 @@
       })
       passphraseValue = ''
       passphraseConfirm = ''
+      passphraseEditing = false
       await loadStatus()
     } catch (e) {
       error = formatError(e) || 'Failed to enroll passphrase'
@@ -211,25 +287,42 @@
     }
   }
 
-  async function removeKey(credentialId: string, salt: string, label: string) {
+  async function removeKey(c: FidoCredential) {
     if (busy) return
-    if (!confirm(`Remove "${label}"? You'll need to re-enroll to use it again.`))
+    // Pre-flight: removing the last unlock method while
+    // FIDO-only mode is active would orphan the encrypted DB
+    // forever.  The backend rejects this too, but catching it
+    // here gives the user a message that names the actual
+    // problem instead of the generic "cannot remove last
+    // hardware key" text.
+    if (status && !status.hasPlainKey && status.credentials.length <= 1) {
+      error =
+        c.kind === 'passphrase'
+          ? "Can't remove the passphrase — it's your only unlock method. Add a hardware key first, or turn off Key Encryption."
+          : "Can't remove this hardware key — it's your only unlock method. Add a passphrase or another hardware key first, or turn off Key Encryption."
+      return
+    }
+    const promptLabel = c.kind === 'passphrase' ? 'Recovery passphrase' : c.label
+    if (!confirm(`Remove "${promptLabel}"? You'll need to re-enroll to use it again.`))
       return
     busy = true
     error = ''
     try {
       // Require the user to actually still possess the key
-      // before we let them drop the wrap.  Skipped in plain-
-      // key mode for the trivial case of an enrolled key the
-      // user already lost — they can always reset by removing
-      // the plain key entry from the keychain manually.
-      if (status && !status.hasPlainKey) {
-        await evaluateFidoPrf(credentialId, salt)
+      // before we let them drop the wrap.  Only meaningful for
+      // FIDO PRF wraps — passphrase entries have no
+      // authenticator to evaluate, and forcing one through
+      // `evaluateFidoPrf` would surface a confusing
+      // "WebAuthn unavailable" error on Linux.  Plain-key mode
+      // skips the check entirely so a user with a lost key
+      // can still drop the wrap.
+      if (status && !status.hasPlainKey && c.kind === 'fido_prf') {
+        await evaluateFidoPrf(c.credentialId, c.salt)
       }
-      await invoke('fido_remove', { credentialIdB64: credentialId })
+      await invoke('fido_remove', { credentialIdB64: c.credentialId })
       await loadStatus()
     } catch (e) {
-      error = formatError(e) || 'Failed to remove hardware key'
+      error = formatError(e) || 'Failed to remove credential'
     } finally {
       busy = false
     }
@@ -295,6 +388,53 @@
       </div>
     </div>
 
+    <!-- Wipe-on-failed-authentication policy.  Sits directly
+         under the Key Encryption toggle so users see the
+         destructive companion option while they're still
+         deciding whether to enable encryption at all.  Off by
+         default; when on, exposes a numeric "retries" field
+         whose empty / zero value means unlimited. -->
+    <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4 space-y-3 {keyEncryptionEnabled ? '' : 'opacity-50 pointer-events-none select-none'}">
+      <div class="flex items-start gap-3">
+        <Toggle
+          checked={wipePolicy.enabled}
+          disabled={wipeSaving || !keyEncryptionEnabled}
+          onchange={onWipeToggle}
+          label="Wipe cache on failed authentication"
+          class="mt-0.5"
+        />
+        <div>
+          <h3 class="font-medium leading-tight">Wipe cache on failed authentication</h3>
+          <p class="text-xs text-surface-500 mt-1">
+            After the configured number of consecutive failed unlock
+            attempts, the encrypted cache is permanently deleted on
+            this device. You'll need to re-add your accounts on next
+            launch.
+          </p>
+        </div>
+      </div>
+      <div class="ml-12 {wipePolicy.enabled ? '' : 'opacity-50 pointer-events-none'}">
+        <div class="flex items-center gap-3">
+          <label class="text-sm text-surface-700 dark:text-surface-300" for="wipe-max">
+            Max attempts
+          </label>
+          <input
+            id="wipe-max"
+            type="number"
+            min="1"
+            placeholder="Unlimited"
+            class="input w-32 text-sm px-3 py-1.5 rounded-md"
+            bind:value={wipeMaxAttemptsRaw}
+            onchange={onWipeMaxAttemptsChange}
+            disabled={!wipePolicy.enabled || wipeSaving}
+          />
+        </div>
+        <p class="text-xs text-surface-500 mt-1">
+          Empty = unlimited retries (toggle has no effect until a number is set).
+        </p>
+      </div>
+    </div>
+
     <div
       class="space-y-4 transition-opacity {keyEncryptionEnabled
         ? ''
@@ -344,39 +484,56 @@
         </div>
       {/if}
 
-      <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4">
-        <h3 class="font-medium mb-2">Add a recovery passphrase</h3>
-        <p class="text-xs text-surface-500 mb-3">
-          A passphrase derives the same kind of 32-byte key (via
-          PBKDF2-HMAC-SHA-256, 720 000 iterations) that a FIDO
-          authenticator's PRF output would. Useful as a fallback when a
-          hardware key is lost — and as the primary unlock method on
-          Linux until WebKitGTK ships the WebAuthn PRF extension.
-        </p>
-        <div class="space-y-2">
-          <input
-            type="password"
-            class="input w-full text-sm px-3 py-1.5 rounded-md"
-            placeholder="Passphrase (8+ characters)"
-            bind:value={passphraseValue}
-            disabled={busy}
-            autocomplete="new-password"
-          />
-          <input
-            type="password"
-            class="input w-full text-sm px-3 py-1.5 rounded-md"
-            placeholder="Confirm passphrase"
-            bind:value={passphraseConfirm}
-            disabled={busy}
-            autocomplete="new-password"
-          />
-          <button
-            class="btn preset-filled-primary-500 w-full"
-            disabled={busy || passphraseValue.length < 8}
-            onclick={() => void addPassphrase()}
-          >{busy ? 'Working…' : 'Save passphrase'}</button>
+      {#if !hasPassphrase || passphraseEditing}
+        <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4">
+          <h3 class="font-medium mb-2">
+            {hasPassphrase ? 'Change recovery passphrase' : 'Add a recovery passphrase'}
+          </h3>
+          <p class="text-xs text-surface-500 mb-3">
+            A passphrase derives the same kind of 32-byte key (via
+            PBKDF2-HMAC-SHA-256, 720 000 iterations) that a FIDO
+            authenticator's PRF output would. Useful as a fallback when a
+            hardware key is lost — and as the primary unlock method on
+            Linux until WebKitGTK ships the WebAuthn PRF extension.
+          </p>
+          <div class="space-y-2">
+            <input
+              type="password"
+              class="input w-full text-sm px-3 py-1.5 rounded-md"
+              placeholder="Passphrase (8+ characters)"
+              bind:value={passphraseValue}
+              disabled={busy}
+              autocomplete="new-password"
+            />
+            <input
+              type="password"
+              class="input w-full text-sm px-3 py-1.5 rounded-md"
+              placeholder="Confirm passphrase"
+              bind:value={passphraseConfirm}
+              disabled={busy}
+              autocomplete="new-password"
+            />
+            <div class="flex gap-2">
+              {#if passphraseEditing}
+                <button
+                  class="btn preset-outlined-surface-500 flex-1"
+                  disabled={busy}
+                  onclick={() => {
+                    passphraseEditing = false
+                    passphraseValue = ''
+                    passphraseConfirm = ''
+                  }}
+                >Cancel</button>
+              {/if}
+              <button
+                class="btn preset-filled-primary-500 flex-1"
+                disabled={busy || passphraseValue.length < 8}
+                onclick={() => void addPassphrase()}
+              >{busy ? 'Working…' : hasPassphrase ? 'Update passphrase' : 'Save passphrase'}</button>
+            </div>
+          </div>
         </div>
-      </div>
+      {/if}
 
       <div>
         <h3 class="font-medium mb-2">Registered methods</h3>
@@ -406,17 +563,29 @@
                     · Added {fmtDate(c.createdAt)}
                   </p>
                 </div>
+                {#if c.kind === 'passphrase'}
+                  <button
+                    class="btn btn-sm preset-outlined-surface-500"
+                    disabled={busy}
+                    title="Change passphrase"
+                    aria-label="Change passphrase"
+                    onclick={() => {
+                      passphraseValue = ''
+                      passphraseConfirm = ''
+                      passphraseEditing = true
+                    }}
+                  >✏️</button>
+                {/if}
                 <button
                   class="btn btn-sm preset-outlined-error-500"
                   disabled={busy}
-                  onclick={() => void removeKey(c.credentialId, c.salt, c.label)}
+                  onclick={() => void removeKey(c)}
                 >Remove</button>
               </li>
             {/each}
           </ul>
         {/if}
       </div>
-
 
       {#if error}
         <p class="text-sm text-red-500 wrap-break-word">{error}</p>

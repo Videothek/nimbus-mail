@@ -115,6 +115,10 @@ pub fn load_envelope() -> Result<KeychainEnvelope, NimbusError> {
             version: 1,
             plain_key: None,
             wraps: Vec::new(),
+            wipe_on_failure: false,
+            max_unlock_attempts: None,
+            failed_attempts: 0,
+            integrity_mac: None,
         }),
         Err(e) => Err(NimbusError::Storage(format!(
             "failed to read master key: {e}"
@@ -122,12 +126,37 @@ pub fn load_envelope() -> Result<KeychainEnvelope, NimbusError> {
     }
 }
 
-/// Persist a mutated envelope back to the keychain.
+/// Persist a mutated envelope back to the keychain.  Recomputes
+/// the integrity MAC from the (current) field values so any
+/// later in-place edit of the JSON in the keychain breaks the
+/// MAC and trips `verify_envelope_mac` on next load.
 pub fn save_envelope(env: &KeychainEnvelope) -> Result<(), NimbusError> {
+    use crate::fido;
+    let mut signed = env.clone();
+    signed.integrity_mac = None;
+    signed.integrity_mac = Some(fido::compute_envelope_mac(&signed)?);
     let entry = entry()?;
     entry
-        .set_password(&serialize_envelope(env)?)
+        .set_password(&serialize_envelope(&signed)?)
         .map_err(|e| NimbusError::Storage(format!("failed to store master key: {e}")))
+}
+
+/// Was the loaded envelope tampered with?  True only when an
+/// `integrity_mac` is present *and* doesn't match.  A missing
+/// MAC (legacy envelope or first save) returns `false` so we
+/// don't wipe the user's data on the upgrade boundary — the
+/// next `save_envelope` will write a fresh MAC.
+pub fn envelope_tampered(env: &KeychainEnvelope) -> bool {
+    if env.integrity_mac.is_none() {
+        return false;
+    }
+    match crate::fido::verify_envelope_mac(env) {
+        Ok(valid) => !valid,
+        Err(e) => {
+            tracing::warn!("envelope MAC verify errored: {e}");
+            true
+        }
+    }
 }
 
 /// Append (or replace) a wrap in the envelope, keyed on

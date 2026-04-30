@@ -174,6 +174,75 @@ pub struct KeychainEnvelope {
     pub plain_key: Option<String>,
     #[serde(default)]
     pub wraps: Vec<WrappedKey>,
+    /// When true, the unlock IPC wipes the encrypted cache after
+    /// `max_unlock_attempts` consecutive failed attempts.  Off by
+    /// default — opt-in destruction.
+    #[serde(default)]
+    pub wipe_on_failure: bool,
+    /// Maximum consecutive failed unlock attempts before the
+    /// cache is wiped.  `None` (or `wipe_on_failure = false`)
+    /// means unlimited retries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_unlock_attempts: Option<u32>,
+    /// Persisted across launches so kill+relaunch can't reset
+    /// the wipe-on-failure budget.  Bumped before each unlock
+    /// attempt in `note_unlock_failure` and cleared on success.
+    #[serde(default)]
+    pub failed_attempts: u32,
+    /// HMAC-SHA256 (base64) over the envelope with this field
+    /// blanked out, keyed by `ENVELOPE_MAC_KEY`.  Detects casual
+    /// edits to `failed_attempts`, `wipe_on_failure`, and
+    /// `max_unlock_attempts` via a text editor or `keyctl`-style
+    /// keychain inspection tools.  Not a defence against an
+    /// attacker who has the binary (the key is constant) — it
+    /// raises the bar from "open in vim" to "reverse-engineer
+    /// and script."
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrity_mac: Option<String>,
+}
+
+/// Constant HMAC key for envelope tamper detection.  Embedded in
+/// the binary, so an attacker with disassembly access can forge
+/// the MAC.  The point isn't cryptographic secrecy — it's that
+/// editing the JSON in-place (the casual attack we're trying
+/// to deter) breaks the MAC and forces the wipe to fire.
+const ENVELOPE_MAC_KEY: &[u8; 32] = b"nimbus-envelope-integrity-v1!!!!";
+
+/// Compute the integrity MAC over a serialized envelope with
+/// `integrity_mac` blanked out.  Stable across runs as long as
+/// the rest of the envelope content is byte-identical.
+pub fn compute_envelope_mac(env: &KeychainEnvelope) -> Result<String, NimbusError> {
+    use hmac::Mac;
+    let mut probe = env.clone();
+    probe.integrity_mac = None;
+    let bytes = serde_json::to_vec(&probe)
+        .map_err(|e| NimbusError::Storage(format!("envelope MAC serialize: {e}")))?;
+    let mut mac = <Hmac<Sha256> as hmac::Mac>::new_from_slice(ENVELOPE_MAC_KEY)
+        .map_err(|e| NimbusError::Storage(format!("envelope MAC init: {e}")))?;
+    mac.update(&bytes);
+    Ok(B64.encode(mac.finalize().into_bytes()))
+}
+
+/// Verify the integrity MAC.  Returns `Ok(true)` when the MAC is
+/// present and matches, `Ok(false)` when the field is missing
+/// (legacy envelope or first save) or when it doesn't match.
+pub fn verify_envelope_mac(env: &KeychainEnvelope) -> Result<bool, NimbusError> {
+    let Some(stored) = env.integrity_mac.as_deref() else {
+        return Ok(false);
+    };
+    let expected = compute_envelope_mac(env)?;
+    Ok(constant_time_eq(stored.as_bytes(), expected.as_bytes()))
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 impl KeychainEnvelope {
@@ -182,6 +251,10 @@ impl KeychainEnvelope {
             version: 1,
             plain_key: Some(plain_key_hex),
             wraps: Vec::new(),
+            wipe_on_failure: false,
+            max_unlock_attempts: None,
+            failed_attempts: 0,
+            integrity_mac: None,
         }
     }
 }

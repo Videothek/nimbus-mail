@@ -11,6 +11,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core'
+  import { tick } from 'svelte'
   import { formatError } from './errors'
   import { evaluateFidoPrf } from './webauthnPrf'
 
@@ -24,9 +25,25 @@
 
   interface Props {
     methods: Method[]
+    /** Remaining unlock attempts before wipe-on-failure fires.
+     *  `null` when the policy is off or has no limit set — no
+     *  counter is rendered in that case. */
+    attemptsRemaining: number | null
+    /** Fired after every failed unlock so the parent can refresh
+     *  the "X tries remaining" counter without polling. */
+    onattemptschange?: (next: number | null) => void
     onunlock: () => void
   }
-  let { methods, onunlock }: Props = $props()
+  let { methods, attemptsRemaining, onattemptschange, onunlock }: Props = $props()
+
+  async function refreshAttempts() {
+    try {
+      const s = await invoke<{ attemptsRemaining: number | null }>('database_status')
+      onattemptschange?.(s.attemptsRemaining)
+    } catch {
+      /* swallow — counter is best-effort */
+    }
+  }
 
   let busy = $state(false)
   let error = $state('')
@@ -44,12 +61,23 @@
     if (busy || !passphraseValue) return
     busy = true
     error = ''
+    // Let Svelte flush AND give the WebView a real frame to
+    // paint before we hand control off to Rust.  `tick()` +
+    // `requestAnimationFrame` alone isn't enough — Tauri's IPC
+    // and SQLCipher work on a worker thread, but the WebView
+    // still skips repaints if the main thread doesn't yield
+    // long enough.  A 32 ms setTimeout (~2 frames) reliably
+    // gives the new label a chance to land before unlock
+    // starts.
+    await tick()
+    await new Promise((r) => setTimeout(r, 32))
     try {
       await invoke('unlock_with_passphrase', { passphrase: passphraseValue })
       passphraseValue = ''
       onunlock()
     } catch (e) {
       error = formatError(e) || 'Unlock failed'
+      void refreshAttempts()
     } finally {
       busy = false
     }
@@ -59,6 +87,8 @@
     if (busy) return
     busy = true
     error = ''
+    await tick()
+    await new Promise((r) => setTimeout(r, 32))
     try {
       // OS sheet pops here — Touch ID / Windows Hello / "tap
       // your security key", same UX surface the enrollment
@@ -71,6 +101,7 @@
       onunlock()
     } catch (e) {
       error = formatError(e) || 'Unlock failed'
+      void refreshAttempts()
     } finally {
       busy = false
     }
@@ -92,6 +123,18 @@
       <p class="text-sm text-surface-500">
         Authenticate to open your encrypted mail cache.
       </p>
+      {#if attemptsRemaining != null}
+        <p
+          class="text-xs font-medium {attemptsRemaining <= 1
+            ? 'text-error-500'
+            : attemptsRemaining <= 3
+              ? 'text-warning-500'
+              : 'text-surface-500'}"
+        >
+          {attemptsRemaining}
+          {attemptsRemaining === 1 ? 'try' : 'tries'} remaining before the cache is wiped
+        </p>
+      {/if}
     </div>
 
     {#if methods.length === 0}
@@ -145,10 +188,16 @@
             autocomplete="current-password"
           />
           <button
-            class="btn preset-filled-primary-500 w-full"
-            disabled={busy || !passphraseValue}
-            onclick={() => void unlockWithPassphrase()}
-          >{busy ? 'Unlocking…' : 'Unlock'}</button>
+            class="btn w-full {busy
+              ? 'cursor-wait'
+              : !passphraseValue
+                ? 'preset-filled-primary-500'
+                : 'preset-filled-primary-500'}"
+            style={busy ? 'background-color: var(--color-primary-800); color: white;' : ''}
+            disabled={!busy && !passphraseValue}
+            aria-disabled={busy || !passphraseValue}
+            onclick={() => { if (!busy && passphraseValue) void unlockWithPassphrase() }}
+          >{busy ? 'Unlocking...' : 'Unlock'}</button>
         </div>
       {:else if activeMethod?.kind === 'fido_prf'}
         <div class="space-y-2">
@@ -157,9 +206,10 @@
             authenticate with the registered key.
           </p>
           <button
-            class="btn preset-filled-primary-500 w-full"
-            disabled={busy}
-            onclick={() => activeMethod && void unlockWithFido(activeMethod)}
+            class="btn preset-filled-primary-500 w-full {busy ? 'cursor-wait' : ''}"
+            style={busy ? '--color-primary-500: var(--color-primary-800); --color-primary-contrast-500: white;' : ''}
+            aria-disabled={busy}
+            onclick={() => { if (!busy && activeMethod) void unlockWithFido(activeMethod) }}
           >{busy ? 'Awaiting authenticator…' : `Unlock with ${activeMethod.label}`}</button>
         </div>
       {/if}

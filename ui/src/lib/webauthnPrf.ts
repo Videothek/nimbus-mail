@@ -160,6 +160,23 @@ export async function evaluateFidoPrf(
   credentialIdB64: string,
   saltB64: string,
 ): Promise<string> {
+  // Guard before reaching for `navigator.credentials.get`: on
+  // Linux WebKitGTK builds without WebAuthn the property is
+  // missing, and the raw "undefined is not an object" stack trace
+  // is unreadable for users.  Surface the same message we use at
+  // enroll time so they understand why the action failed.
+  if (
+    typeof navigator === 'undefined' ||
+    !navigator.credentials ||
+    typeof navigator.credentials.get !== 'function'
+  ) {
+    throw new Error(
+      "Your platform's WebView doesn't expose WebAuthn, so this hardware key can't be used here. " +
+        'On Linux this usually means WebKitGTK is below 2.46 — update libwebkit2gtk ' +
+        '(Ubuntu 24.04+, Fedora 40+, Arch all ship 2.46+). On macOS / Windows the OS-shipped ' +
+        'engines support WebAuthn on recent versions.',
+    )
+  }
   const credentialId = b64ToBuf(credentialIdB64)
   const salt = b64ToBuf(saltB64)
   const challenge = crypto.getRandomValues(new Uint8Array(32))

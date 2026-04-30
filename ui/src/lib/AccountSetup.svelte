@@ -17,6 +17,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import Toggle from './Toggle.svelte'
 
   // ── Props ───────────────────────────────────────────────────
   // Called when account setup completes successfully
@@ -33,6 +34,12 @@
 
   // ── Form fields ─────────────────────────────────────────────
   let displayName = $state('')
+  // Sender name (#115) — what appears as the human name in the
+  // From: header on outgoing mail.  `displayName` is the local
+  // label for the account in the UI; `personName` is the
+  // outward-facing identity.  Defaults to `displayName` on the
+  // backend when left blank.
+  let personName = $state('')
   let email = $state('')
   let password = $state('')     // stored in the OS keychain, never on disk
   let imapHost = $state('')
@@ -51,7 +58,7 @@
   function nextStep() {
     error = ''
     if (step === 0 && (!displayName.trim() || !email.trim())) {
-      error = 'Please fill in your name and email address.'
+      error = 'Please fill in the account name and email address.'
       return
     }
     if (step === 1 && (!imapHost.trim() || !password)) {
@@ -253,6 +260,7 @@
         account: {
           id,
           display_name: displayName.trim(),
+          person_name: personName.trim() || null,
           email: email.trim(),
           imap_host: imapHost.trim(),
           imap_port: imapPort,
@@ -320,13 +328,28 @@
         <div>
           <h2 class="text-lg font-semibold mb-4">Your Information</h2>
           <label class="block mb-4">
-            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Display Name</span>
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Account Name</span>
             <input
               type="text"
               bind:value={displayName}
-              placeholder="e.g. Nick"
+              placeholder="e.g. Work, Personal"
               class="input w-full mt-1 px-3 py-2 rounded-md"
             />
+            <span class="block text-xs text-surface-500 mt-1">
+              How this account is labelled inside Nimbus.
+            </span>
+          </label>
+          <label class="block mb-4">
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Your Name</span>
+            <input
+              type="text"
+              bind:value={personName}
+              placeholder="e.g. Nick Schlecker"
+              class="input w-full mt-1 px-3 py-2 rounded-md"
+            />
+            <span class="block text-xs text-surface-500 mt-1">
+              Shown as the sender on outgoing mail. Defaults to the account name when empty.
+            </span>
           </label>
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Email Address</span>
@@ -411,12 +434,12 @@
               class="input w-full mt-1 px-3 py-2 rounded-md"
             />
           </label>
-          <label class="flex items-center gap-2 mb-4">
-            <input type="checkbox" bind:checked={useJmap} class="checkbox" />
+          <div class="flex items-center gap-3 mb-4">
+            <Toggle bind:checked={useJmap} label="Use JMAP instead of IMAP" />
             <span class="text-sm text-surface-700 dark:text-surface-300">
               Use JMAP instead of IMAP (if supported by your provider)
             </span>
-          </label>
+          </div>
 
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Signature (optional)</span>

@@ -100,6 +100,7 @@
       salt: string
       createdAt: number
     }[]
+    attemptsRemaining: number | null
   }
   let dbStatus = $state<DatabaseStatus | null>(null)
   let dbStatusError = $state('')
@@ -112,7 +113,7 @@
         // Fail-open: assume unlocked so the user isn't trapped on
         // a blank screen if the IPC went wrong.  Real lock-state
         // bugs surface as "every other IPC errors with locked".
-        dbStatus = { locked: false, needsSetup: false, methods: [] }
+        dbStatus = { locked: false, needsSetup: false, methods: [], attemptsRemaining: null }
       })
   })
   function onUnlocked() {
@@ -193,10 +194,15 @@
   }
 
   // ── Check for existing accounts on startup ──────────────────
-  // This runs once when the component mounts. It calls get_accounts
-  // to see if the user has already configured an email account.
+  // Wait until the cache is actually unlocked before asking Rust
+  // for the account list — `get_accounts` returns `Locked` while
+  // the FIDO unlock screen is up, and that error path used to
+  // route the user into the setup wizard even when accounts
+  // existed.  Re-runs after `onUnlocked` flips `dbStatus.locked`.
   $effect(() => {
-    checkAccounts()
+    if (dbStatus && !dbStatus.locked) {
+      void checkAccounts()
+    }
   })
 
   // ── Issue #16: background-sync events + desktop notifications ──
@@ -1050,7 +1056,14 @@
      mail / calendar / contacts views) stays unmounted so no IPC
      fires with the cache still locked. -->
 {#if dbStatus && dbStatus.locked}
-  <LockScreen methods={dbStatus.methods} onunlock={onUnlocked} />
+  <LockScreen
+    methods={dbStatus.methods}
+    attemptsRemaining={dbStatus.attemptsRemaining}
+    onattemptschange={(n) => {
+      if (dbStatus) dbStatus = { ...dbStatus, attemptsRemaining: n }
+    }}
+    onunlock={onUnlocked}
+  />
 {:else if dbStatus === null}
   <!-- Brief flash while we wait for `database_status` to land —
        prevents the loading view from poking the cache before we

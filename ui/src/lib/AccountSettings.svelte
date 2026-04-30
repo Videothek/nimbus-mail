@@ -572,6 +572,80 @@
     }
   })
 
+  // ── Editable server settings ────────────────────────────────
+  // Inline edit form for IMAP/SMTP host + port + password.
+  // Expanded per-account; closed by default so the settings list
+  // stays compact.  Drafts are kept in a local map so the user can
+  // tweak fields without writing to the Account struct (which
+  // would mutate the row above the form).
+  interface ServerDraft {
+    imap_host: string
+    imap_port: number
+    smtp_host: string
+    smtp_port: number
+  }
+  // The modal renders against this account; null = closed.
+  let serverEditAccount = $state<Account | null>(null)
+  let serverDrafts = $state<Record<string, ServerDraft>>({})
+  let serverSaveStatus = $state<Record<string, '' | 'saving' | 'saved' | 'error'>>({})
+  let passwordDrafts = $state<Record<string, string>>({})
+
+  function openServerEdit(account: Account) {
+    serverDrafts[account.id] = {
+      imap_host: account.imap_host,
+      imap_port: account.imap_port,
+      smtp_host: account.smtp_host,
+      smtp_port: account.smtp_port,
+    }
+    passwordDrafts[account.id] = ''
+    serverSaveStatus[account.id] = ''
+    serverEditAccount = account
+  }
+
+  function closeServerEdit() {
+    serverEditAccount = null
+  }
+
+  // One-shot save: persists hosts/ports through `update_account`
+  // and, if the password field is non-empty, rotates the keychain
+  // entry through `set_account_password`.  An empty password leaves
+  // the existing keychain entry untouched, so the modal doubles as
+  // "edit servers only" without forcing the user to retype.
+  async function saveConnectionSettings(account: Account) {
+    const draft = serverDrafts[account.id]
+    if (!draft) return
+    if (!draft.imap_host.trim() || !draft.smtp_host.trim()) {
+      serverSaveStatus[account.id] = 'error'
+      return
+    }
+    serverSaveStatus[account.id] = 'saving'
+    try {
+      const updated: Account = {
+        ...account,
+        imap_host: draft.imap_host.trim(),
+        imap_port: draft.imap_port,
+        smtp_host: draft.smtp_host.trim(),
+        smtp_port: draft.smtp_port,
+      }
+      await invoke('update_account', { account: updated })
+      Object.assign(account, updated)
+
+      const newPassword = passwordDrafts[account.id] ?? ''
+      if (newPassword) {
+        await invoke('set_account_password', { id: account.id, password: newPassword })
+        passwordDrafts[account.id] = ''
+      }
+
+      serverSaveStatus[account.id] = 'saved'
+      setTimeout(() => {
+        if (serverSaveStatus[account.id] === 'saved') serverSaveStatus[account.id] = ''
+      }, 1500)
+    } catch (e) {
+      console.warn('failed to save connection settings', e)
+      serverSaveStatus[account.id] = 'error'
+    }
+  }
+
   /** Persist the sender (person) name (#115). */
   async function onPersonNameChange(account: Account, raw: string) {
     const next = raw.trim() || null
@@ -1061,12 +1135,12 @@
               </div>
               <div class="flex flex-col items-end gap-1">
                 <button
-                  class="btn btn-sm preset-outlined-surface-500 text-xs"
-                  disabled={trustBusy}
-                  title="Probe the IMAP server's current TLS certificate and add it to this account's trust list. Use after a server cert renewal if connections start failing with 'invalid peer certificate / UnknownIssuer'."
-                  onclick={() => void startRetrust(account)}
+                  class="btn btn-sm preset-outlined-surface-500 text-base px-2 py-1"
+                  title="Connection settings — edit server hostnames, ports, password, and trust certificates"
+                  aria-label="Connection settings"
+                  onclick={() => openServerEdit(account)}
                 >
-                  {trustBusy ? '…' : '🔒 Trust server cert'}
+                  ⚙️
                 </button>
                 <button
                   class="btn btn-sm preset-outlined-error-500"
@@ -1262,6 +1336,107 @@
      so they can compare against what they expected (matches the
      fingerprint Nextcloud / Let's Encrypt / their CA prints) before
      trusting it. -->
+{#if serverEditAccount}
+  {@const acc = serverEditAccount}
+  {@const draft = serverDrafts[acc.id]}
+  {@const sStatus = serverSaveStatus[acc.id]}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onmousedown={(e) => { if (e.target === e.currentTarget) closeServerEdit() }}
+    onkeydown={(e) => { if (e.key === 'Escape') closeServerEdit() }}
+  >
+    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-lg max-w-full mx-4 p-6 space-y-5">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <h3 class="text-base font-semibold">Connection settings</h3>
+          <p class="text-xs text-surface-500 mt-0.5">{acc.email}</p>
+        </div>
+        <div class="flex items-center gap-3">
+          {#if sStatus === 'saving'}
+            <span class="text-xs text-surface-400">Saving…</span>
+          {:else if sStatus === 'saved'}
+            <span class="text-xs text-success-500">Saved</span>
+          {:else if sStatus === 'error'}
+            <span class="text-xs text-error-500">Save failed</span>
+          {/if}
+          <button
+            type="button"
+            class="btn btn-sm preset-outlined-surface-500"
+            disabled={trustBusy}
+            title="Probe the IMAP server's current TLS certificate and add it to this account's trust list. Use after a server cert renewal if connections start failing with 'invalid peer certificate / UnknownIssuer'."
+            onclick={() => void startRetrust(acc)}
+          >{trustBusy ? '…' : '🔒 Trust server cert'}</button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-[1fr_6rem] gap-3">
+        <label class="block">
+          <span class="text-xs text-surface-500">IMAP host</span>
+          <input
+            type="text"
+            bind:value={draft.imap_host}
+            class="input w-full text-sm px-3 py-2 rounded-md mt-1"
+          />
+        </label>
+        <label class="block">
+          <span class="text-xs text-surface-500">Port</span>
+          <input
+            type="number"
+            bind:value={draft.imap_port}
+            class="input w-full text-sm px-3 py-2 rounded-md mt-1"
+          />
+        </label>
+        <label class="block">
+          <span class="text-xs text-surface-500">SMTP host</span>
+          <input
+            type="text"
+            bind:value={draft.smtp_host}
+            class="input w-full text-sm px-3 py-2 rounded-md mt-1"
+          />
+        </label>
+        <label class="block">
+          <span class="text-xs text-surface-500">Port</span>
+          <input
+            type="number"
+            bind:value={draft.smtp_port}
+            class="input w-full text-sm px-3 py-2 rounded-md mt-1"
+          />
+        </label>
+        <label class="block col-span-2">
+          <span class="text-xs text-surface-500">Password</span>
+          <input
+            type="password"
+            autocomplete="new-password"
+            placeholder="Leave empty to keep current password"
+            bind:value={passwordDrafts[acc.id]}
+            class="input w-full text-sm px-3 py-2 rounded-md mt-1"
+          />
+          <span class="block text-xs text-surface-400 mt-1">
+            When set, replaces the password stored in your OS keychain. Takes effect on the next IMAP/SMTP connection.
+          </span>
+        </label>
+      </div>
+
+      <div class="flex justify-end gap-2 pt-2 border-t border-surface-200 dark:border-surface-700">
+        <button
+          type="button"
+          class="btn preset-outlined-surface-500"
+          onclick={closeServerEdit}
+        >Close</button>
+        <button
+          type="button"
+          class="btn preset-filled-primary-500"
+          disabled={sStatus === 'saving'}
+          onclick={() => void saveConnectionSettings(acc)}
+        >Save</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if trustPrompt}
   <div
     class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
