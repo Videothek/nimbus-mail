@@ -47,7 +47,10 @@
   const webauthnAvailable = $state(isWebAuthnAvailable())
 
   let newLabel = $state('')
-  let passphraseLabel = $state('Recovery passphrase')
+  /** Fixed label for the passphrase entry — there's only ever
+   *  one passphrase wrap (it's the recovery slot, not a per-
+   *  device thing), so the user doesn't need to name it. */
+  const PASSPHRASE_LABEL = 'Recovery passphrase'
   let passphraseValue = $state('')
   let passphraseConfirm = $state('')
 
@@ -108,7 +111,7 @@
     try {
       await invoke('fido_enroll_passphrase', {
         passphrase: passphraseValue,
-        label: passphraseLabel.trim() || 'Recovery passphrase',
+        label: PASSPHRASE_LABEL,
       })
       passphraseValue = ''
       passphraseConfirm = ''
@@ -222,13 +225,6 @@
         </p>
         <div class="space-y-2">
           <input
-            type="text"
-            class="input w-full text-sm px-3 py-1.5 rounded-md"
-            placeholder="Label — e.g. “Recovery passphrase”"
-            bind:value={passphraseLabel}
-            disabled={busy}
-          />
-          <input
             type="password"
             class="input w-full text-sm px-3 py-1.5 rounded-md"
             placeholder="Passphrase (8+ characters)"
@@ -266,9 +262,17 @@
                   {c.kind === 'passphrase' ? '🔐' : '🔑'}
                 </span>
                 <div class="flex-1 min-w-0">
-                  <p class="font-medium truncate">{c.label}</p>
+                  <!-- For passphrase entries we surface the kind
+                       directly; the internal label is an
+                       implementation detail the user never set
+                       and shouldn't have to see.  Hardware keys
+                       keep the user-supplied label since that's
+                       what distinguishes one device from another. -->
+                  <p class="font-medium truncate">
+                    {c.kind === 'passphrase' ? 'Passphrase' : c.label}
+                  </p>
                   <p class="text-xs text-surface-500 truncate">
-                    {c.kind === 'passphrase' ? 'Passphrase' : 'Hardware key'}
+                    {c.kind === 'passphrase' ? 'Recovery method' : 'Hardware key'}
                     · Added {fmtDate(c.createdAt)}
                   </p>
                 </div>
