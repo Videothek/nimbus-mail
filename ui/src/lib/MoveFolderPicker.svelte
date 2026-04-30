@@ -210,6 +210,7 @@
       {:else}
         {#each visibleFolders as f (f.name)}
           {@const isCurrent = f.name === currentFolder}
+          {@const glyph = folderIcon(f)}
           <button
             class="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors disabled:text-surface-400 disabled:cursor-not-allowed
               {isCurrent
@@ -220,7 +221,6 @@
             onclick={() => onPickFolder(f.name)}
             title={isCurrent ? 'Already in this folder' : `Move to ${f.name}`}
           >
-            {@const glyph = folderIcon(f)}
             {#if glyph.kind === 'icon'}
               <Icon name={glyph.name} size={16} />
             {:else}
