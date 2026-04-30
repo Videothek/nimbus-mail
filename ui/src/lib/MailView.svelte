@@ -1253,16 +1253,19 @@
       {/if}
       {#if email.body_html}
         <!-- Per-message background toggle — flips the white-canvas
-             default just for the open mail.  Kept text-only because
-             the family has no "page background" glyph; the label is
-             short and tells the user where a click will take them. -->
+             default just for the open mail.  Icon-only: `sun` for
+             "switch to white" (bright canvas), `design-palette` for
+             "switch to the app's theme" (whatever palette the user
+             picked).  Title carries the action so hover tooltips
+             still spell it out. -->
         <button
-          class="btn btn-sm preset-outlined-surface-500"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
           onclick={() => (whiteBackgroundOverride = !effectiveWhiteBackground)}
           title={effectiveWhiteBackground
             ? "Switch this mail to the app's theme background"
             : 'Switch this mail to a white background'}
-        >{effectiveWhiteBackground ? 'Use mail theme' : 'White background'}</button>
+          aria-label={effectiveWhiteBackground ? 'Use mail theme' : 'White background'}
+        ><Icon name={effectiveWhiteBackground ? 'design-palette' : 'sun'} size={16} /></button>
       {/if}
       <!-- Move to folder (#89) — single button that opens the
            `MoveFolderPicker` modal.  Picker presents folders with
@@ -1281,7 +1284,7 @@
         aria-label="Archive"
       ><Icon name="archive" size={16} /></button>
       <button
-        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-red-500/15 hover:text-red-500 hover:border-red-500/40"
         onclick={deleteMessage}
         title="Move this message to Trash (permanently deletes if already in Trash or if the account has no Trash folder)"
         aria-label="Delete"
