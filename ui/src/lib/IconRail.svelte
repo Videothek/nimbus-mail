@@ -269,6 +269,11 @@
         ></span>
       {/if}
     </button>
+    <!-- Sub-divider between the All-inboxes bubble and the
+         individual account avatars.  Visually groups "aggregate"
+         vs. "single account" without making the rail noisier
+         than the main divider below the avatar stack. -->
+    <div class="w-6 h-px my-1 bg-surface-300 dark:bg-surface-600" aria-hidden="true"></div>
   {/if}
   {#each sortedAccounts as a (a.id)}
     <!-- The active ring only paints while we're actually on the
