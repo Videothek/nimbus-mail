@@ -166,38 +166,50 @@
 
   {#if loading}
     <p class="text-sm text-surface-500">Loading…</p>
-  {:else if !webauthnAvailable}
-    <div class="rounded-md border border-warning-500/40 bg-warning-500/10 p-4 text-sm">
-      WebAuthn isn't available in this build's webview.  Hardware
-      authentication needs the OS-shipped browser engine to expose
-      <code>navigator.credentials</code>; update your platform's
-      webview component (libwebkit2gtk on Linux, WebView2 on
-      Windows, system Safari on macOS) and try again.
-    </div>
   {:else}
     <div class="space-y-4">
-      <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4">
-        <h3 class="font-medium mb-2">Add a hardware key</h3>
-        <p class="text-xs text-surface-500 mb-3">
-          You'll be asked to authenticate (touch your security key, scan
-          a fingerprint, …). The OS handles the prompt; Nimbus only sees
-          the resulting key material.
-        </p>
-        <div class="flex items-center gap-2">
-          <input
-            type="text"
-            class="input flex-1 text-sm px-3 py-1.5 rounded-md"
-            placeholder="Label — e.g. “YubiKey 5C”, “MacBook Touch ID”"
-            bind:value={newLabel}
-            disabled={busy}
-          />
-          <button
-            class="btn preset-filled-primary-500"
-            disabled={busy}
-            onclick={() => void addKey()}
-          >{busy ? 'Working…' : 'Add'}</button>
+      <!-- Hardware-key enrollment is gated on a working WebAuthn
+           API.  Linux builds whose libwebkit2gtk lacks WebAuthn
+           (the default on most stable distros today) get a
+           one-line note instead of the form, but passphrase
+           enrollment below still works and is the recommended
+           path on those systems. -->
+      {#if webauthnAvailable}
+        <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4">
+          <h3 class="font-medium mb-2">Add a hardware key</h3>
+          <p class="text-xs text-surface-500 mb-3">
+            You'll be asked to authenticate (touch your security key, scan
+            a fingerprint, …). The OS handles the prompt; Nimbus only sees
+            the resulting key material.
+          </p>
+          <div class="flex items-center gap-2">
+            <input
+              type="text"
+              class="input flex-1 text-sm px-3 py-1.5 rounded-md"
+              placeholder="Label — e.g. “YubiKey 5C”, “MacBook Touch ID”"
+              bind:value={newLabel}
+              disabled={busy}
+            />
+            <button
+              class="btn preset-filled-primary-500"
+              disabled={busy}
+              onclick={() => void addKey()}
+            >{busy ? 'Working…' : 'Add'}</button>
+          </div>
         </div>
-      </div>
+      {:else}
+        <div class="rounded-md border border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800/40 p-4 text-sm text-surface-600 dark:text-surface-400">
+          <p class="font-medium mb-1">Hardware-key registration is unavailable on this build.</p>
+          <p class="text-xs">
+            The webview Tauri uses on Linux (<code>libwebkit2gtk</code>) doesn't
+            expose <code>navigator.credentials</code> on most stable distros
+            yet.  You can still register a recovery passphrase below — it
+            uses the same envelope and unlocks the same way at startup.
+            Hardware keys will become available once your distro ships
+            WebKitGTK ≥ 2.46 with WebAuthn enabled.
+          </p>
+        </div>
+      {/if}
 
       <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4">
         <h3 class="font-medium mb-2">Add a recovery passphrase</h3>
