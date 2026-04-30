@@ -14,7 +14,7 @@
    * back without re-fetching anything.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import { invoke, convertFileSrc } from '@tauri-apps/api/core'
   import { formatError } from './errors'
   import Icon, { type IconName } from './Icon.svelte'
 
@@ -343,6 +343,42 @@
     const parts = src.split(/\s+/).filter(Boolean)
     if (parts.length === 1) return parts[0][0].toUpperCase()
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+  }
+
+  // ── Contact-photo lookup for attendee chips (#179) ──────────
+  // Mirrors EventEditor's pattern: warm a small per-card cache
+  // keyed by lowercase email, then resolve `<img src>` against
+  // the `contact-photo://` scheme.  Falls back to initials when
+  // the address has no vCard photo.
+  interface ContactEmail {
+    kind: string
+    value: string
+  }
+  interface ContactRow {
+    id: string
+    display_name: string
+    email: ContactEmail[]
+    organization: string | null
+    photo_mime: string | null
+  }
+  let contactsByEmail = $state<Map<string, ContactRow>>(new Map())
+  $effect(() => {
+    void invoke<ContactRow[]>('search_contacts', { query: '', limit: 500 })
+      .then((rows) => {
+        const map = new Map<string, ContactRow>()
+        for (const c of rows) {
+          for (const e of c.email) {
+            if (e.value) map.set(e.value.toLowerCase(), c)
+          }
+        }
+        contactsByEmail = map
+      })
+      .catch(() => {})
+  })
+  function attendeePhotoUrl(a: InviteAttendee): string | null {
+    const c = contactsByEmail.get(a.email.toLowerCase())
+    if (!c || !c.photo_mime) return null
+    return convertFileSrc(c.id, 'contact-photo')
   }
 
   /** Optimistic PARTSTAT overrides keyed by lower-cased email,
@@ -1036,14 +1072,24 @@
               {@const partstat = effectiveStatus(a).toUpperCase()}
               {@const showRsvpBadge = partstat && partstat !== 'NEEDS-ACTION'}
               {@const g = attendeeStatusGlyph(a)}
+              {@const photo = attendeePhotoUrl(a)}
               <span
                 class="inline-flex items-center gap-3 pl-1 pr-2 py-1 rounded-full text-xs bg-surface-200 dark:bg-surface-700 max-w-full"
                 title={a.email + ` — ${partstat.toLowerCase()}`}
               >
                 <span class="relative w-7 h-7 flex-shrink-0">
-                  <div class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 flex items-center justify-center text-[11px] font-semibold">
-                    {attendeeInitials(a)}
-                  </div>
+                  {#if photo}
+                    <img
+                      src={photo}
+                      alt=""
+                      loading="lazy"
+                      class="w-7 h-7 rounded-full object-cover"
+                    />
+                  {:else}
+                    <div class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 flex items-center justify-center text-[11px] font-semibold">
+                      {attendeeInitials(a)}
+                    </div>
+                  {/if}
                   {#if showRsvpBadge}
                     <span
                       class="absolute bottom-0 -right-2 w-4 h-4 rounded-full bg-surface-50 dark:bg-surface-900 ring-1 ring-surface-200 dark:ring-surface-700 flex items-center justify-center leading-none {g.colorClass}"
