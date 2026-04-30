@@ -605,6 +605,40 @@ impl Cache {
         Ok(out)
     }
 
+    /// Return the newest `limit` envelopes in `folder` whose body has
+    /// **not** yet been fetched (no row in `message_bodies`).  Used by
+    /// the launch-time prerender (#178) to warm the message cache —
+    /// the user clicks an inbox row and the reading pane paints
+    /// instantly because the body is already on disk, instead of
+    /// waiting for an IMAP round-trip.
+    pub fn get_envelopes_missing_body(
+        &self,
+        account_id: &str,
+        folder: &str,
+        limit: u32,
+    ) -> Result<Vec<u32>, CacheError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT m.uid
+             FROM messages m
+             LEFT JOIN message_bodies b USING (account_id, folder, uid)
+             WHERE m.account_id = ?1
+               AND m.folder = ?2
+               AND m.pending_action IS NULL
+               AND b.uid IS NULL
+             ORDER BY m.internal_date DESC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![account_id, folder, limit as i64], |r| {
+            Ok(r.get::<_, i64>(0)? as u32)
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Return the newest `limit` envelopes in `folder` across **all**
     /// accounts. Powers the unified-inbox view: each row carries its
     /// owning `account_id` so the UI can render an account label and
