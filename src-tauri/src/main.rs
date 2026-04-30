@@ -5013,6 +5013,68 @@ async fn download_email_attachment(
     Ok(data)
 }
 
+// ── Attachment preview cache (#157) ──────────────────────────
+//
+// Persists frontend-generated thumbnails alongside the cached
+// message body so MailView re-renders without re-fetching the
+// full attachment bytes.  See nimbus-store/src/cache/mod.rs
+// for the schema and helpers.
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentPreviewView {
+    part_id: u32,
+    mime: String,
+    /// Base64-encoded thumbnail bytes — the frontend pipes these
+    /// straight into a `data:` URL without going through a Blob.
+    base64: String,
+}
+
+/// Record a rendered thumbnail for one attachment.  Frontend
+/// calls this once per attachment after AttachmentThumb extracts
+/// or downsamples the preview; subsequent opens of the same
+/// message read all of them back in a single query via
+/// `get_attachment_previews`.
+#[tauri::command]
+fn put_attachment_preview(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    part_id: u32,
+    mime: String,
+    bytes: Vec<u8>,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    cache
+        .put_attachment_preview(&account_id, &folder, uid, part_id, &mime, &bytes)
+        .map_err(NimbusError::from)
+}
+
+/// Bulk-fetch every stored thumbnail for a message.  MailView
+/// invokes this once when the email mounts and seeds the
+/// in-memory thumb cache so no subsequent `<AttachmentThumb>`
+/// has to fetch bytes or run extraction.
+#[tauri::command]
+fn get_attachment_previews(
+    account_id: String,
+    folder: String,
+    uid: u32,
+    cache: State<'_, Cache>,
+) -> Result<Vec<AttachmentPreviewView>, NimbusError> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let rows = cache
+        .get_attachment_previews_for_message(&account_id, &folder, uid)
+        .map_err(NimbusError::from)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| AttachmentPreviewView {
+            part_id: r.part_id,
+            mime: r.mime,
+            base64: STANDARD.encode(r.bytes),
+        })
+        .collect())
+}
+
 /// Find an iCalendar payload anywhere in the message and return
 /// its raw bytes.  Used by MailView as a fallback for invites
 /// where the cached `attachments` array doesn't surface the
@@ -7294,6 +7356,8 @@ fn main() {
             fetch_unified_envelopes,
             fetch_message,
             download_email_attachment,
+            put_attachment_preview,
+            get_attachment_previews,
             download_calendar_from_message,
             fetch_folders,
             create_folder,

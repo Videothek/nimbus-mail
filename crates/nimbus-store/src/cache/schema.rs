@@ -705,6 +705,40 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE mailing_list_settings ADD COLUMN emoji TEXT;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // v19 → v20: attachment-thumbnail cache (#157).
+    //
+    // MailView used to re-fetch every image / video attachment's
+    // bytes on each open to build a 36×36 thumbnail strip.  For
+    // a video that means a fresh GStreamer pipeline + canvas
+    // extraction each visit; for a 5 MiB photo it's an IPC round-
+    // trip + Blob construction per render.  Persist the
+    // generated thumbnail (JPEG-encoded, ≤256 px on the long
+    // edge) per (account, folder, uid, part_id) so repeat opens
+    // skip the work entirely.
+    //
+    // Keyed on the same tuple MailView already addresses
+    // attachments by; cascades-on-delete are not strictly
+    // necessary because the IMAP UID is reused only after
+    // EXPUNGE and a new fetch repopulates the row, but we lean
+    // on a foreign key from `message_bodies(account_id,
+    // folder, uid)` so that a message's removal also evicts
+    // its previews and we don't accumulate orphans.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    CREATE TABLE IF NOT EXISTS attachment_previews (
+        account_id TEXT    NOT NULL,
+        folder     TEXT    NOT NULL,
+        uid        INTEGER NOT NULL,
+        part_id    INTEGER NOT NULL,
+        mime       TEXT    NOT NULL,
+        bytes      BLOB    NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (account_id, folder, uid, part_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_attachment_previews_msg
+        ON attachment_previews(account_id, folder, uid);
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"
