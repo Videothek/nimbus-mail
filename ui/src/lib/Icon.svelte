@@ -37,6 +37,16 @@
     | 'translate' | 'spellcheck' | 'dictate'
     | 'save-draft' | 'open-link' | 'open-on-desktop' | 'cloud' | 'today'
     | 'nav-backward' | 'nav-forward' | 'arrow-left' | 'arrow-right'
+    // v4 — common UI, tables, editor, history, security
+    | 'email-envelope' | 'design-palette' | 'more' | 'more-info'
+    | 'full-screen' | 'emoji' | 'open-in-browser'
+    | 'table' | 'insert-row-above' | 'insert-row-below' | 'delete-row'
+    | 'insert-column-left' | 'insert-column-right' | 'delete-column'
+    | 'clear' | 'insert-image' | 'bullet-list' | 'numbered-list'
+    | 'align-left' | 'align-center' | 'align-right' | 'justify'
+    | 'quote' | 'text-color' | 'highlight-text'
+    | 'undo' | 'redo'
+    | 'passphrase' | 'security-key'
 </script>
 
 <script lang="ts">
@@ -111,6 +121,36 @@
   import NavForward from './icons/NavForward.svelte'
   import ArrowLeft from './icons/ArrowLeft.svelte'
   import ArrowRight from './icons/ArrowRight.svelte'
+  // v4
+  import EmailEnvelope from './icons/EmailEnvelope.svelte'
+  import DesignPalette from './icons/DesignPalette.svelte'
+  import More from './icons/More.svelte'
+  import MoreInfo from './icons/MoreInfo.svelte'
+  import FullScreen from './icons/FullScreen.svelte'
+  import Emoji from './icons/Emoji.svelte'
+  import OpenInBrowser from './icons/OpenInBrowser.svelte'
+  import Table from './icons/Table.svelte'
+  import InsertRowAbove from './icons/InsertRowAbove.svelte'
+  import InsertRowBelow from './icons/InsertRowBelow.svelte'
+  import DeleteRow from './icons/DeleteRow.svelte'
+  import InsertColumnLeft from './icons/InsertColumnLeft.svelte'
+  import InsertColumnRight from './icons/InsertColumnRight.svelte'
+  import DeleteColumn from './icons/DeleteColumn.svelte'
+  import Clear from './icons/Clear.svelte'
+  import InsertImage from './icons/InsertImage.svelte'
+  import BulletList from './icons/BulletList.svelte'
+  import NumberedList from './icons/NumberedList.svelte'
+  import AlignLeft from './icons/AlignLeft.svelte'
+  import AlignCenter from './icons/AlignCenter.svelte'
+  import AlignRight from './icons/AlignRight.svelte'
+  import JustifyIcon from './icons/Justify.svelte'
+  import Quote from './icons/Quote.svelte'
+  import TextColor from './icons/TextColor.svelte'
+  import HighlightText from './icons/HighlightText.svelte'
+  import Undo from './icons/Undo.svelte'
+  import Redo from './icons/Redo.svelte'
+  import Passphrase from './icons/Passphrase.svelte'
+  import SecurityKey from './icons/SecurityKey.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -193,6 +233,35 @@
     'nav-forward': NavForward,
     'arrow-left': ArrowLeft,
     'arrow-right': ArrowRight,
+    'email-envelope': EmailEnvelope,
+    'design-palette': DesignPalette,
+    'more': More,
+    'more-info': MoreInfo,
+    'full-screen': FullScreen,
+    'emoji': Emoji,
+    'open-in-browser': OpenInBrowser,
+    'table': Table,
+    'insert-row-above': InsertRowAbove,
+    'insert-row-below': InsertRowBelow,
+    'delete-row': DeleteRow,
+    'insert-column-left': InsertColumnLeft,
+    'insert-column-right': InsertColumnRight,
+    'delete-column': DeleteColumn,
+    'clear': Clear,
+    'insert-image': InsertImage,
+    'bullet-list': BulletList,
+    'numbered-list': NumberedList,
+    'align-left': AlignLeft,
+    'align-center': AlignCenter,
+    'align-right': AlignRight,
+    'justify': JustifyIcon,
+    'quote': Quote,
+    'text-color': TextColor,
+    'highlight-text': HighlightText,
+    'undo': Undo,
+    'redo': Redo,
+    'passphrase': Passphrase,
+    'security-key': SecurityKey,
   }
   const Cmp = $derived(map[name])
 </script>

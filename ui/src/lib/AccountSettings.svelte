@@ -789,10 +789,11 @@
             <span class="text-xs text-error-500">Save failed</span>
           {/if}
           <button
-            class="btn btn-sm preset-outlined-primary-500"
+            class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
             disabled={checkNowBusy}
             onclick={runCheckMailNow}
           >
+            <Icon name={checkNowBusy ? 'loading' : 'sync'} size={14} />
             {checkNowBusy ? 'Checking…' : 'Check Mail Now'}
           </button>
         </div>
@@ -857,10 +858,11 @@
             <span class="text-xs text-success-500">Saved</span>
           {/if}
           <button
-            class="btn btn-sm preset-outlined-primary-500"
+            class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
             disabled={checkNowBusy}
             onclick={runCheckMailNow}
           >
+            <Icon name={checkNowBusy ? 'loading' : 'sync'} size={14} />
             {checkNowBusy ? 'Checking…' : 'Check Mail Now'}
           </button>
         </div>

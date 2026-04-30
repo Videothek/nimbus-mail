@@ -997,7 +997,7 @@
     onclick={toggleDetails}
     aria-expanded={detailsOpen}
   >
-    <span class="transition-transform inline-block {detailsOpen ? 'rotate-90' : ''}">▸</span>
+    <span class="transition-transform inline-flex {detailsOpen ? 'rotate-90' : ''}"><Icon name="nav-forward" size={12} /></span>
     {detailsOpen ? 'Hide details' : 'More info'}
   </button>
 
@@ -1045,7 +1045,7 @@
             aria-label="Previous day"
             title="Previous day"
             onclick={() => shiftPreviewDay(-1)}
-          >‹</button>
+          ><Icon name="nav-backward" size={14} /></button>
           <span class="font-medium text-surface-700 dark:text-surface-200 min-w-[120px] text-center">
             {previewDayLabel}
           </span>
@@ -1055,7 +1055,7 @@
             aria-label="Next day"
             title="Next day"
             onclick={() => shiftPreviewDay(1)}
-          >›</button>
+          ><Icon name="nav-forward" size={14} /></button>
         </div>
 
         {#if previewLoading && !previewLoaded}

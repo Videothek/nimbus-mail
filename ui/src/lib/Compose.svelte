@@ -254,13 +254,13 @@
     {
       id: 'attach',
       label: 'Attach',
-      icon: '📎',
+      iconName: 'attachment',
       content: attachTabContent,
     },
     {
       id: 'meetings',
       label: 'Meetings',
-      icon: '💬',
+      iconName: 'meetings',
       content: meetingsTabContent,
     },
   ])
@@ -1303,7 +1303,7 @@
             class="btn btn-sm preset-outlined-surface-500 text-xs inline-flex items-center gap-1.5"
             onclick={() => void popoutCompose()}
             title="Open this draft in a separate window"
-          ><Icon name="open-on-desktop" size={14} /> Pop out</button>
+          ><Icon name="full-screen" size={14} /> Pop out</button>
         {/if}
         <button class="text-surface-500 hover:text-surface-900 dark:hover:text-surface-100" onclick={cancel} aria-label="Close">✕</button>
       </div>
@@ -1446,7 +1446,7 @@
     title="Attach a file or link from Nextcloud"
     onclick={() => (showNcPicker = true)}
   >
-    <span class="rt-btn-icon">☁️</span>
+    <span class="rt-btn-icon"><Icon name="cloud" size={16} /></span>
     <span class="rt-btn-label">NC Files</span>
   </button>
 {/snippet}
