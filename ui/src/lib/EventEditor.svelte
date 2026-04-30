@@ -1580,7 +1580,7 @@
                   : partstat === 'DECLINED' ? 'text-error-500'
                   : partstat === 'TENTATIVE' ? 'text-warning-500'
                   : 'text-surface-500'}
-                <span class="inline-flex items-center gap-2 pl-1 pr-2 py-1 rounded-full text-sm bg-surface-200 dark:bg-surface-700 max-w-full">
+                <span class="inline-flex items-center gap-3 pl-1 pr-2 py-1 rounded-full text-sm bg-surface-200 dark:bg-surface-700 max-w-full">
                   <!-- Avatar + RSVP overlay (#179).  The
                        partstat badge sits at bottom-right of
                        the photo so a glance at the chip tells
