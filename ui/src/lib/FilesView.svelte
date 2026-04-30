@@ -220,30 +220,44 @@
       <!-- Per-file download status strip (#160).  Mirrors the
            NextcloudFilePicker progress UI so the user sees exactly
            which file is being fetched and which (if any) errored. -->
-      <div class="px-5 py-2 border-t border-surface-200 dark:border-surface-700 max-h-40 overflow-y-auto space-y-1">
+      <div class="px-5 py-2 border-t border-surface-200 dark:border-surface-700 max-h-40 overflow-y-auto space-y-1.5">
         {#each [...downloadStatus] as [path, status] (path)}
-          <div class="flex items-center gap-2 text-xs">
-            <span class="shrink-0 w-4 h-4 flex items-center justify-center">
-              {#if status.kind === 'pending'}
-                <span class="w-2 h-2 rounded-full bg-surface-400"></span>
-              {:else if status.kind === 'downloading'}
-                <span class="text-primary-500"><Icon name="loading" size={14} /></span>
+          <div class="text-xs">
+            <div class="flex items-center gap-2">
+              <span class="shrink-0 w-4 h-4 flex items-center justify-center">
+                {#if status.kind === 'pending'}
+                  <span class="w-2 h-2 rounded-full bg-surface-400"></span>
+                {:else if status.kind === 'downloading'}
+                  <span class="text-primary-500"><Icon name="loading" size={14} /></span>
+                {:else if status.kind === 'done'}
+                  <span class="text-success-500"><Icon name="success" size={14} /></span>
+                {:else}
+                  <span class="text-error-500"><Icon name="error" size={14} /></span>
+                {/if}
+              </span>
+              <span class="flex-1 truncate text-surface-700 dark:text-surface-300">{basename(path)}</span>
+              {#if status.kind === 'failed'}
+                <span class="shrink-0 text-error-500 truncate max-w-[180px]" title={status.message}>{status.message}</span>
               {:else if status.kind === 'done'}
-                <span class="text-success-500"><Icon name="success" size={14} /></span>
+                <span class="shrink-0 text-success-500">Done</span>
+              {:else if status.kind === 'downloading'}
+                <span class="shrink-0 text-primary-500">Downloading…</span>
               {:else}
-                <span class="text-error-500"><Icon name="error" size={14} /></span>
+                <span class="shrink-0 text-surface-500">Queued</span>
               {/if}
-            </span>
-            <span class="flex-1 truncate text-surface-700 dark:text-surface-300">{basename(path)}</span>
-            {#if status.kind === 'failed'}
-              <span class="shrink-0 text-error-500 truncate max-w-[180px]" title={status.message}>{status.message}</span>
-            {:else if status.kind === 'done'}
-              <span class="shrink-0 text-success-500">Done</span>
-            {:else if status.kind === 'downloading'}
-              <span class="shrink-0 text-primary-500">Downloading…</span>
-            {:else}
-              <span class="shrink-0 text-surface-500">Queued</span>
-            {/if}
+            </div>
+            <!-- Indeterminate per-file bar (#160).  Same component
+                 styling as `NextcloudFilePicker` — see the comment
+                 there for why we don't drive a real percentage. -->
+            <div class="mt-1 ml-6 h-1 rounded-full overflow-hidden bg-surface-200 dark:bg-surface-700 relative">
+              {#if status.kind === 'downloading'}
+                <span class="nc-indeterminate absolute inset-y-0 w-1/3 bg-primary-500 rounded-full"></span>
+              {:else if status.kind === 'done'}
+                <span class="absolute inset-0 bg-success-500"></span>
+              {:else if status.kind === 'failed'}
+                <span class="absolute inset-0 bg-error-500"></span>
+              {/if}
+            </div>
           </div>
         {/each}
       </div>
@@ -359,3 +373,16 @@
     </div>
   </div>
 {/if}
+
+<style>
+  /* Indeterminate per-file progress head (#160).  Same animation
+     used in NextcloudFilePicker — slides a short fill segment
+     across the track so the row reads as "in flight". */
+  @keyframes nc-indeterminate {
+    0% { left: -33%; }
+    100% { left: 100%; }
+  }
+  .nc-indeterminate {
+    animation: nc-indeterminate 1.2s linear infinite;
+  }
+</style>
