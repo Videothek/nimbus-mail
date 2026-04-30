@@ -1070,13 +1070,12 @@
 
   // ---------------------------------------------------------------------
   // Archive / Delete / Move-to-folder — top-bar actions that remove the
-  // current message from the visible folder. All three follow the same
-  // optimistic shape: disable the buttons, run the Tauri command, and
-  // notify the parent so it can deselect + refresh the mail list. Errors
-  // bubble back into the same `error` banner the load path uses.
+  // current message from the visible folder.  All three are optimistic
+  // (#174): notify the parent to auto-advance immediately, then run
+  // the IMAP command in the background.  IMAP errors land in the same
+  // `error` banner the load path uses, and the backend's tombstone /
+  // un-tombstone lifecycle restores the row in the list on failure.
   // ---------------------------------------------------------------------
-  let removing = $state(false)
-
   // Move-to-folder picker (#89).  The picker itself is a separate
   // modal component — `MoveFolderPicker` — that fetches folders and
   // renders them with the same icon/order conventions as the
@@ -1084,40 +1083,45 @@
   // an `onpicked` handler that fires the move.
   let moveMenuOpen = $state(false)
 
+  // Optimistic-action helper (#174).  Notify the parent FIRST so
+  // the auto-advance + MailList tombstone-driven row removal both
+  // run before the IMAP roundtrip.  If the IMAP call fails the
+  // backend's `clear_message_pending` un-tombstones the cache row
+  // so the list pull restores it; we surface the error message
+  // here so the user knows the action didn't actually take.
   async function moveToFolder(destFolder: string) {
     if (!email || uid == null) return
     if (destFolder === email.folder) return // move-to-self is a noop
     const removedUid = uid
-    removing = true
+    const acc = email.account_id
+    const fld = email.folder
+    onmessageremoved?.(removedUid)
     try {
       await invoke('move_message', {
-        accountId: email.account_id,
-        folder: email.folder,
+        accountId: acc,
+        folder: fld,
         uid: removedUid,
         destFolder,
       })
-      onmessageremoved?.(removedUid)
     } catch (e) {
       error = formatError(e) || 'Failed to move'
-    } finally {
-      removing = false
     }
   }
 
   async function archiveMessage() {
     if (!email || uid == null) return
-    removing = true
+    const removedUid = uid
+    const acc = email.account_id
+    const fld = email.folder
+    onmessageremoved?.(removedUid)
     try {
       await invoke('archive_message', {
-        accountId: email.account_id,
-        folder: email.folder,
-        uid,
+        accountId: acc,
+        folder: fld,
+        uid: removedUid,
       })
-      onmessageremoved?.(uid)
     } catch (e) {
       error = formatError(e) || 'Failed to archive'
-    } finally {
-      removing = false
     }
   }
 
@@ -1126,18 +1130,18 @@
     // No confirm dialog yet — matches the "click = commit" shape of
     // the rest of the toolbar. A Trash-folder intermediate (and
     // undo) can come later; for now Delete is outright expunge.
-    removing = true
+    const removedUid = uid
+    const acc = email.account_id
+    const fld = email.folder
+    onmessageremoved?.(removedUid)
     try {
       await invoke('delete_message', {
-        accountId: email.account_id,
-        folder: email.folder,
-        uid,
+        accountId: acc,
+        folder: fld,
+        uid: removedUid,
       })
-      onmessageremoved?.(uid)
     } catch (e) {
       error = formatError(e) || 'Failed to delete'
-    } finally {
-      removing = false
     }
   }
 </script>
@@ -1240,22 +1244,19 @@
            inline filter for accounts with lots of folders. -->
       <button
         class="btn btn-sm preset-outlined-surface-500"
-        disabled={removing}
         onclick={() => (moveMenuOpen = true)}
         title="Move this message to a different folder"
       >Move</button>
       <button
         class="btn btn-sm preset-outlined-surface-500"
-        disabled={removing}
         onclick={archiveMessage}
         title="Move this message to the Archive folder"
-      >{removing ? '…' : 'Archive'}</button>
+      >Archive</button>
       <button
         class="btn btn-sm preset-outlined-surface-500"
-        disabled={removing}
         onclick={deleteMessage}
         title="Move this message to Trash (permanently deletes if already in Trash or if the account has no Trash folder)"
-      >{removing ? '…' : 'Delete'}</button>
+      >Delete</button>
     </div>
 
     <!-- Calendar invite (#58 / iMIP).  Mounted above the

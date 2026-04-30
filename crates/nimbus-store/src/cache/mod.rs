@@ -193,6 +193,18 @@ impl Cache {
         // is available for use right after this call returns.
         let mut conn = pool.get()?;
         schema::run_migrations(&mut conn)?;
+        // Sweep stale optimistic-action tombstones from a crashed
+        // previous run (#174).  Anything still flagged as
+        // `pending_action` at startup belongs to a process that's
+        // already gone, so the IMAP request never completed and the
+        // safe move is to make those rows visible again.
+        if let Err(e) = conn.execute(
+            "UPDATE messages SET pending_action = NULL
+             WHERE pending_action IS NOT NULL",
+            [],
+        ) {
+            warn!("startup pending-action sweep failed: {e}");
+        }
         Ok(Self {
             pool: Arc::new(RwLock::new(Some(pool))),
             path: path.to_path_buf(),
@@ -224,6 +236,16 @@ impl Cache {
         let pool = pool::open_pool(&self.path, key_hex.clone())?;
         let mut conn = pool.get()?;
         schema::run_migrations(&mut conn)?;
+        // Same stale-tombstone sweep as `open_with_key` — see
+        // there for the why.  Done while we still hold the pooled
+        // conn so the cleanup runs before any data IPC can.
+        if let Err(e) = conn.execute(
+            "UPDATE messages SET pending_action = NULL
+             WHERE pending_action IS NOT NULL",
+            [],
+        ) {
+            warn!("post-unlock pending-action sweep failed: {e}");
+        }
         drop(conn);
         let mut guard = self.pool.write().expect("Cache pool RwLock poisoned");
         *guard = Some(pool);
@@ -557,7 +579,7 @@ impl Cache {
         let mut stmt = conn.prepare(
             "SELECT uid, folder, from_addr, subject, internal_date, is_read, is_starred
              FROM messages
-             WHERE account_id = ?1 AND folder = ?2
+             WHERE account_id = ?1 AND folder = ?2 AND pending_action IS NULL
              ORDER BY internal_date DESC
              LIMIT ?3",
         )?;
@@ -596,7 +618,7 @@ impl Cache {
         let mut stmt = conn.prepare(
             "SELECT account_id, uid, folder, from_addr, subject, internal_date, is_read, is_starred
              FROM messages
-             WHERE folder = ?1
+             WHERE folder = ?1 AND pending_action IS NULL
              ORDER BY internal_date DESC
              LIMIT ?2",
         )?;
@@ -698,6 +720,65 @@ impl Cache {
             uids.push(row? as u32);
         }
         Ok(uids)
+    }
+
+    /// Mark a cached envelope as having an in-flight optimistic
+    /// action so envelope-list queries hide it instantly (#174).
+    /// `action` is a free-form string — `"delete"` for delete /
+    /// move-to-trash, `"move:<dest>"` for explicit folder moves.
+    /// Cleared on IMAP failure via `clear_message_pending`; on
+    /// IMAP success the existing `remove_envelope` / source-folder
+    /// move cleanup drops the row entirely, so the pending flag
+    /// quietly disappears with it.
+    pub fn mark_message_pending(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+        action: &str,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages SET pending_action = ?4
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64, action],
+        )?;
+        Ok(())
+    }
+
+    /// Reverse of `mark_message_pending` — called when the IMAP
+    /// action errors so the row reappears in the next list pull
+    /// without the user having to restart anything.
+    pub fn clear_message_pending(
+        &self,
+        account_id: &str,
+        folder: &str,
+        uid: u32,
+    ) -> Result<(), CacheError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE messages SET pending_action = NULL
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Wipe every leftover `pending_action` tombstone.  Called on
+    /// app startup (after `unlock_with_master_key` opens the pool)
+    /// so a row left tombstoned by a crashed run doesn't stay
+    /// permanently invisible.  At launch nothing is genuinely in
+    /// flight — the IMAP requests live in the previous process —
+    /// so any surviving pending flag is by definition stale.
+    /// Returns the number of rows reset.
+    pub fn clear_all_pending_actions(&self) -> Result<usize, CacheError> {
+        let conn = self.conn()?;
+        let n = conn.execute(
+            "UPDATE messages SET pending_action = NULL
+             WHERE pending_action IS NOT NULL",
+            [],
+        )?;
+        Ok(n)
     }
 
     /// Remove a single cached envelope + body after the message has been
@@ -823,7 +904,7 @@ impl Cache {
         let conn = self.conn()?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM messages
-             WHERE folder = 'INBOX' AND is_read = 0",
+             WHERE folder = 'INBOX' AND is_read = 0 AND pending_action IS NULL",
             [],
             |r| r.get(0),
         )?;
@@ -842,7 +923,7 @@ impl Cache {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT account_id, COUNT(*) FROM messages
-             WHERE folder = 'INBOX' AND is_read = 0
+             WHERE folder = 'INBOX' AND is_read = 0 AND pending_action IS NULL
              GROUP BY account_id",
         )?;
         let rows = stmt.query_map([], |r| {

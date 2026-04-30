@@ -206,8 +206,30 @@
       else groups.set(key, { accountId: src, folder: srcFolder, uids: [env.uid] })
     }
 
+    // Optimistic UI (#174): snapshot the envelope set being moved
+    // and drop them from the local list immediately.  Any IMAP
+    // failure restores them in the original DOM order.  Each
+    // backend call's `move_messages` IPC also tombstones the
+    // matching cache rows so a folder switch mid-flight doesn't
+    // briefly resurrect them.
+    const movedUidSet = new Set(group.map((e) => `${e.account_id}::${e.folder}::${e.uid}`))
+    const survivors: EmailEnvelope[] = []
+    const removedSnapshot: { env: EmailEnvelope; idx: number }[] = []
+    envelopes.forEach((e, i) => {
+      const key = `${e.account_id}::${e.folder}::${e.uid}`
+      if (movedUidSet.has(key)) {
+        removedSnapshot.push({ env: e, idx: i })
+      } else {
+        survivors.push(e)
+      }
+    })
+    envelopes = survivors
+    for (const { env: e } of removedSnapshot) {
+      onmessagemoved?.(e.uid)
+    }
+
     const succeeded: number[] = []
-    const failures: unknown[] = []
+    const failures: { uids: number[]; err: unknown }[] = []
     for (const g of groups.values()) {
       try {
         const moved = await invoke<number[]>('move_messages', {
@@ -219,16 +241,27 @@
         succeeded.push(...moved)
       } catch (err) {
         console.warn('move_messages failed', err)
-        failures.push(err)
+        failures.push({ uids: g.uids, err })
       }
     }
-    for (const uid of succeeded) {
-      onmessagemoved?.(uid)
-    }
     if (failures.length > 0) {
+      // Re-insert any envelopes whose subgroup failed.  We rebuild
+      // the list rather than splice-by-index because successful
+      // moves in earlier subgroups have already shifted indexes.
+      const failedUids = new Set(failures.flatMap((f) => f.uids))
+      const restore = removedSnapshot
+        .filter((r) => failedUids.has(r.env.uid))
+        .map((r) => r.env)
+      // Keep the user's date-sorted order — easier to merge than
+      // try to re-establish exact original indexes against the
+      // mutated list.
+      const merged = [...envelopes, ...restore].sort(
+        (a, b) => +new Date(b.date) - +new Date(a.date),
+      )
+      envelopes = merged
       error =
         succeeded.length === 0
-          ? formatError(failures[0]) || 'Failed to move message'
+          ? formatError(failures[0].err) || 'Failed to move message'
           : `Moved ${succeeded.length} of ${group.length} messages — ${failures.length} group(s) failed.`
     }
     multiSelectedUids = new Set()
@@ -391,16 +424,31 @@
   async function quickDelete(env: EmailEnvelope) {
     const srcAccountId = env.account_id || accountId
     const srcFolder = env.folder || folder
+    // Optimistic: drop the row from the local list immediately
+    // (#174) and tell the parent to auto-advance.  The IMAP call
+    // runs in the background — on failure we splice the row back
+    // in at its original index and surface the existing error
+    // banner.
+    const idx = envelopes.findIndex(
+      (e) => e.uid === env.uid && e.folder === env.folder && e.account_id === env.account_id,
+    )
+    const removed = idx >= 0 ? envelopes[idx] : null
+    if (idx >= 0) {
+      envelopes = [...envelopes.slice(0, idx), ...envelopes.slice(idx + 1)]
+    }
+    onmessagemoved?.(env.uid)
     try {
       await invoke('delete_message', {
         accountId: srcAccountId,
         folder: srcFolder,
         uid: env.uid,
       })
-      onmessagemoved?.(env.uid)
     } catch (err) {
       console.warn('quickDelete failed', err)
       error = formatError(err) || 'Failed to delete'
+      if (removed && idx >= 0) {
+        envelopes = [...envelopes.slice(0, idx), removed, ...envelopes.slice(idx)]
+      }
     }
   }
 
