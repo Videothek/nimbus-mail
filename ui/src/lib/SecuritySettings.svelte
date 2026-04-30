@@ -53,6 +53,29 @@
   const PASSPHRASE_LABEL = 'Recovery passphrase'
   let passphraseValue = $state('')
   let passphraseConfirm = $state('')
+  /** Master "Key Encryption" toggle.  Gates whether the
+   *  enrollment forms below are interactive — the rest of the
+   *  panel greys out when this is off so the section reads as
+   *  "feature opt-in".  Persisted in localStorage; flipping it
+   *  doesn't yet flip the backend into FIDO-only mode (that's
+   *  Phase 1B), but it scopes the UI so users who don't want
+   *  the feature don't accidentally enroll a credential. */
+  let keyEncryptionEnabled = $state(false)
+  $effect(() => {
+    try {
+      keyEncryptionEnabled = localStorage.getItem('nimbus.keyEncryption') === '1'
+    } catch {
+      /* localStorage may be unavailable in some webview modes */
+    }
+  })
+  function setKeyEncryption(v: boolean) {
+    keyEncryptionEnabled = v
+    try {
+      localStorage.setItem('nimbus.keyEncryption', v ? '1' : '0')
+    } catch {
+      /* swallow — same reason as above */
+    }
+  }
 
   async function loadStatus() {
     loading = true
@@ -158,23 +181,42 @@
 </script>
 
 <section class="space-y-6">
-  <header>
-    <h2 class="text-xl font-semibold">Security</h2>
-    <p class="text-sm text-surface-500 mt-1">
-      Hardware-backed authentication for the local mail cache. Register a
-      hardware key (YubiKey, Apple Touch ID, Windows Hello, …) to seal the
-      cache's encryption key behind a tap or biometric.
-    </p>
+  <header class="flex items-start justify-between gap-4">
+    <div>
+      <h2 class="text-xl font-semibold">Security</h2>
+      <p class="text-sm text-surface-500 mt-1 max-w-xl">
+        Hardware-backed authentication for the local mail cache. Register a
+        hardware key (YubiKey, Apple Touch ID, Windows Hello, …) to seal the
+        cache's encryption key behind a tap or biometric.
+      </p>
+    </div>
+    <!-- Master toggle.  When off, the sub-sections grey out and
+         their controls reject input — clear visual signal that
+         the feature is opt-in. -->
+    <label class="flex items-center gap-2 shrink-0 cursor-pointer">
+      <span class="text-sm font-medium">Key Encryption</span>
+      <input
+        type="checkbox"
+        class="toggle"
+        checked={keyEncryptionEnabled}
+        onchange={(e) => setKeyEncryption((e.currentTarget as HTMLInputElement).checked)}
+      />
+    </label>
   </header>
 
   {#if loading}
     <p class="text-sm text-surface-500">Loading…</p>
   {:else}
-    <div class="space-y-4">
+    <div
+      class="space-y-4 transition-opacity {keyEncryptionEnabled
+        ? ''
+        : 'opacity-50 pointer-events-none select-none'}"
+      aria-disabled={!keyEncryptionEnabled}
+    >
       <!-- Hardware-key enrollment is gated on a working WebAuthn
            API.  Linux builds whose libwebkit2gtk lacks WebAuthn
            (the default on most stable distros today) get a
-           one-line note instead of the form, but passphrase
+           warning box instead of the form, but passphrase
            enrollment below still works and is the recommended
            path on those systems. -->
       {#if webauthnAvailable}
@@ -201,7 +243,7 @@
           </div>
         </div>
       {:else}
-        <div class="rounded-md border border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800/40 p-4 text-sm text-surface-600 dark:text-surface-400">
+        <div class="rounded-md border border-warning-500/40 bg-warning-500/10 p-4 text-sm text-warning-700 dark:text-warning-300">
           <p class="font-medium mb-1">Hardware-key registration is unavailable on this build.</p>
           <p class="text-xs">
             The webview Tauri uses on Linux (<code>libwebkit2gtk</code>) doesn't
