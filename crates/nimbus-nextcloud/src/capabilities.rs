@@ -67,6 +67,14 @@ struct Capabilities {
     /// inner fields — presence alone is the signal that the editor
     /// URL flow (`apps/richdocuments/index.json`) will work.
     richdocuments: Option<serde_json::Value>,
+    /// Nextcloud Notes app id.  Presence alone is the signal that
+    /// `/index.php/apps/notes/api/v1/notes` is reachable.
+    notes: Option<serde_json::Value>,
+    /// Nextcloud Tasks app id.  The Tasks app reuses CalDAV (VTODO)
+    /// for storage, so the chip is purely informational — it tells
+    /// the user the server has Tasks installed alongside its
+    /// calendars.
+    tasks: Option<serde_json::Value>,
 }
 
 /// Query `/ocs/v2.php/cloud/capabilities` and map it to our flat
@@ -117,14 +125,18 @@ pub async fn fetch_capabilities(
         caldav: dav_present,
         carddav: dav_present,
         office: env.ocs.data.capabilities.richdocuments.is_some(),
+        notes: env.ocs.data.capabilities.notes.is_some(),
+        tasks: env.ocs.data.capabilities.tasks.is_some(),
     };
     tracing::info!(
-        "Nextcloud capabilities: version={:?} talk={} files={} dav={} office={}",
+        "Nextcloud capabilities: version={:?} talk={} files={} dav={} office={} notes={} tasks={}",
         caps.version,
         caps.talk,
         caps.files,
         dav_present,
         caps.office,
+        caps.notes,
+        caps.tasks,
     );
     Ok(caps)
 }
@@ -143,7 +155,9 @@ mod tests {
           "capabilities": {
             "spreed": { "features": [] },
             "files":  { "bigfilechunking": true },
-            "dav":    { "chunking": "1.0" }
+            "dav":    { "chunking": "1.0" },
+            "notes":  { "api_version": ["1.3"] },
+            "tasks":  {}
           }
         }
       }
@@ -155,6 +169,8 @@ mod tests {
         assert!(env.ocs.data.capabilities.spreed.is_some());
         assert!(env.ocs.data.capabilities.files.is_some());
         assert!(env.ocs.data.capabilities.dav.is_some());
+        assert!(env.ocs.data.capabilities.notes.is_some());
+        assert!(env.ocs.data.capabilities.tasks.is_some());
     }
 
     #[test]
@@ -166,5 +182,7 @@ mod tests {
         assert!(env.ocs.data.capabilities.spreed.is_none());
         assert!(env.ocs.data.capabilities.files.is_none());
         assert!(env.ocs.data.capabilities.dav.is_none());
+        assert!(env.ocs.data.capabilities.notes.is_none());
+        assert!(env.ocs.data.capabilities.tasks.is_none());
     }
 }

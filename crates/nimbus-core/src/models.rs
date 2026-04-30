@@ -518,6 +518,16 @@ pub struct NextcloudCapabilities {
     /// this field existed deserialise as `false`.
     #[serde(default)]
     pub office: bool,
+    /// Nextcloud Notes (`notes` app id) is installed and enabled.
+    /// Drives the "Notes" chip in NextcloudSettings so the user
+    /// can tell at a glance whether the in-app Notes view will
+    /// have anything to show.
+    #[serde(default)]
+    pub notes: bool,
+    /// Nextcloud Tasks (`tasks` app id) is installed and enabled.
+    /// Same purpose as `notes` — chip-only signal in settings.
+    #[serde(default)]
+    pub tasks: bool,
 }
 
 /// Represents a contact from CardDAV / Nextcloud.

@@ -30,6 +30,10 @@
      *  `.odt` / `.xlsx` etc. in an embedded editor; when `false`
      *  the UI falls back to plain download. */
     office?: boolean
+    /** Nextcloud Notes app installed + enabled.  Chip-only signal. */
+    notes?: boolean
+    /** Nextcloud Tasks app installed + enabled.  Chip-only signal. */
+    tasks?: boolean
   }
   interface NextcloudAccount {
     id: string
@@ -396,6 +400,12 @@
                     {/if}
                     {#if acct.capabilities.office}
                       <span class="text-xs px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-600 dark:text-pink-300">Office</span>
+                    {/if}
+                    {#if acct.capabilities.notes}
+                      <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-700 dark:text-yellow-300">Notes</span>
+                    {/if}
+                    {#if acct.capabilities.tasks}
+                      <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-700 dark:text-cyan-300">Tasks</span>
                     {/if}
                   </div>
                 {/if}
