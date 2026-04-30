@@ -1539,7 +1539,23 @@
         )
         .join('')
       const block = `<p><strong>Shared via Nextcloud:</strong></p>${items}`
-      editorApi?.appendHtml(block)
+      // Splice the block ABOVE an auto-inserted signature when one
+      // is sitting at the end of the body so the share renders
+      // inline with the message rather than below the user's
+      // sign-off.  Same pattern the Talk-link injection uses
+      // earlier in this component.
+      if (
+        insertedSignatureHtml
+        && bodyHtml.endsWith(insertedSignatureHtml)
+        && editorApi
+      ) {
+        const without = bodyHtml.slice(0, bodyHtml.length - insertedSignatureHtml.length)
+        const replaced = without + block + insertedSignatureHtml
+        editorApi.setHtml(replaced)
+        bodyHtml = replaced
+      } else {
+        editorApi?.appendHtml(block)
+      }
     }}
     onclose={() => (showNcPicker = false)}
   />
