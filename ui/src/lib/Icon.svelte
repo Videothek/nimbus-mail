@@ -47,6 +47,8 @@
     | 'quote' | 'text-color' | 'highlight-text'
     | 'undo' | 'redo'
     | 'passphrase' | 'security-key'
+    // v5 — people categories + map + time
+    | 'group' | 'address-book' | 'team' | 'location' | 'time'
 </script>
 
 <script lang="ts">
@@ -151,6 +153,12 @@
   import Redo from './icons/Redo.svelte'
   import Passphrase from './icons/Passphrase.svelte'
   import SecurityKey from './icons/SecurityKey.svelte'
+  // v5
+  import Group from './icons/Group.svelte'
+  import AddressBook from './icons/AddressBook.svelte'
+  import Team from './icons/Team.svelte'
+  import Location from './icons/Location.svelte'
+  import Time from './icons/Time.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -262,6 +270,11 @@
     'redo': Redo,
     'passphrase': Passphrase,
     'security-key': SecurityKey,
+    'group': Group,
+    'address-book': AddressBook,
+    'team': Team,
+    'location': Location,
+    'time': Time,
   }
   const Cmp = $derived(map[name])
 </script>

@@ -546,8 +546,8 @@
           <ul class="divide-y divide-surface-200 dark:divide-surface-700 rounded-md border border-surface-200 dark:border-surface-700">
             {#each status.credentials as c (c.credentialId)}
               <li class="flex items-center gap-3 p-3">
-                <span class="text-lg" aria-hidden="true">
-                  {c.kind === 'passphrase' ? '🔐' : '🔑'}
+                <span class="shrink-0 text-surface-600 dark:text-surface-300" aria-hidden="true">
+                  <Icon name={c.kind === 'passphrase' ? 'passphrase' : 'security-key'} size={20} />
                 </span>
                 <div class="flex-1 min-w-0">
                   <!-- For passphrase entries we surface the kind
@@ -575,7 +575,7 @@
                       passphraseConfirm = ''
                       passphraseEditing = true
                     }}
-                  ><Icon name="passphrase" size={14} /></button>
+                  ><Icon name="compose" size={14} /></button>
                 {/if}
                 <button
                   class="btn btn-sm preset-outlined-error-500"
