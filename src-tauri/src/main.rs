@@ -223,6 +223,20 @@ fn update_account(account: Account, cache: State<'_, Cache>) -> Result<(), Nimbu
     account_store::update_account(&cache, account)
 }
 
+/// Replace the IMAP/SMTP password stored in the OS keychain for
+/// an existing account.  Kept separate from `update_account` so
+/// the password never has to round-trip through the account
+/// metadata struct (which lives in the encrypted SQLite cache).
+/// `store_imap_password` overwrites in place, so the same call
+/// covers initial setup and rotation.
+#[tauri::command]
+fn set_account_password(id: String, password: String) -> Result<(), NimbusError> {
+    if password.is_empty() {
+        return Err(NimbusError::Other("password must not be empty".into()));
+    }
+    credentials::store_imap_password(&id, &password)
+}
+
 /// Pin (or clear) a per-folder icon override for an account.
 ///
 /// Passing `Some(emoji)` sets the override; `None` removes it so the
@@ -6958,15 +6972,22 @@ fn fido_enroll(
     salt_b64: String,
     prf_output_b64: String,
     label: String,
+    cache: State<'_, Cache>,
 ) -> Result<(), NimbusError> {
     use nimbus_store::fido;
     let env = nimbus_store::cache::key::load_envelope()?;
-    let plain_hex = env.plain_key.as_deref().ok_or_else(|| {
-        NimbusError::Auth(
-            "Cannot enroll a credential while the database is FIDO-only (use unlock first)".into(),
-        )
-    })?;
-    let master_key = hex::decode(plain_hex)
+    // Same fallback as `fido_enroll_passphrase`: prefer the
+    // envelope's plain key, fall back to the in-memory copy
+    // when FIDO-only mode has cleared plain_key.
+    let plain_hex = match env.plain_key.as_deref() {
+        Some(hex) => hex.to_string(),
+        None => cache.master_key_hex().ok_or_else(|| {
+            NimbusError::Auth(
+                "Cannot enroll a credential while the database is locked — unlock first".into(),
+            )
+        })?,
+    };
+    let master_key = hex::decode(&plain_hex)
         .map_err(|e| NimbusError::Storage(format!("master key hex decode: {e}")))?;
     let credential_id = fido::decode_b64(&credential_id_b64)?;
     let salt = fido::decode_b64(&salt_b64)?;
@@ -6990,31 +7011,51 @@ fn fido_enroll(
 /// 2.46).  Salt + synthetic credential id are server-side
 /// generated so the frontend never produces them.
 #[tauri::command]
-fn fido_enroll_passphrase(passphrase: String, label: String) -> Result<(), NimbusError> {
-    use nimbus_store::fido;
+fn fido_enroll_passphrase(
+    passphrase: String,
+    label: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    use nimbus_store::fido::{self, WrapKind};
     if passphrase.trim().is_empty() {
         return Err(NimbusError::Other("passphrase must not be empty".into()));
     }
-    let env = nimbus_store::cache::key::load_envelope()?;
-    let plain_hex = env.plain_key.as_deref().ok_or_else(|| {
-        NimbusError::Auth(
-            "Cannot enroll a passphrase while the database is FIDO-only (use unlock first)".into(),
-        )
-    })?;
-    let master_key = hex::decode(plain_hex)
+    let mut env = nimbus_store::cache::key::load_envelope()?;
+    // Prefer the keychain envelope's plain key (pre-FIDO-only),
+    // fall back to the in-memory copy that `unlock_with_*` stashes
+    // on the Cache.  The fallback is what makes "Change passphrase"
+    // work after the user has flipped Key Encryption on — by that
+    // point envelope.plain_key is None and we'd otherwise refuse.
+    let plain_hex = match env.plain_key.as_deref() {
+        Some(hex) => hex.to_string(),
+        None => cache.master_key_hex().ok_or_else(|| {
+            NimbusError::Auth(
+                "Cannot enroll a passphrase while the database is locked — unlock first".into(),
+            )
+        })?,
+    };
+    let master_key = hex::decode(&plain_hex)
         .map_err(|e| NimbusError::Storage(format!("master key hex decode: {e}")))?;
     let salt = fido::generate_salt()?;
     let id = fido::generate_passphrase_id()?;
     let aes_key = fido::derive_passphrase_key(&passphrase, &salt)?;
     let wrap = fido::wrap_master_key(
-        fido::WrapKind::Passphrase,
+        WrapKind::Passphrase,
         &master_key,
         &aes_key,
         &id,
         &salt,
         label,
     )?;
-    nimbus_store::cache::key::add_wrap(wrap)?;
+    // Single-passphrase invariant: the recovery passphrase is a
+    // role, not a per-device entry.  Drop any existing passphrase
+    // wrap before adding the new one so re-enrolling cleanly
+    // replaces the old one (and so add_wrap's credential-id
+    // dedup never lets two passphrase wraps coexist with
+    // different ids).
+    env.wraps.retain(|w| w.kind != WrapKind::Passphrase);
+    env.wraps.push(wrap);
+    nimbus_store::cache::key::save_envelope(&env)?;
     Ok(())
 }
 
@@ -7098,6 +7139,11 @@ struct DatabaseStatusView {
     /// One entry per registered unlock method (FIDO PRF or
     /// passphrase), used by the lock screen to render a picker.
     methods: Vec<FidoCredentialView>,
+    /// Remaining unlock attempts before wipe-on-failure fires.
+    /// `None` when the policy is off or has no limit set —
+    /// the lock screen renders "X tries remaining" only when this
+    /// is `Some(_)`.
+    attempts_remaining: Option<u32>,
 }
 
 /// Snapshot used by `App.svelte` on mount to decide whether to
@@ -7106,6 +7152,10 @@ struct DatabaseStatusView {
 fn database_status(cache: State<'_, Cache>) -> Result<DatabaseStatusView, NimbusError> {
     let env = nimbus_store::cache::key::load_envelope()?;
     let locked = cache.is_locked();
+    let attempts_remaining = match (env.wipe_on_failure, env.max_unlock_attempts) {
+        (true, Some(max)) if max > 0 => Some(max.saturating_sub(env.failed_attempts)),
+        _ => None,
+    };
     Ok(DatabaseStatusView {
         locked,
         needs_setup: env.plain_key.is_none() && env.wraps.is_empty(),
@@ -7123,7 +7173,90 @@ fn database_status(cache: State<'_, Cache>) -> Result<DatabaseStatusView, Nimbus
                 created_at: w.created_at,
             })
             .collect(),
+        attempts_remaining,
     })
+}
+
+/// Wipe the cache file and clear the keychain envelope.
+/// Triggered when the user exhausts their unlock budget OR
+/// when the envelope's integrity MAC fails.
+fn perform_wipe(cache: &Cache) {
+    if let Err(e) = cache.wipe_on_disk() {
+        tracing::error!("wipe_on_disk failed: {e}");
+    }
+    let cleared = nimbus_store::fido::KeychainEnvelope {
+        version: 1,
+        plain_key: None,
+        wraps: Vec::new(),
+        wipe_on_failure: false,
+        max_unlock_attempts: None,
+        failed_attempts: 0,
+        integrity_mac: None,
+    };
+    if let Err(e) = nimbus_store::cache::key::save_envelope(&cleared) {
+        tracing::error!("clearing envelope after wipe failed: {e}");
+    }
+}
+
+/// Bump the persisted failure counter and, if the user has
+/// opted into the wipe-on-failure policy, blow away the cache
+/// once the configured retry budget is exhausted.  The counter
+/// lives in the keychain envelope (not just process memory) so
+/// kill+relaunch can't reset the budget.  An invalid envelope
+/// MAC trips the wipe immediately on the next failure regardless
+/// of where the persisted counter sat.
+fn note_unlock_failure(cache: &Cache, label: &str) -> NimbusError {
+    let mut env = match nimbus_store::cache::key::load_envelope() {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let tampered = nimbus_store::cache::key::envelope_tampered(&env);
+    if tampered {
+        tracing::warn!(
+            "Keychain envelope MAC mismatch — treating this attempt as terminal."
+        );
+    }
+    env.failed_attempts = env.failed_attempts.saturating_add(1);
+    let attempts = env.failed_attempts;
+    if let Err(e) = nimbus_store::cache::key::save_envelope(&env) {
+        tracing::warn!("could not persist failure counter: {e}");
+    }
+    if env.wipe_on_failure || tampered {
+        let max = env.max_unlock_attempts.unwrap_or(0);
+        let trip = tampered || (max > 0 && attempts >= max);
+        if trip {
+            if tampered {
+                tracing::warn!("Wipe fired due to envelope tampering.");
+            } else {
+                tracing::warn!(
+                    "Wipe-on-failure policy fired: {attempts} consecutive failed unlock attempts (limit {max})."
+                );
+            }
+            perform_wipe(cache);
+            return NimbusError::Auth(if tampered {
+                "Keychain envelope was modified outside Nimbus. The encrypted cache has been wiped.".to_string()
+            } else {
+                format!(
+                    "Too many failed attempts ({attempts}/{max}). The encrypted cache has been wiped."
+                )
+            });
+        }
+    }
+    NimbusError::Auth(format!("incorrect {label}"))
+}
+
+/// Reset the persisted failure counter on a successful unlock.
+fn note_unlock_success() {
+    let Ok(mut env) = nimbus_store::cache::key::load_envelope() else {
+        return;
+    };
+    if env.failed_attempts == 0 {
+        return;
+    }
+    env.failed_attempts = 0;
+    if let Err(e) = nimbus_store::cache::key::save_envelope(&env) {
+        tracing::warn!("could not reset failure counter: {e}");
+    }
 }
 
 /// Unlock the cache from a passphrase.  Tries every passphrase
@@ -7144,10 +7277,11 @@ fn unlock_with_passphrase(
         if let Ok(master) = fido::unwrap_master_key(wrap, &aes_key) {
             let hex = hex::encode(&master);
             cache.unlock_with_master_key(hex).map_err(NimbusError::from)?;
+            note_unlock_success();
             return Ok(());
         }
     }
-    Err(NimbusError::Auth("incorrect passphrase".into()))
+    Err(note_unlock_failure(&cache, "passphrase"))
 }
 
 /// Unlock the cache from a FIDO PRF assertion.  Frontend has
@@ -7167,10 +7301,13 @@ fn unlock_with_prf(
         if wrap.kind != WrapKind::FidoPrf || wrap.credential_id != credential_id_b64 {
             continue;
         }
-        let master = fido::unwrap_master_key(wrap, &prf)
-            .map_err(|_| NimbusError::Auth("hardware key produced wrong PRF output".into()))?;
+        let master = match fido::unwrap_master_key(wrap, &prf) {
+            Ok(m) => m,
+            Err(_) => return Err(note_unlock_failure(&cache, "hardware key PRF output")),
+        };
         let hex = hex::encode(&master);
         cache.unlock_with_master_key(hex).map_err(NimbusError::from)?;
+        note_unlock_success();
         return Ok(());
     }
     Err(NimbusError::Auth(
@@ -7213,6 +7350,40 @@ fn enable_fido_only_mode() -> Result<(), NimbusError> {
     Ok(())
 }
 
+/// Snapshot of the wipe-on-failure policy stored in the
+/// keychain envelope.  `enabled = false` means unlimited
+/// retries.  `max_attempts = None` means the same — the toggle
+/// can be on but with no number set; we treat that as
+/// effectively off until a number is provided.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WipePolicyView {
+    enabled: bool,
+    max_attempts: Option<u32>,
+}
+
+#[tauri::command]
+fn get_wipe_policy() -> Result<WipePolicyView, NimbusError> {
+    let env = nimbus_store::cache::key::load_envelope()?;
+    Ok(WipePolicyView {
+        enabled: env.wipe_on_failure,
+        max_attempts: env.max_unlock_attempts,
+    })
+}
+
+#[tauri::command]
+fn set_wipe_policy(policy: WipePolicyView) -> Result<(), NimbusError> {
+    let mut env = nimbus_store::cache::key::load_envelope()?;
+    env.wipe_on_failure = policy.enabled;
+    env.max_unlock_attempts = if policy.enabled {
+        policy.max_attempts.filter(|n| *n > 0)
+    } else {
+        None
+    };
+    nimbus_store::cache::key::save_envelope(&env)?;
+    Ok(())
+}
+
 /// Reverse of `enable_fido_only_mode` — re-store the plain
 /// master key in the envelope so the next launch opens the
 /// cache without prompting.  Only callable while the cache is
@@ -7224,16 +7395,18 @@ fn disable_fido_only_mode(cache: State<'_, Cache>) -> Result<(), NimbusError> {
             "Database must be unlocked before FIDO-only mode can be disabled".into(),
         ));
     }
-    // We need the master key to write back into the envelope.
-    // It currently lives only inside the SQLCipher pool — we
-    // can't read it back from rusqlite, so we ask the user to
-    // re-authenticate via the unlock IPCs in a follow-up.  For
-    // now, refuse: disabling is a rare, deliberate operation.
-    Err(NimbusError::Other(
-        "Disabling FIDO-only mode isn't wired up yet — re-enroll \
-         with a fresh master by removing then re-adding accounts."
-            .into(),
-    ))
+    let key_hex = cache.master_key_hex().ok_or_else(|| {
+        NimbusError::Auth(
+            "Master key isn't available in memory — unlock the database again before disabling key encryption".into(),
+        )
+    })?;
+    let mut env = nimbus_store::cache::key::load_envelope()?;
+    if env.plain_key.is_some() {
+        return Ok(()); // already plain — idempotent.
+    }
+    env.plain_key = Some(key_hex);
+    nimbus_store::cache::key::save_envelope(&env)?;
+    Ok(())
 }
 
 /// Return the cached font list to the frontend.  Reads from
@@ -7711,6 +7884,7 @@ fn main() {
             add_account,
             remove_account,
             update_account,
+            set_account_password,
             set_folder_icon,
             discover_account_settings,
             probe_server_certificate,
@@ -7839,6 +8013,8 @@ fn main() {
             unlock_with_prf,
             enable_fido_only_mode,
             disable_fido_only_mode,
+            get_wipe_policy,
+            set_wipe_policy,
             update_app_settings,
             import_custom_theme,
             remove_custom_theme,

@@ -114,6 +114,12 @@ pub struct Cache {
     /// Where the encrypted DB lives on disk.  Held so `unlock`
     /// can open the pool without re-resolving the path.
     path: PathBuf,
+    /// In-memory copy of the SQLCipher master key (64-char
+    /// lowercase hex), populated after a successful unlock.  Lets
+    /// `disable_fido_only_mode` write the key back into the
+    /// keychain envelope without having to re-prompt the user.
+    /// `None` while the cache is locked.
+    master_key_hex: Arc<RwLock<Option<String>>>,
 }
 
 impl Cache {
@@ -154,6 +160,7 @@ impl Cache {
                     Ok(Self {
                         pool: Arc::new(RwLock::new(None)),
                         path,
+                        master_key_hex: Arc::new(RwLock::new(None)),
                     })
                 }
             }
@@ -182,7 +189,7 @@ impl Cache {
                     path.display()
                 );
                 wipe_cache_files(path)?;
-                pool::open_pool(path, key_hex)?
+                pool::open_pool(path, key_hex.clone())?
             }
             Err(e) => return Err(e),
         };
@@ -193,6 +200,7 @@ impl Cache {
         Ok(Self {
             pool: Arc::new(RwLock::new(Some(pool))),
             path: path.to_path_buf(),
+            master_key_hex: Arc::new(RwLock::new(Some(key_hex))),
         })
     }
 
@@ -210,25 +218,51 @@ impl Cache {
         if !self.is_locked() {
             return Ok(());
         }
-        let pool = match pool::open_pool(&self.path, key_hex.clone()) {
-            Ok(p) => p,
-            Err(e) if is_wrong_key_error(&e) && self.path.exists() => {
-                warn!(
-                    "Existing cache at {} could not be unlocked with the \
-                     supplied master key. Wiping — mail will re-sync.",
-                    self.path.display()
-                );
-                wipe_cache_files(&self.path)?;
-                pool::open_pool(&self.path, key_hex)?
-            }
-            Err(e) => return Err(e),
-        };
+        // No wipe-on-wrong-key fallback here.  At unlock time a
+        // SQLCipher key mismatch means authentication failed —
+        // silently wiping the DB would destroy the user's mail and
+        // accounts.  Surface the error so the unlock IPC can
+        // re-prompt instead.  (The legacy-DB wipe lives in
+        // `open_with_key`, which only runs on first boot when no
+        // wraps exist.)
+        let pool = pool::open_pool(&self.path, key_hex.clone())?;
         let mut conn = pool.get()?;
         schema::run_migrations(&mut conn)?;
         drop(conn);
         let mut guard = self.pool.write().expect("Cache pool RwLock poisoned");
         *guard = Some(pool);
+        // Stash the recovered key so `disable_fido_only_mode` can
+        // write it back into the keychain envelope without making
+        // the user re-authenticate.  Cleared in any future
+        // re-lock path.
+        let mut key_guard = self
+            .master_key_hex
+            .write()
+            .expect("Cache master_key_hex RwLock poisoned");
+        *key_guard = Some(key_hex);
         Ok(())
+    }
+
+    /// Read the in-memory copy of the SQLCipher master key (hex).
+    /// Returns `None` while the cache is locked or for an
+    /// in-memory test cache.  Used by `disable_fido_only_mode`
+    /// to restore `envelope.plain_key` without re-prompting.
+    pub fn master_key_hex(&self) -> Option<String> {
+        self.master_key_hex
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+    }
+
+    /// Delete the cache DB and its WAL sidecars from disk.  Used
+    /// by the "wipe on failed authentication" policy: when the
+    /// user exhausts their unlock attempts we drop the file so
+    /// the next launch starts clean.  The Cache stays locked
+    /// (pool is `None` either way) — the caller is responsible
+    /// for clearing the keychain envelope's wraps if it wants a
+    /// completely fresh setup on next launch.
+    pub fn wipe_on_disk(&self) -> Result<(), CacheError> {
+        wipe_cache_files(&self.path)
     }
 
     /// Borrow a pooled connection or return `Locked`.  Every
@@ -258,6 +292,7 @@ impl Cache {
         Ok(Self {
             pool: Arc::new(RwLock::new(Some(pool))),
             path: PathBuf::from(":memory:"),
+            master_key_hex: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -1138,6 +1173,15 @@ fn is_wrong_key_error(err: &CacheError) -> bool {
 ///
 /// Leaving the sidecars behind would let SQLite partially replay the
 /// old unencrypted WAL against the new encrypted file on next open.
+///
+/// Each file is overwritten with random bytes (one pass) and
+/// fsync'd before unlink so the encrypted SQLCipher pages don't
+/// linger on disk for forensic recovery.  This is fully
+/// effective on rotational drives.  On SSDs with wear-levelling
+/// the new write may land on a different physical block,
+/// leaving the old ciphertext recoverable until the controller
+/// reclaims that block — there's no way to force a true secure
+/// erase from userspace, so this is best-effort.
 fn wipe_cache_files(path: &Path) -> Result<(), CacheError> {
     for suffix in ["", "-wal", "-shm"] {
         let p = if suffix.is_empty() {
@@ -1148,10 +1192,50 @@ fn wipe_cache_files(path: &Path) -> Result<(), CacheError> {
             PathBuf::from(s)
         };
         if p.exists() {
+            if let Err(e) = secure_overwrite(&p) {
+                // Don't refuse the wipe just because the
+                // overwrite step couldn't open the file
+                // (read-only filesystem, locked by another
+                // process, …) — unlinking the file is still
+                // strictly better than leaving it.
+                tracing::warn!("secure overwrite of {} failed: {e}", p.display());
+            }
             std::fs::remove_file(&p)
                 .map_err(|e| CacheError::Open(format!("remove {}: {e}", p.display())))?;
         }
     }
+    Ok(())
+}
+
+/// Overwrite a file's contents with cryptographic-RNG bytes,
+/// flush to disk, before the caller unlinks it.  See
+/// `wipe_cache_files` for the threat-model caveats.
+fn secure_overwrite(path: &Path) -> Result<(), CacheError> {
+    use std::io::Write;
+    let len = std::fs::metadata(path)
+        .map_err(|e| CacheError::Open(format!("metadata {}: {e}", path.display())))?
+        .len();
+    if len == 0 {
+        return Ok(());
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| CacheError::Open(format!("open-for-overwrite {}: {e}", path.display())))?;
+    const CHUNK: usize = 64 * 1024;
+    let mut buf = vec![0u8; CHUNK];
+    let mut written: u64 = 0;
+    while written < len {
+        let remaining = len - written;
+        let n = (remaining as usize).min(CHUNK);
+        getrandom::getrandom(&mut buf[..n])
+            .map_err(|e| CacheError::Open(format!("RNG for secure overwrite: {e}")))?;
+        f.write_all(&buf[..n])
+            .map_err(|e| CacheError::Open(format!("write {}: {e}", path.display())))?;
+        written += n as u64;
+    }
+    f.sync_all()
+        .map_err(|e| CacheError::Open(format!("fsync {}: {e}", path.display())))?;
     Ok(())
 }
 
