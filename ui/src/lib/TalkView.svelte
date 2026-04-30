@@ -122,6 +122,30 @@
     })
   }
 
+  /** Confirm + delete a room.  Talk's API tears the room down server-
+      side for everyone — there's no per-user "leave" semantic for an
+      owner — so we gate behind a confirm prompt to keep accidental
+      clicks from nuking a busy conversation.  Optimistically remove
+      from the list on success; the next periodic refresh reconciles
+      any drift. */
+  let deletingToken = $state<string | null>(null)
+  async function deleteRoom(room: TalkRoom) {
+    if (!accountId) return
+    const ok = window.confirm(
+      `Delete "${room.display_name}"?\n\nThis removes the room for every participant — there's no undo.`,
+    )
+    if (!ok) return
+    deletingToken = room.token
+    try {
+      await invoke('delete_talk_room', { ncId: accountId, roomToken: room.token })
+      rooms = rooms.filter((r) => r.token !== room.token)
+    } catch (e) {
+      error = formatError(e) || 'Failed to delete Talk room'
+    } finally {
+      deletingToken = null
+    }
+  }
+
   function onRoomCreated(room: TalkRoom) {
     // Optimistically prepend the new room — the next periodic refresh
     // (or the user's manual refresh) will reconcile any drift.
@@ -239,6 +263,12 @@
               onclick={() => openRoom(room)}
               title="Open this Talk room in your browser"
             >Open <Icon name="open-link" size={14} /></button>
+            <button
+              class="btn preset-outlined-error-500 text-xs inline-flex items-center gap-1.5 hover:bg-error-500/15 hover:text-error-500"
+              disabled={deletingToken === room.token}
+              onclick={() => void deleteRoom(room)}
+              title="Delete this Talk room for everyone"
+            ><Icon name={deletingToken === room.token ? 'loading' : 'trash'} size={14} /> {deletingToken === room.token ? 'Deleting…' : 'Delete'}</button>
           </li>
         {/each}
       </ul>
