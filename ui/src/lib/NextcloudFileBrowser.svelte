@@ -344,10 +344,11 @@
       <div class="flex-1"></div>
       {#if !creatingFolder}
         <button
-          class="text-primary-500 hover:underline"
+          class="text-primary-500 hover:bg-primary-500/10 rounded-md p-1 inline-flex items-center justify-center"
           onclick={startCreateFolder}
           title="Create a new folder in this directory"
-        >+ New folder</button>
+          aria-label="New folder"
+        ><Icon name="add-folder" size={16} /></button>
       {/if}
     </nav>
 
