@@ -141,12 +141,13 @@
 
   /** Stroke-icon name for each Talk room kind.  One-to-one
    *  rooms = single contact silhouette; group / public meeting
-   *  rooms = the calendar/meetings glyph (matches the "create
-   *  Talk meeting" icon used elsewhere); changelog = info. */
+   *  rooms = the calendar glyph (Talk rooms are anchored to a
+   *  scheduled meeting in the user's mental model);
+   *  changelog = info. */
   function roomTypeIcon(t: TalkRoom['room_type']): IconName {
     if (t === 'one_to_one') return 'contacts'
     if (t === 'changelog') return 'info'
-    return 'meetings'
+    return 'calendar'
   }
 </script>
 
