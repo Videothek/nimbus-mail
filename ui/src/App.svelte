@@ -25,7 +25,10 @@
   import AccountSetup from './lib/AccountSetup.svelte'
   import AccountSettings from './lib/AccountSettings.svelte'
   import LockScreen from './lib/LockScreen.svelte'
-  import Compose, { type ComposeInitial } from './lib/Compose.svelte'
+  import Compose, {
+    type ComposeInitial,
+    type SendFailurePayload,
+  } from './lib/Compose.svelte'
   import ContactsView from './lib/ContactsView.svelte'
   import CalendarView from './lib/CalendarView.svelte'
   import FilesView from './lib/FilesView.svelte'
@@ -768,6 +771,9 @@
   // Open the Compose modal. Called with no arg for a blank new message,
   // or with a prefill for reply/reply-all/forward.
   function openCompose(initial: ComposeInitial = {}) {
+    // A fresh open shouldn't carry over the error banner from a
+    // previous failed background send (#156).
+    composeSendError = ''
     composeInitial = initial
   }
 
@@ -779,6 +785,36 @@
     // UI would otherwise stay on the pre-compose view until the user
     // clicked another folder.
     refreshToken++
+  }
+
+  // ── Background-send failure recovery (#156) ─────────────────
+  // Compose now closes the modal as soon as the user clicks Send;
+  // the IMAP submission runs in the background.  When that
+  // submission fails after the modal is gone we surface the
+  // error here AND re-open Compose pre-filled with the user's
+  // draft so they can retry without retyping.
+  let composeSendError = $state<string>('')
+  function onComposeSendFailed(payload: SendFailurePayload) {
+    composeSendError = payload.errorMessage
+    // Re-open Compose with the original draft.  Setting
+    // `composeInitial` triggers the mount in the same shell-
+    // level branch the original Compose lived in.
+    composeInitial = payload.draft
+    // Try to also fire an OS-level notification so the user
+    // notices the failure even if their attention has drifted
+    // off the Nimbus window.  Best-effort — silently ignore on
+    // platforms / permissions where it can't post.
+    if (notificationsGranted) {
+      try {
+        sendNotification({
+          title: 'Nimbus Mail — send failed',
+          body: payload.errorMessage,
+          icon: notificationIconPath || undefined,
+        })
+      } catch (e) {
+        console.warn('send-failed notification failed', e)
+      }
+    }
   }
 
   /** Build a quoted reply body as HTML.
@@ -1274,7 +1310,12 @@
         accounts={accounts}
         accountId={activeAccountId ?? ''}
         initial={composeInitial}
-        onclose={closeCompose}
+        initialError={composeSendError}
+        onclose={() => {
+          composeSendError = ''
+          closeCompose()
+        }}
+        onsendfailed={onComposeSendFailed}
       />
     {/if}
   </div>
