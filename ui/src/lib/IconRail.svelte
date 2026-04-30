@@ -206,8 +206,11 @@
     label: string
     icon: string
   }
+  // No 'inbox' entry here (#161 follow-up): the account avatars
+  // above the divider already navigate to mail, so a dedicated
+  // mail icon would be redundant.  Use `onselectaccount` (with the
+  // `'__all__'` sentinel for unified mode) to land in the inbox.
   const MAIN_NAV: NavEntry[] = [
-    { match: 'inbox', label: 'Mail', icon: '\u{1F4E7}' },        // 📧
     { match: 'contacts', label: 'Contacts', icon: '\u{1F464}' }, // 👤
     { match: 'calendar', label: 'Calendar', icon: '\u{1F4C5}' }, // 📅
     { match: 'files', label: 'Files', icon: '\u{1F4C1}' },       // 📁
