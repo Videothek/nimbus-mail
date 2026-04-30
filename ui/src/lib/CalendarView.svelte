@@ -32,6 +32,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import Icon from './Icon.svelte'
   import EventEditor, { type SavedEvent } from './EventEditor.svelte'
   import Select from './Select.svelte'
 
@@ -1115,21 +1116,23 @@
           class="btn preset-tonal-surface text-sm px-2"
           onclick={prevWeek}
           aria-label="Previous week"
+          title="Previous week"
         >
-          ‹
+          <Icon name="nav-backward" size={16} />
         </button>
         <button
-          class="btn preset-tonal-surface text-sm px-3"
+          class="btn preset-tonal-surface text-sm px-3 inline-flex items-center gap-1.5"
           onclick={goToToday}
         >
-          Today
+          <Icon name="today" size={14} /> Today
         </button>
         <button
           class="btn preset-tonal-surface text-sm px-2"
           onclick={nextWeek}
           aria-label="Next week"
+          title="Next week"
         >
-          ›
+          <Icon name="nav-forward" size={16} />
         </button>
       </div>
       <span class="text-sm font-medium ml-2">{weekRangeLabel()}</span>

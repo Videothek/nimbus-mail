@@ -11,6 +11,8 @@
    * passes the resulting state in.
    */
 
+  import Icon from './Icon.svelte'
+
   interface Props {
     /** Row label — "Contacts" / "Calendars" / future categories. */
     label: string
@@ -87,10 +89,11 @@
   {#if onsync}
     <button
       type="button"
-      class="btn btn-sm preset-outlined-primary-500 shrink-0"
+      class="btn btn-sm preset-outlined-primary-500 shrink-0 inline-flex items-center gap-1.5"
       onclick={onsync}
       disabled={syncing}
     >
+      <Icon name={syncing ? 'loading' : 'sync'} size={14} />
       {syncing ? 'Syncing…' : 'Sync now'}
     </button>
   {/if}

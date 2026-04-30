@@ -30,6 +30,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import Icon, { type IconName } from './Icon.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
   import NcPreview from './NcPreview.svelte'
 
@@ -232,16 +233,17 @@
     return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
   }
 
-  /** Emoji glyph for entries that read better as pictographs
-   *  (folders + media types).  Documents (images, markdown,
-   *  office, archives) fall through to `null` so the row
-   *  renders the typed `FileTypeIcon` SVG instead. */
-  function iconEmojiFor(entry: FileEntry): string | null {
-    if (entry.is_dir) return '📁'
+  /** Stroke-icon for entries that read better as a glyph than
+   *  as a typed `FileTypeIcon` SVG (folders + plaintext).
+   *  Documents (images, markdown, office, archives) fall
+   *  through to `null` so the row renders FileTypeIcon
+   *  instead. */
+  function iconNameFor(entry: FileEntry): IconName | null {
+    if (entry.is_dir) return 'files'
     const ct = entry.content_type ?? ''
     const fn = entry.name.toLowerCase()
     if (ct.startsWith('text/') && !ct.includes('markdown') && !fn.endsWith('.md') && !fn.endsWith('.markdown'))
-      return '📝'
+      return 'notes'
     return null
   }
 
@@ -388,7 +390,7 @@
       {:else}
         <ul class="divide-y divide-surface-200 dark:divide-surface-800">
           {#each entries as entry (entry.path)}
-            {@const emoji = iconEmojiFor(entry)}
+            {@const iconName = iconNameFor(entry)}
             <li>
               <button
                 class="w-full flex items-center gap-3 px-5 py-2 text-left hover:bg-surface-100 dark:hover:bg-surface-800"
@@ -409,8 +411,10 @@
                     onchange={() => toggleSelected(entry.path, entry.is_dir)}
                   />
                 {/if}
-                {#if emoji}
-                  <span class="text-lg w-9 h-9 flex items-center justify-center shrink-0">{emoji}</span>
+                {#if iconName}
+                  <span class="w-9 h-9 flex items-center justify-center shrink-0 text-surface-500">
+                    <Icon name={iconName} size={20} />
+                  </span>
                 {:else}
                   <NcPreview
                     {accountId}

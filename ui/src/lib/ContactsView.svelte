@@ -12,6 +12,7 @@
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
   import EmojiPicker from './EmojiPicker.svelte'
+  import Icon, { type IconName } from './Icon.svelte'
 
   interface Props {
     onclose: () => void
@@ -1208,7 +1209,7 @@
          three-dot menu's fixed overlay on first click,
          leaving activeTab updated but visually stale. -->
     <div class="flex-1 overflow-y-auto px-2 py-3 space-y-1">
-      {#snippet listRow(ml: MailingListView, sourceIcon: string, _pillCls: string, _pillText: string)}
+      {#snippet listRow(ml: MailingListView, sourceIconName: IconName, _pillCls: string, _pillText: string)}
         {@const sel = selectedListId === ml.id}
         {@const hidden = ml.hiddenFromAutocomplete}
         <div class="relative">
@@ -1249,7 +1250,13 @@
                 }
               }}
             ></button>
-            <span class="w-5 text-center">{ml.emoji || sourceIcon}</span>
+            <span class="w-5 flex items-center justify-center">
+              {#if ml.emoji}
+                {ml.emoji}
+              {:else}
+                <Icon name={sourceIconName} size={14} />
+              {/if}
+            </span>
             {#if renamingListId === ml.id}
               <!-- svelte-ignore a11y_autofocus -->
               <input
@@ -1360,7 +1367,7 @@
         >+</button>
       </div>
       {#each filteredMailingLists.manual as ml (ml.id)}
-        {@render listRow(ml, '📨', 'bg-success-500/20 text-success-600 dark:text-success-300', 'manual')}
+        {@render listRow(ml, 'email-envelope', 'bg-success-500/20 text-success-600 dark:text-success-300', 'manual')}
       {/each}
       {#if filteredMailingLists.manual.length === 0}
         <p class="px-3 py-2 text-xs text-surface-500 italic">
@@ -1370,13 +1377,13 @@
       {#if filteredMailingLists.category.length > 0}
         <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">Contact Groups</div>
         {#each filteredMailingLists.category as ml (ml.id)}
-          {@render listRow(ml, '🏷️', 'bg-primary-500/20 text-primary-600 dark:text-primary-300', 'category')}
+          {@render listRow(ml, 'filter', 'bg-primary-500/20 text-primary-600 dark:text-primary-300', 'category')}
         {/each}
       {/if}
       {#if filteredMailingLists.team.length > 0}
         <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">Teams</div>
         {#each filteredMailingLists.team as ml (ml.id)}
-          {@render listRow(ml, '⚡', 'bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200', 'team')}
+          {@render listRow(ml, 'contacts', 'bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200', 'team')}
         {/each}
       {/if}
       {#if mailingLists.length === 0}

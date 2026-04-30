@@ -132,8 +132,13 @@
     id: string
     /** Tab strip label, e.g. "Attach". */
     label: string
-    /** Optional emoji / icon shown left of the label in the strip. */
+    /** Optional emoji / text glyph shown left of the label.
+     *  Prefer `iconName` for consistency with the rest of the UI;
+     *  this field stays for callers that want a literal glyph. */
     icon?: string
+    /** Stroke-icon name shown left of the label.  Wins over
+     *  `icon` when both are set. */
+    iconName?: import('./Icon.svelte').IconName
     /** Panel contents — rendered below the tab strip when this tab
      *  is the active one. */
     content: import('svelte').Snippet
@@ -1499,7 +1504,7 @@
           class:rt-tab-active={activeTab === t.id}
           onclick={() => (activeTab = t.id)}
         >
-          {#if t.icon}<span class="mr-1">{t.icon}</span>{/if}{t.label}
+          {#if t.iconName}<span class="mr-1 inline-flex"><Icon name={t.iconName} size={14} /></span>{:else if t.icon}<span class="mr-1">{t.icon}</span>{/if}{t.label}
         </button>
       {/each}
 

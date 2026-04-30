@@ -1237,7 +1237,7 @@
           class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
           onclick={() => email && uid != null && openMailInStandaloneWindow(email.account_id, email.folder, uid)}
           title="Open this mail in a separate window"
-        ><Icon name="open-on-desktop" size={16} /> Open in window</button>
+        ><Icon name="full-screen" size={16} /> Open in window</button>
       {/if}
       {#if email.body_html}
         <!-- Per-message background toggle — flips the white-canvas
@@ -1358,7 +1358,7 @@
                   {#if busy}
                     …
                   {:else}
-                    <Icon name="notes" size={12} class="inline-block align-text-bottom mr-1" />Open in Office
+                    <Icon name="open-in-browser" size={12} class="inline-block align-text-bottom mr-1" />Open in Office
                   {/if}
                 </button>
               {:else if isPdf}
@@ -1413,7 +1413,7 @@
                       role="menuitem"
                       class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 inline-flex items-center gap-1.5"
                       onclick={runAndClose(() => openInOfficeViewer(att))}
-                    ><Icon name="notes" size={14} /> Open in Office</button>
+                    ><Icon name="open-in-browser" size={14} /> Open in Office</button>
                   {:else if isPdf}
                     <button
                       role="menuitem"
