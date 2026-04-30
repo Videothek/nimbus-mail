@@ -119,8 +119,21 @@
       location?: string
       url?: string
       /** Each entry is a bare address or `"Name" <addr>` — same
-          shape `parseAddress` accepts everywhere else. */
+          shape `parseAddress` accepts everywhere else.  All seeded
+          here land as REQ-PARTICIPANT.  Use the per-role fields
+          below when the caller wants a more nuanced split (e.g.
+          MailView's "Respond with meeting" puts From / To in
+          `requiredAttendees` and Cc in `optionalAttendees`). */
       attendees?: string[]
+      requiredAttendees?: string[]
+      optionalAttendees?: string[]
+      chairAttendees?: string[]
+      /** When true, the editor auto-creates a Talk room as soon as it
+          mounts — same effect as clicking "Add Talk link", but the
+          user doesn't have to.  Used by MailView's "Respond with
+          meeting" so the meeting starts life with a join URL already
+          attached. */
+      createTalkRoom?: boolean
     } | null
     /** edit-mode subject: the existing event being edited. */
     event?: CalendarEvent | null
@@ -205,6 +218,17 @@
         }
       })
       .catch(() => {})
+      .finally(() => {
+        // Auto-mint a Talk room once the calendar selection has
+        // settled — used by "Respond with meeting" so the event
+        // mounts with a join URL pre-attached.  Mirrors the manual
+        // "Add Talk link" button so all the save-time wiring
+        // (participant invites, public/private downgrade) reuses
+        // the same path.
+        if (draft?.createTalkRoom && !pendingTalkRoom && !creatingTalkRoom) {
+          void addTalkLink()
+        }
+      })
   })
 
   // svelte-ignore state_referenced_locally
@@ -244,18 +268,31 @@
     if (r === 'CHAIR') return 'CHAIR'
     return 'REQ-PARTICIPANT'
   }
+  function seedRole(list: string[] | undefined, role: Role): EventAttendee[] {
+    return (list ?? [])
+      .map((s) => parseAddressToAttendee(s, role))
+      .filter((a): a is EventAttendee => !!a)
+  }
   // svelte-ignore state_referenced_locally
   let requiredAttendees = $state<EventAttendee[]>(
-    event ? (event.attendees ?? []).filter((a) => bucketFor(a) === 'REQ-PARTICIPANT')
-          : (draft?.attendees ?? []).map((s) => parseAddressToAttendee(s, 'REQ-PARTICIPANT')).filter((a): a is EventAttendee => !!a),
+    event
+      ? (event.attendees ?? []).filter((a) => bucketFor(a) === 'REQ-PARTICIPANT')
+      : [
+          ...seedRole(draft?.attendees, 'REQ-PARTICIPANT'),
+          ...seedRole(draft?.requiredAttendees, 'REQ-PARTICIPANT'),
+        ],
   )
   // svelte-ignore state_referenced_locally
   let optionalAttendees = $state<EventAttendee[]>(
-    event ? (event.attendees ?? []).filter((a) => bucketFor(a) === 'OPT-PARTICIPANT') : [],
+    event
+      ? (event.attendees ?? []).filter((a) => bucketFor(a) === 'OPT-PARTICIPANT')
+      : seedRole(draft?.optionalAttendees, 'OPT-PARTICIPANT'),
   )
   // svelte-ignore state_referenced_locally
   let chairAttendees = $state<EventAttendee[]>(
-    event ? (event.attendees ?? []).filter((a) => bucketFor(a) === 'CHAIR') : [],
+    event
+      ? (event.attendees ?? []).filter((a) => bucketFor(a) === 'CHAIR')
+      : seedRole(draft?.chairAttendees, 'CHAIR'),
   )
 
   /** Lower-cased addresses we consider "the user" — the union
