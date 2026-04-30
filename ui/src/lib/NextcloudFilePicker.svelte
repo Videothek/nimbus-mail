@@ -350,7 +350,11 @@
             onclick={shareSelected}
             title="Insert public download links into the email body"
           >
-            {sharing ? 'Sharing…' : '🔗 Share as link'}
+            {#if sharing}
+              Sharing…
+            {:else}
+              <Icon name="share-links" size={14} class="inline-block align-text-bottom mr-1.5" />Share as link
+            {/if}
           </button>
         {/if}
         <button
