@@ -1082,7 +1082,7 @@
                      : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
             onclick={() => (selectedScope = `addressbook:${b.name}`)}
           >
-            <span class="w-6 text-center">📒</span>
+            <span class="w-6 flex items-center justify-center"><Icon name="address-book" size={16} /></span>
             <span class="flex-1 truncate">{b.displayName ?? b.name}</span>
           </button>
         {/each}
@@ -1377,13 +1377,13 @@
       {#if filteredMailingLists.category.length > 0}
         <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">Contact Groups</div>
         {#each filteredMailingLists.category as ml (ml.id)}
-          {@render listRow(ml, 'filter', 'bg-primary-500/20 text-primary-600 dark:text-primary-300', 'category')}
+          {@render listRow(ml, 'group', 'bg-primary-500/20 text-primary-600 dark:text-primary-300', 'category')}
         {/each}
       {/if}
       {#if filteredMailingLists.team.length > 0}
         <div class="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-surface-500">Teams</div>
         {#each filteredMailingLists.team as ml (ml.id)}
-          {@render listRow(ml, 'contacts', 'bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200', 'team')}
+          {@render listRow(ml, 'team', 'bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200', 'team')}
         {/each}
       {/if}
       {#if mailingLists.length === 0}

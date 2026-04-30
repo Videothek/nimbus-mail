@@ -828,16 +828,18 @@
 
   <!-- Time slot.  Front-and-centre so the user can decide
        "does this fit" before clicking anything. -->
-  <div class="text-surface-700 dark:text-surface-300 mb-1">
-    🕐 <span class="font-medium">{timeRange}</span>
+  <div class="text-surface-700 dark:text-surface-300 mb-1 inline-flex items-center gap-1.5">
+    <Icon name="time" size={14} class="shrink-0" />
+    <span class="font-medium">{timeRange}</span>
     {#if durationLabel}
       <span class="text-surface-500"> · {durationLabel}</span>
     {/if}
   </div>
 
   {#if invite.location}
-    <div class="text-surface-700 dark:text-surface-300 mb-1">
-      📍 {invite.location}
+    <div class="text-surface-700 dark:text-surface-300 mb-1 inline-flex items-center gap-1.5">
+      <Icon name="location" size={14} class="shrink-0" />
+      <span>{invite.location}</span>
     </div>
   {/if}
   {#if invite.url}
@@ -1041,7 +1043,7 @@
         <div class="flex items-center justify-center gap-2 mb-2 text-xs">
           <button
             type="button"
-            class="w-7 h-7 rounded-md flex items-center justify-center border border-surface-300 dark:border-surface-600 bg-surface-100 dark:bg-surface-800 text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 hover:border-surface-400 dark:hover:border-surface-500 transition-colors"
+            class="w-7 h-7 rounded-md flex items-center justify-center text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
             aria-label="Previous day"
             title="Previous day"
             onclick={() => shiftPreviewDay(-1)}
@@ -1051,7 +1053,7 @@
           </span>
           <button
             type="button"
-            class="w-7 h-7 rounded-md flex items-center justify-center border border-surface-300 dark:border-surface-600 bg-surface-100 dark:bg-surface-800 text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 hover:border-surface-400 dark:hover:border-surface-500 transition-colors"
+            class="w-7 h-7 rounded-md flex items-center justify-center text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
             aria-label="Next day"
             title="Next day"
             onclick={() => shiftPreviewDay(1)}

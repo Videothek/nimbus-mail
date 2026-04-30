@@ -1111,33 +1111,6 @@
   >
     <div class="flex items-center gap-3">
       <h2 class="text-xl font-semibold">Calendar</h2>
-      <div class="flex items-center gap-1 ml-2">
-        <button
-          class="p-1.5 rounded-md text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
-          onclick={prevWeek}
-          aria-label="Previous week"
-          title="Previous week"
-        >
-          <Icon name="nav-backward" size={18} />
-        </button>
-        <button
-          class="p-1.5 rounded-md text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
-          onclick={goToToday}
-          aria-label="Jump to today"
-          title="Jump to today"
-        >
-          <Icon name="today" size={18} />
-        </button>
-        <button
-          class="p-1.5 rounded-md text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
-          onclick={nextWeek}
-          aria-label="Next week"
-          title="Next week"
-        >
-          <Icon name="nav-forward" size={18} />
-        </button>
-      </div>
-      <span class="text-sm font-medium ml-2">{weekRangeLabel()}</span>
       {#if syncing}
         <span class="text-xs text-surface-500 ml-2">Syncing…</span>
       {/if}
@@ -1292,6 +1265,37 @@
            stable` reserves the scrollbar slot up front so the grid
            never reflows when content height crosses the viewport. -->
       <div class="flex-1 flex flex-col min-w-0">
+        <!-- Week navigation, centered above the table.  Pinned at the
+             top of the grid column so it sits between the section
+             header and the day-of-week strip without scrolling away
+             with the events. -->
+        <div class="flex items-center justify-center gap-2 px-3 py-2 border-b border-surface-200 dark:border-surface-700">
+          <button
+            class="p-1.5 rounded-md text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
+            onclick={prevWeek}
+            aria-label="Previous week"
+            title="Previous week"
+          >
+            <Icon name="nav-backward" size={18} />
+          </button>
+          <button
+            class="p-1.5 rounded-md text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
+            onclick={goToToday}
+            aria-label="Jump to today"
+            title="Jump to today"
+          >
+            <Icon name="today" size={18} />
+          </button>
+          <button
+            class="p-1.5 rounded-md text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
+            onclick={nextWeek}
+            aria-label="Next week"
+            title="Next week"
+          >
+            <Icon name="nav-forward" size={18} />
+          </button>
+          <span class="text-sm font-medium ml-2 text-surface-700 dark:text-surface-300">{weekRangeLabel()}</span>
+        </div>
         <div
           class="flex-1 overflow-y-auto"
           style="scrollbar-gutter: stable;"

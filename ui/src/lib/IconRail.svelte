@@ -253,7 +253,7 @@
              A 2px upward translate lands the visible centre on the
              box's geometric centre across Linux/macOS/Windows emoji
              fonts. -->
-        <span class="absolute inset-0 flex items-center justify-center"><Icon name="email-envelope" size={20} /></span>
+        <span class="absolute inset-0 flex items-center justify-center"><Icon name="global-inbox" size={20} /></span>
       </span>
       {#if totalUnread > 0}
         <span
