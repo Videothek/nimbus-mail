@@ -16,6 +16,7 @@
   import NextcloudFilePicker from './NextcloudFilePicker.svelte'
   import MoveFolderPicker from './MoveFolderPicker.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
+  import Icon from './Icon.svelte'
   import AttachmentThumb, { seedThumbFromBase64 } from './AttachmentThumb.svelte'
   import CalendarInviteCard, { type InviteSummary } from './CalendarInviteCard.svelte'
   import { openMailInStandaloneWindow } from './standaloneMailWindow'
@@ -1186,33 +1187,45 @@
     <div class="flex items-center gap-2 px-6 py-2 border-b border-surface-200 dark:border-surface-700 text-sm">
       {#if isDraftsFolder}
         <button
-          class="btn btn-sm preset-filled-primary-500"
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center gap-1.5"
           onclick={() => email && oneditdraft?.(email)}
           title="Open this draft in Compose to keep editing"
-        >✏️ Edit draft</button>
+        ><Icon name="compose" size={16} /> Edit draft</button>
       {:else}
-        <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onreply?.(email)}>Reply</button>
-        <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onreplyall?.(email)}>Reply All</button>
-        <button class="btn btn-sm preset-outlined-surface-500" onclick={() => email && onforward?.(email)}>Forward</button>
+        <button
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          onclick={() => email && onreply?.(email)}
+          title="Reply"
+        ><Icon name="reply" size={16} /> Reply</button>
+        <button
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          onclick={() => email && onreplyall?.(email)}
+          title="Reply to everyone"
+        ><Icon name="reply-all" size={16} /> Reply All</button>
+        <button
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          onclick={() => email && onforward?.(email)}
+          title="Forward"
+        ><Icon name="forward" size={16} /> Forward</button>
         {#if oncreatetalk}
           <button
-            class="btn btn-sm preset-outlined-primary-500"
+            class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
             onclick={() => email && oncreatetalk?.(email)}
             title="Create a Nextcloud Talk room with the participants of this thread"
-          >💬 Talk</button>
+          ><Icon name="meetings" size={16} /> Talk</button>
         {/if}
         {#if onsavenote}
           <button
-            class="btn btn-sm preset-outlined-primary-500"
+            class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
             onclick={() => email && onsavenote?.(email)}
             title="Save this email as a Nextcloud note"
-          >📝 Save as note</button>
+          ><Icon name="notes" size={16} /> Save as note</button>
         {/if}
         <button
-          class="btn btn-sm preset-outlined-surface-500"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
           onclick={toggleRead}
           title={email.is_read ? 'Mark this message as unread' : 'Mark this message as read'}
-        >{email.is_read ? 'Mark unread' : 'Mark read'}</button>
+        ><Icon name={email.is_read ? 'unread' : 'read'} size={16} /> {email.is_read ? 'Mark unread' : 'Mark read'}</button>
       {/if}
       <div class="flex-1"></div>
       {#if !inStandaloneWindow && email && uid != null}
@@ -1221,10 +1234,10 @@
              a click there would just spawn another identical
              window, which is never what you want. -->
         <button
-          class="btn btn-sm preset-outlined-surface-500"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
           onclick={() => email && uid != null && openMailInStandaloneWindow(email.account_id, email.folder, uid)}
           title="Open this mail in a separate window"
-        >↗ Open in window</button>
+        ><Icon name="share-links" size={16} /> Open in window</button>
       {/if}
       {#if email.body_html}
         <!-- Per-message background toggle — flips the white-canvas
@@ -1236,27 +1249,27 @@
           title={effectiveWhiteBackground
             ? "Switch this mail to the app's theme background"
             : 'Switch this mail to a white background'}
-        >{effectiveWhiteBackground ? '🎨 Use mail theme' : '📄 White background'}</button>
+        >{effectiveWhiteBackground ? 'Use mail theme' : 'White background'}</button>
       {/if}
       <!-- Move to folder (#89) — single button that opens the
            `MoveFolderPicker` modal.  Picker presents folders with
            the same icons + ordering the sidebar uses, plus an
            inline filter for accounts with lots of folders. -->
       <button
-        class="btn btn-sm preset-outlined-surface-500"
+        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
         onclick={() => (moveMenuOpen = true)}
         title="Move this message to a different folder"
-      >Move</button>
+      ><Icon name="move-to-folder" size={16} /> Move</button>
       <button
-        class="btn btn-sm preset-outlined-surface-500"
+        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
         onclick={archiveMessage}
         title="Move this message to the Archive folder"
-      >Archive</button>
+      ><Icon name="archive" size={16} /> Archive</button>
       <button
-        class="btn btn-sm preset-outlined-surface-500"
+        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
         onclick={deleteMessage}
         title="Move this message to Trash (permanently deletes if already in Trash or if the account has no Trash folder)"
-      >Delete</button>
+      ><Icon name="trash" size={16} /> Delete</button>
     </div>
 
     <!-- Calendar invite (#58 / iMIP).  Mounted above the
@@ -1342,7 +1355,11 @@
                   onclick={() => openInOfficeViewer(att)}
                   title="Open in Nextcloud Office (Collabora)"
                 >
-                  {busy ? '…' : '📝 Open in Office'}
+                  {#if busy}
+                    …
+                  {:else}
+                    <Icon name="notes" size={12} class="inline-block align-text-bottom mr-1" />Open in Office
+                  {/if}
                 </button>
               {:else if isPdf}
                 <button
@@ -1394,9 +1411,9 @@
                   {#if isOffice}
                     <button
                       role="menuitem"
-                      class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+                      class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 inline-flex items-center gap-1.5"
                       onclick={runAndClose(() => openInOfficeViewer(att))}
-                    >📝 Open in Office</button>
+                    ><Icon name="notes" size={14} /> Open in Office</button>
                   {:else if isPdf}
                     <button
                       role="menuitem"

@@ -19,6 +19,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import Icon from './Icon.svelte'
   import {
     enrollFidoCredential,
     evaluateFidoPrf,
@@ -574,7 +575,7 @@
                       passphraseConfirm = ''
                       passphraseEditing = true
                     }}
-                  >✏️</button>
+                  ><Icon name="compose" size={14} /></button>
                 {/if}
                 <button
                   class="btn btn-sm preset-outlined-error-500"

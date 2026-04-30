@@ -20,6 +20,7 @@
   import { formatError } from './errors'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
   import type { ComposeInitial } from './Compose.svelte'
+  import Icon from './Icon.svelte'
 
   interface NextcloudAccount {
     id: string
@@ -158,11 +159,11 @@
         onclick={() => (showCreate = true)}
       >+ New room</button>
       <button
-        class="btn preset-tonal-surface text-sm"
+        class="btn preset-tonal-surface text-sm inline-flex items-center gap-1.5"
         disabled={!accountId || loading}
         onclick={() => refresh()}
         title="Refresh room list"
-      >{loading ? 'Refreshing…' : '↻ Refresh'}</button>
+      ><Icon name={loading ? 'loading' : 'refresh'} size={14} /> {loading ? 'Refreshing…' : 'Refresh'}</button>
       <button class="btn preset-tonal-surface text-sm" onclick={onclose}>Close</button>
     </div>
   </div>
@@ -225,15 +226,15 @@
             </div>
 
             <button
-              class="btn preset-outlined-surface-500 text-xs"
+              class="btn preset-outlined-surface-500 text-xs inline-flex items-center gap-1.5"
               onclick={() => shareRoom(room)}
               title="Open a new mail with this room's join link"
-            >🔗 Share link</button>
+            ><Icon name="share-links" size={14} /> Share link</button>
             <button
-              class="btn preset-filled-primary-500 text-xs"
+              class="btn preset-filled-primary-500 text-xs inline-flex items-center gap-1.5"
               onclick={() => openRoom(room)}
               title="Open this Talk room in your browser"
-            >Open ↗</button>
+            >Open <Icon name="share-links" size={14} /></button>
           </li>
         {/each}
       </ul>

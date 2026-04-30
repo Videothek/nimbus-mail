@@ -15,6 +15,7 @@
   import { formatError } from './errors'
   import { openMailInStandaloneWindow } from './standaloneMailWindow'
   import MoveFolderPicker from './MoveFolderPicker.svelte'
+  import Icon from './Icon.svelte'
 
   // ── Props ───────────────────────────────────────────────────
   interface EmailEnvelope {
@@ -559,27 +560,27 @@
                 e.stopPropagation()
                 void toggleEnvelopeRead(env)
               }}
-            >{env.is_read ? '📭' : '📥'}</button>
+            ><Icon name={env.is_read ? 'unread' : 'read'} size={16} /></button>
             <button
               type="button"
-              class="w-7 h-7 rounded-md flex items-center justify-center text-sm bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm"
+              class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-surface-200 dark:hover:bg-surface-700 shadow-sm"
               title="Move to folder"
               aria-label="Move to folder"
               onclick={(e) => {
                 e.stopPropagation()
                 quickMove(env)
               }}
-            >📁</button>
+            ><Icon name="move-to-folder" size={16} /></button>
             <button
               type="button"
-              class="w-7 h-7 rounded-md flex items-center justify-center text-sm bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
+              class="w-7 h-7 rounded-md flex items-center justify-center bg-surface-50/90 dark:bg-surface-800/90 hover:bg-red-500/20 hover:text-red-500 shadow-sm"
               title="Delete"
               aria-label="Delete"
               onclick={(e) => {
                 e.stopPropagation()
                 void quickDelete(env)
               }}
-            >🗑</button>
+            ><Icon name="trash" size={16} /></button>
           </div>
         </div>
       {/each}

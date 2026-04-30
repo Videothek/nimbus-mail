@@ -19,6 +19,7 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
+  import Icon from './Icon.svelte'
   import NextcloudFileBrowser, {
     type FileEntry,
     type NextcloudAccount,
@@ -360,7 +361,11 @@
             ? 'Folders can be shared as a link, but not attached as bytes'
             : 'Download selected files and attach them to the email'}
         >
-          {downloading ? 'Downloading…' : '📎 Attach'}
+          {#if downloading}
+            Downloading…
+          {:else}
+            <Icon name="attachment" size={14} class="inline-block align-text-bottom mr-1.5" />Attach
+          {/if}
         </button>
       {/if}
     </footer>
