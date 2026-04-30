@@ -294,17 +294,21 @@
                touch. -->
           <button
             type="button"
-            class="w-full px-5 py-2 flex items-center gap-2 text-sm border-t border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 hover:bg-surface-200 dark:hover:bg-surface-700 text-surface-700 dark:text-surface-200"
+            class="w-full px-5 py-3 flex items-center gap-3 text-sm text-surface-500 hover:text-surface-700 dark:hover:text-surface-200 group"
             onclick={() => (showArchived = !showArchived)}
             aria-expanded={showArchived}
           >
-            <span
-              class="inline-block transition-transform text-surface-500"
-              style="transform: rotate({showArchived ? 90 : 0}deg)"
-              aria-hidden="true"
-            >▸</span>
-            <span class="font-medium">Archived</span>
-            <span class="text-xs text-surface-500">({archivedRooms.length})</span>
+            <span class="flex-1 h-px bg-surface-200 dark:bg-surface-700 group-hover:bg-surface-300 dark:group-hover:bg-surface-600 transition-colors"></span>
+            <span class="inline-flex items-center gap-1.5 shrink-0">
+              <span
+                class="inline-block transition-transform text-xs"
+                style="transform: rotate({showArchived ? 90 : 0}deg)"
+                aria-hidden="true"
+              >▸</span>
+              <span class="font-medium tracking-wide uppercase text-xs">Archived</span>
+              <span class="text-xs">({archivedRooms.length})</span>
+            </span>
+            <span class="flex-1 h-px bg-surface-200 dark:bg-surface-700 group-hover:bg-surface-300 dark:group-hover:bg-surface-600 transition-colors"></span>
           </button>
           {#if showArchived}
             <ul class="divide-y divide-surface-200 dark:divide-surface-800">
