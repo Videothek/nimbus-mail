@@ -18,8 +18,19 @@
    */
 
   import { onMount } from 'svelte'
+  import Icon, { type IconName } from './Icon.svelte'
 
-  type Option<V> = { value: V; label: string }
+  /** Optional icon adornment for an option.  Renders before the
+   *  label both in the trigger face and in the dropdown rows.
+   *  `colorClass` is a Tailwind color token (e.g.
+   *  `text-success-500`) applied to the icon wrapper so callers
+   *  can colour-code semantic options like RSVP states. */
+  type Option<V> = {
+    value: V
+    label: string
+    iconName?: IconName
+    iconColorClass?: string
+  }
 
   let {
     value = $bindable(),
@@ -138,8 +149,13 @@
     onclick={toggle}
     onkeydown={onKey}
   >
-    <span class="truncate {selectedOption ? '' : 'text-surface-400'}">
-      {displayLabel}
+    <span class="truncate flex items-center gap-1.5 {selectedOption ? '' : 'text-surface-400'}">
+      {#if selectedOption?.iconName}
+        <span class={selectedOption.iconColorClass ?? ''}>
+          <Icon name={selectedOption.iconName} size={14} />
+        </span>
+      {/if}
+      <span class="truncate">{displayLabel}</span>
     </span>
     <svg
       xmlns="http://www.w3.org/2000/svg"
@@ -182,7 +198,14 @@
           }}
           onmouseenter={() => (activeIndex = i)}
         >
-          <span class="truncate">{opt.label}</span>
+          <span class="truncate flex items-center gap-1.5">
+            {#if opt.iconName}
+              <span class={isSelected ? '' : (opt.iconColorClass ?? '')}>
+                <Icon name={opt.iconName} size={14} />
+              </span>
+            {/if}
+            <span class="truncate">{opt.label}</span>
+          </span>
           {#if isSelected}
             <svg
               xmlns="http://www.w3.org/2000/svg"

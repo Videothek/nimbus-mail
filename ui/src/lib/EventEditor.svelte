@@ -1250,10 +1250,10 @@
               ariaLabel="Your response (RSVP)"
               value={(myAttendee.status ?? 'NEEDS-ACTION').toUpperCase()}
               options={[
-                { value: 'NEEDS-ACTION', label: '❔ No response' },
-                { value: 'ACCEPTED', label: '✅ Accepted' },
-                { value: 'TENTATIVE', label: '❓ Tentative' },
-                { value: 'DECLINED', label: '❌ Declined' },
+                { value: 'NEEDS-ACTION', label: 'No response', iconName: 'help', iconColorClass: 'text-surface-500' },
+                { value: 'ACCEPTED', label: 'Accepted', iconName: 'rsvp-accept', iconColorClass: 'text-success-500' },
+                { value: 'TENTATIVE', label: 'Tentative', iconName: 'rsvp-tentative', iconColorClass: 'text-warning-500' },
+                { value: 'DECLINED', label: 'Declined', iconName: 'rsvp-decline', iconColorClass: 'text-error-500' },
               ]}
               onchange={(v) => {
                 const target = myAttendee
