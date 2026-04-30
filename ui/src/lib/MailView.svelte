@@ -1198,26 +1198,26 @@
         ><Icon name="compose" size={16} /> Edit draft</button>
       {:else}
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
           onclick={() => email && onreply?.(email)}
           title="Reply"
           aria-label="Reply"
         ><Icon name="reply" size={16} /></button>
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
           onclick={() => email && onreplyall?.(email)}
           title="Reply to everyone"
           aria-label="Reply to everyone"
         ><Icon name="reply-all" size={16} /></button>
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
           onclick={() => email && onforward?.(email)}
           title="Forward"
           aria-label="Forward"
         ><Icon name="forward" size={16} /></button>
         {#if oncreatetalk}
           <button
-            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
             onclick={() => email && oncreatetalk?.(email)}
             title="Create a Nextcloud Talk room with the participants of this thread"
             aria-label="Create Talk room"
@@ -1225,14 +1225,14 @@
         {/if}
         {#if onsavenote}
           <button
-            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+            class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
             onclick={() => email && onsavenote?.(email)}
             title="Save this email as a Nextcloud note"
             aria-label="Save as note"
           ><Icon name="notes" size={16} /></button>
         {/if}
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
           onclick={toggleRead}
           title={email.is_read ? 'Mark this message as unread' : 'Mark this message as read'}
           aria-label={email.is_read ? 'Mark as unread' : 'Mark as read'}
@@ -1245,7 +1245,7 @@
              a click there would just spawn another identical
              window, which is never what you want. -->
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
           onclick={() => email && uid != null && openMailInStandaloneWindow(email.account_id, email.folder, uid)}
           title="Open this mail in a separate window"
           aria-label="Open in window"
@@ -1259,7 +1259,7 @@
              picked).  Title carries the action so hover tooltips
              still spell it out. -->
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
           onclick={() => (whiteBackgroundOverride = !effectiveWhiteBackground)}
           title={effectiveWhiteBackground
             ? "Switch this mail to the app's theme background"
@@ -1272,13 +1272,13 @@
            the same icons + ordering the sidebar uses, plus an
            inline filter for accounts with lots of folders. -->
       <button
-        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
         onclick={() => (moveMenuOpen = true)}
         title="Move this message to a different folder"
         aria-label="Move to folder"
       ><Icon name="move-to-folder" size={16} /></button>
       <button
-        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
+        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center hover:bg-primary-500/15 hover:text-primary-500 hover:border-primary-500/40"
         onclick={archiveMessage}
         title="Move this message to the Archive folder"
         aria-label="Archive"
