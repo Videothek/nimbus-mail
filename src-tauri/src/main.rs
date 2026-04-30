@@ -431,14 +431,14 @@ async fn poll_nextcloud_login(
         display_name: None,
         capabilities,
     };
-    nextcloud_store::upsert_account(account.clone())?;
+    nextcloud_store::upsert_account(global_cache()?, account.clone())?;
     Ok(Some(account))
 }
 
 /// List all saved Nextcloud connections.
 #[tauri::command]
 fn get_nextcloud_accounts() -> Result<Vec<NextcloudAccount>, NimbusError> {
-    nextcloud_store::load_accounts()
+    nextcloud_store::load_accounts(global_cache()?)
 }
 
 /// Re-probe `/ocs/v2.php/cloud/capabilities` for one account and
@@ -456,7 +456,7 @@ async fn refresh_nextcloud_capabilities(nc_id: String) -> Result<NextcloudAccoun
     match fetch_capabilities(&account.server_url, &account.username, &app_password).await {
         Ok(caps) => {
             account.capabilities = Some(caps);
-            nextcloud_store::upsert_account(account.clone())?;
+            nextcloud_store::upsert_account(global_cache()?, account.clone())?;
         }
         Err(e) => {
             tracing::warn!("refresh_nextcloud_capabilities for {nc_id}: {e}");
@@ -513,7 +513,7 @@ fn remove_nextcloud_account(id: String, cache: State<'_, Cache>) -> Result<(), N
     if let Err(e) = cache.wipe_nextcloud_calendars(&id) {
         tracing::warn!("failed to wipe calendars for NC account '{id}': {e}");
     }
-    nextcloud_store::remove_account(&id)
+    nextcloud_store::remove_account(&cache, &id)
 }
 
 /// Open an arbitrary URL in the system's default browser.
@@ -1527,7 +1527,7 @@ async fn sync_nextcloud_contacts(
     nc_id: String,
     cache: State<'_, Cache>,
 ) -> Result<SyncContactsReport, NimbusError> {
-    let account = nextcloud_store::load_accounts()?
+    let account = nextcloud_store::load_accounts(&cache)?
         .into_iter()
         .find(|a| a.id == nc_id)
         .ok_or_else(|| NimbusError::Other(format!("no Nextcloud account with id '{nc_id}'")))?;
@@ -2760,7 +2760,7 @@ fn humanize_nc_group_name(raw: &str) -> String {
 async fn list_nextcloud_groups(
     cache: State<'_, Cache>,
 ) -> Result<Vec<NextcloudGroupView>, NimbusError> {
-    let accounts = nextcloud_store::load_accounts().unwrap_or_default();
+    let accounts = nextcloud_store::load_accounts(&cache).unwrap_or_default();
     let mut out: Vec<NextcloudGroupView> = Vec::new();
     // Build a uid → email fallback map from the local CardDAV
     // cache.  Most NC instances sync the system addressbook into
@@ -4618,8 +4618,20 @@ fn row_to_contact(nc_account_id: &str, addressbook: &str, row: &ContactRow) -> C
     }
 }
 
+/// Process-wide handle to the encrypted cache.  Populated once in
+/// `main()` after `Cache::open_default`, so non-IPC helpers can
+/// reach the pool without every call site having to extract
+/// `State<'_, Cache>` and thread `&Cache` through itself.
+static GLOBAL_CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+
+fn global_cache() -> Result<&'static Cache, NimbusError> {
+    GLOBAL_CACHE
+        .get()
+        .ok_or_else(|| NimbusError::Storage("cache not initialised yet".into()))
+}
+
 fn load_nextcloud_account(nc_id: &str) -> Result<NextcloudAccount, NimbusError> {
-    nextcloud_store::load_accounts()?
+    nextcloud_store::load_accounts(global_cache()?)?
         .into_iter()
         .find(|a| a.id == nc_id)
         .ok_or_else(|| NimbusError::Other(format!("no Nextcloud account with id '{nc_id}'")))
@@ -6526,8 +6538,8 @@ async fn check_talk_reminders_inner(app: &AppHandle) -> Result<(), NimbusError> 
     // connected NC account.  Mirrors the visibility the user
     // already chose for the agenda grid; muting a calendar there
     // also silences its Talk reminders.
-    let nc_accounts = nextcloud_store::load_accounts().unwrap_or_default();
     let cache = app.state::<Cache>();
+    let nc_accounts = nextcloud_store::load_accounts(&cache).unwrap_or_default();
     let mut calendar_ids: Vec<String> = Vec::new();
     for acc in &nc_accounts {
         if let Ok(list) = cache.list_calendars(&acc.id) {
@@ -7629,6 +7641,12 @@ fn main() {
     // A failure here is fatal: without the cache the write-through path
     // is broken, and the user would silently lose offline capability.
     let cache = Cache::open_default().expect("failed to open local mail cache");
+    // Stash a clone for the small set of helpers (e.g. `load_nextcloud_account`)
+    // that fan out across many call sites and would otherwise need `&Cache`
+    // threaded through 30+ functions.  `Cache` is a cheap `Arc`-clone, so this
+    // doesn't duplicate the pool — just gives non-IPC code paths a way to
+    // reach it without a State extractor.
+    let _ = GLOBAL_CACHE.set(cache.clone());
 
     // Scrub orphan cache rows left behind by removed accounts.
     // `cache.wipe_account(...)` runs on account removal, but if it ever

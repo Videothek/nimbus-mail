@@ -1,57 +1,55 @@
-//! Persistent Nextcloud-connection storage backed by a JSON file.
+//! Persistent Nextcloud-connection storage backed by the SQLCipher cache.
 //!
-//! Mirrors `account_store.rs` in shape: one JSON file at
-//! `<config-dir>/nimbus-mail/nextcloud_accounts.json` containing the
-//! full list, read-whole/write-whole on every mutation. That's fine for
-//! a handful of connections and keeps this file dead-simple to inspect
-//! by hand.
+//! Mirrors `account_store.rs`: connection metadata lives in the
+//! encrypted cache so server URLs and usernames are no longer
+//! readable from a plaintext file alongside the database (#155).
+//! The app password itself stays in the OS keychain under
+//! service `nimbus-mail-nextcloud`.
 //!
-//! # Why a second file
-//!
-//! Nextcloud connections are independent of mail accounts — see the
-//! doc comment on `NextcloudAccount`. Keeping them in their own file
-//! means removing a mail account can never accidentally nuke a
-//! Nextcloud connection, and users can back them up separately.
-
-use std::path::PathBuf;
+//! Connections remain a separate top-level record from mail
+//! accounts because one Nextcloud often backs several mail
+//! identities — see the doc comment on `NextcloudAccount`.
 
 use nimbus_core::NimbusError;
-use nimbus_core::models::NextcloudAccount;
+use nimbus_core::models::{NextcloudAccount, NextcloudCapabilities};
+use rusqlite::params;
 use tracing::{debug, info};
 
-fn file_path() -> Result<PathBuf, NimbusError> {
-    let data_dir = dirs::config_dir()
-        .ok_or_else(|| NimbusError::Storage("cannot determine config directory".into()))?;
-    Ok(data_dir.join("nimbus-mail").join("nextcloud_accounts.json"))
-}
+use crate::Cache;
 
-/// Load all saved Nextcloud connections. Empty list on first run.
-pub fn load_accounts() -> Result<Vec<NextcloudAccount>, NimbusError> {
-    let path = file_path()?;
-    if !path.exists() {
-        debug!("No Nextcloud accounts file at {}", path.display());
-        return Ok(Vec::new());
+/// Load all saved Nextcloud connections.  Empty list on first run.
+pub fn load_accounts(cache: &Cache) -> Result<Vec<NextcloudAccount>, NimbusError> {
+    let conn = cache
+        .conn()
+        .map_err(|e| NimbusError::Storage(format!("nextcloud load: {e}")))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, server_url, username, display_name, capabilities_json
+             FROM nextcloud_accounts
+             ORDER BY rowid",
+        )
+        .map_err(|e| NimbusError::Storage(format!("prepare nextcloud_accounts read: {e}")))?;
+    let rows = stmt
+        .query_map([], |r| {
+            let caps_json: Option<String> = r.get(4)?;
+            let capabilities = caps_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<NextcloudCapabilities>(s).ok());
+            Ok(NextcloudAccount {
+                id: r.get(0)?,
+                server_url: r.get(1)?,
+                username: r.get(2)?,
+                display_name: r.get(3)?,
+                capabilities,
+            })
+        })
+        .map_err(|e| NimbusError::Storage(format!("query nextcloud_accounts: {e}")))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| NimbusError::Storage(format!("row nextcloud_accounts: {e}")))?);
     }
-    let data = std::fs::read_to_string(&path)
-        .map_err(|e| NimbusError::Storage(format!("read nextcloud_accounts.json: {e}")))?;
-    let accts: Vec<NextcloudAccount> = serde_json::from_str(&data)
-        .map_err(|e| NimbusError::Storage(format!("parse nextcloud_accounts.json: {e}")))?;
-    info!("Loaded {} Nextcloud connection(s)", accts.len());
-    Ok(accts)
-}
-
-fn save_accounts(accts: &[NextcloudAccount]) -> Result<(), NimbusError> {
-    let path = file_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| NimbusError::Storage(format!("create config dir: {e}")))?;
-    }
-    let json = serde_json::to_string_pretty(accts)
-        .map_err(|e| NimbusError::Storage(format!("serialize nextcloud accounts: {e}")))?;
-    std::fs::write(&path, json)
-        .map_err(|e| NimbusError::Storage(format!("write nextcloud_accounts.json: {e}")))?;
-    debug!("Saved {} Nextcloud connection(s)", accts.len());
-    Ok(())
+    debug!("Loaded {} Nextcloud connection(s)", out.len());
+    Ok(out)
 }
 
 /// Add a new Nextcloud connection, or overwrite one with the same id.
@@ -59,34 +57,55 @@ fn save_accounts(accts: &[NextcloudAccount]) -> Result<(), NimbusError> {
 /// Overwrite semantics are deliberate: re-running Login Flow v2 for the
 /// same logical server/user produces a fresh app password; we want to
 /// update in place rather than accumulating stale rows.
-pub fn upsert_account(acct: NextcloudAccount) -> Result<(), NimbusError> {
-    let mut accts = load_accounts()?;
-    if let Some(existing) = accts.iter_mut().find(|a| a.id == acct.id) {
-        info!(
-            "Updating Nextcloud connection '{}' ({}@{})",
-            acct.id, acct.username, acct.server_url
-        );
-        *existing = acct;
-    } else {
-        info!(
-            "Adding Nextcloud connection '{}' ({}@{})",
-            acct.id, acct.username, acct.server_url
-        );
-        accts.push(acct);
-    }
-    save_accounts(&accts)
+pub fn upsert_account(cache: &Cache, acct: NextcloudAccount) -> Result<(), NimbusError> {
+    let conn = cache
+        .conn()
+        .map_err(|e| NimbusError::Storage(format!("nextcloud upsert: {e}")))?;
+    let caps_json = match &acct.capabilities {
+        Some(c) => Some(
+            serde_json::to_string(c)
+                .map_err(|e| NimbusError::Storage(format!("serialise capabilities: {e}")))?,
+        ),
+        None => None,
+    };
+    conn.execute(
+        "INSERT INTO nextcloud_accounts
+            (id, server_url, username, display_name, capabilities_json)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(id) DO UPDATE SET
+            server_url        = excluded.server_url,
+            username          = excluded.username,
+            display_name      = excluded.display_name,
+            capabilities_json = excluded.capabilities_json",
+        params![
+            acct.id,
+            acct.server_url,
+            acct.username,
+            acct.display_name,
+            caps_json,
+        ],
+    )
+    .map_err(|e| NimbusError::Storage(format!("upsert nextcloud_accounts: {e}")))?;
+    info!(
+        "Stored Nextcloud connection '{}' ({}@{})",
+        acct.id, acct.username, acct.server_url
+    );
+    Ok(())
 }
 
 /// Remove a Nextcloud connection by id.
-pub fn remove_account(id: &str) -> Result<(), NimbusError> {
-    let mut accts = load_accounts()?;
-    let before = accts.len();
-    accts.retain(|a| a.id != id);
-    if accts.len() == before {
+pub fn remove_account(cache: &Cache, id: &str) -> Result<(), NimbusError> {
+    let conn = cache
+        .conn()
+        .map_err(|e| NimbusError::Storage(format!("nextcloud remove: {e}")))?;
+    let removed = conn
+        .execute("DELETE FROM nextcloud_accounts WHERE id = ?1", params![id])
+        .map_err(|e| NimbusError::Storage(format!("delete nextcloud_accounts: {e}")))?;
+    if removed == 0 {
         return Err(NimbusError::Storage(format!(
             "no Nextcloud connection with id '{id}'"
         )));
     }
     info!("Removed Nextcloud connection '{id}'");
-    save_accounts(&accts)
+    Ok(())
 }

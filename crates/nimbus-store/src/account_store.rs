@@ -1,64 +1,20 @@
 //! Persistent account storage backed by the SQLCipher cache.
 //!
-//! Accounts used to live in a plaintext `accounts.json` next to the
-//! database. Issue #60 moved them into the encrypted cache so the
-//! whole account record (hosts, signatures, future TLS-trust state)
-//! is encrypted at rest under the same key as the message bodies.
-//!
-//! # Migration
-//!
-//! Existing installs already have an `accounts.json`. The first call
-//! to [`load_accounts`] after the upgrade detects an empty `accounts`
-//! table next to a present-and-non-empty JSON file and imports it,
-//! then renames the JSON to `accounts.json.bak` so the user can roll
-//! back if anything goes wrong. Subsequent calls find a non-empty
-//! table and skip the import. The whole dance is gated behind the
-//! emptiness check, so nothing happens on fresh installs.
+//! Accounts live in the encrypted cache (issue #60) so the whole
+//! account record (hosts, signatures, TLS-trust state) is encrypted
+//! at rest under the same key as the message bodies.
 
 use nimbus_core::NimbusError;
 use nimbus_core::models::Account;
 use rusqlite::params;
 use tracing::{debug, info};
-// `PathBuf` and `warn` are only touched by the legacy-JSON migration
-// path, which is gated to non-test builds; importing them
-// unconditionally would be `unused` under `--cfg test`.
-#[cfg(not(test))]
-use std::path::PathBuf;
-#[cfg(not(test))]
-use tracing::warn;
 
 use crate::Cache;
 
-/// Path of the legacy plaintext accounts file. Kept here (rather
-/// than deleted with the rest of the JSON code) so the import
-/// migration in [`load_accounts`] knows where to look. Gated to
-/// non-test builds because the call site in `load_accounts` is
-/// `#[cfg(not(test))]` (in-memory test caches must never touch
-/// the developer's real `accounts.json`).
-#[cfg(not(test))]
-fn legacy_json_path() -> Result<PathBuf, NimbusError> {
-    let data_dir = dirs::config_dir()
-        .ok_or_else(|| NimbusError::Storage("cannot determine config directory".into()))?;
-    Ok(data_dir.join("nimbus-mail").join("accounts.json"))
-}
-
-/// Load all saved accounts. Returns an empty list on first launch
-/// (no JSON, no rows). On the upgrade boundary — empty table next
-/// to a populated `accounts.json` — runs the one-time JSON-to-SQLite
-/// import and renames the JSON file to `.bak` so we don't try again.
-///
-/// The legacy-JSON probe is compiled out of tests so unit tests
-/// against an in-memory cache don't accidentally pick up the
-/// developer's real `accounts.json` from `dirs::config_dir()`.
+/// Load all saved accounts. Returns an empty list on a fresh
+/// install.
 pub fn load_accounts(cache: &Cache) -> Result<Vec<Account>, NimbusError> {
-    let accounts = read_all(cache)?;
-    #[cfg(not(test))]
-    if accounts.is_empty()
-        && let Some(imported) = migrate_from_legacy_json(cache)?
-    {
-        return Ok(imported);
-    }
-    Ok(accounts)
+    read_all(cache)
 }
 
 /// Read every row out of the cache, ordered by insertion. Used by
@@ -253,70 +209,6 @@ pub fn update_account(cache: &Cache, updated: Account) -> Result<(), NimbusError
         updated.display_name, updated.email
     );
     Ok(())
-}
-
-/// One-time import from the legacy JSON file. Called from
-/// [`load_accounts`] when the cache is empty — covers the upgrade
-/// path where a user already had `accounts.json` populated.
-///
-/// On success the JSON file is renamed to `accounts.json.bak` so the
-/// next launch finds an empty file-or-no-file and skips the import.
-/// We rename rather than delete so the user can manually restore if
-/// anything goes wrong with the import (we already saw a CalDAV-403
-/// regression in #56 from a similar boundary).
-#[cfg(not(test))]
-fn migrate_from_legacy_json(cache: &Cache) -> Result<Option<Vec<Account>>, NimbusError> {
-    let path = legacy_json_path()?;
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let data = match std::fs::read_to_string(&path) {
-        Ok(d) => d,
-        Err(e) => {
-            warn!("legacy accounts.json present but unreadable: {e}");
-            return Ok(None);
-        }
-    };
-    let imported: Vec<Account> = match serde_json::from_str(&data) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("legacy accounts.json present but unparsable: {e}");
-            return Ok(None);
-        }
-    };
-
-    if imported.is_empty() {
-        // Empty file — still rename it so we don't try every launch.
-        if let Err(e) = std::fs::rename(&path, path.with_extension("json.bak")) {
-            warn!("could not rename empty legacy accounts.json: {e}");
-        }
-        return Ok(None);
-    }
-
-    info!(
-        "Migrating {} account(s) from {} into the encrypted cache",
-        imported.len(),
-        path.display()
-    );
-    for account in &imported {
-        if let Err(e) = insert_one(cache, account) {
-            // Best-effort: log and continue. A single bad row shouldn't
-            // block the rest of the user's accounts from coming over.
-            warn!(
-                "skipping account '{}' during migration: {e}",
-                account.display_name
-            );
-        }
-    }
-
-    if let Err(e) = std::fs::rename(&path, path.with_extension("json.bak")) {
-        warn!("could not rename migrated accounts.json to .bak: {e}");
-    } else {
-        info!("Renamed legacy accounts.json → accounts.json.bak");
-    }
-
-    Ok(Some(read_all(cache)?))
 }
 
 /// Borrow a pooled connection.  Thin wrapper around
