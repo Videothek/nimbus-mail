@@ -31,6 +31,12 @@
     | 'add-account' | 'sign-out' | 'lock'
     | 'notification' | 'mute' | 'do-not-disturb'
     | 'encrypted' | 'signed' | 'verified'
+    // v3 — presence, status, writing tools, navigation
+    | 'online' | 'offline' | 'typing' | 'away'
+    | 'help' | 'info' | 'warning' | 'error' | 'success'
+    | 'translate' | 'spellcheck' | 'dictate'
+    | 'save-draft' | 'open-link' | 'open-on-desktop' | 'cloud' | 'today'
+    | 'nav-backward' | 'nav-forward' | 'arrow-left' | 'arrow-right'
 </script>
 
 <script lang="ts">
@@ -83,6 +89,28 @@
   import Encrypted from './icons/Encrypted.svelte'
   import Signed from './icons/Signed.svelte'
   import Verified from './icons/Verified.svelte'
+  // v3
+  import Online from './icons/Online.svelte'
+  import Offline from './icons/Offline.svelte'
+  import Typing from './icons/Typing.svelte'
+  import Away from './icons/Away.svelte'
+  import Help from './icons/Help.svelte'
+  import Info from './icons/Info.svelte'
+  import Warning from './icons/Warning.svelte'
+  import ErrorIcon from './icons/Error.svelte'
+  import Success from './icons/Success.svelte'
+  import Translate from './icons/Translate.svelte'
+  import Spellcheck from './icons/Spellcheck.svelte'
+  import Dictate from './icons/Dictate.svelte'
+  import SaveDraft from './icons/SaveDraft.svelte'
+  import OpenLink from './icons/OpenLink.svelte'
+  import OpenOnDesktop from './icons/OpenOnDesktop.svelte'
+  import Cloud from './icons/Cloud.svelte'
+  import Today from './icons/Today.svelte'
+  import NavBackward from './icons/NavBackward.svelte'
+  import NavForward from './icons/NavForward.svelte'
+  import ArrowLeft from './icons/ArrowLeft.svelte'
+  import ArrowRight from './icons/ArrowRight.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -144,6 +172,27 @@
     'encrypted': Encrypted,
     'signed': Signed,
     'verified': Verified,
+    'online': Online,
+    'offline': Offline,
+    'typing': Typing,
+    'away': Away,
+    'help': Help,
+    'info': Info,
+    'warning': Warning,
+    'error': ErrorIcon,
+    'success': Success,
+    'translate': Translate,
+    'spellcheck': Spellcheck,
+    'dictate': Dictate,
+    'save-draft': SaveDraft,
+    'open-link': OpenLink,
+    'open-on-desktop': OpenOnDesktop,
+    'cloud': Cloud,
+    'today': Today,
+    'nav-backward': NavBackward,
+    'nav-forward': NavForward,
+    'arrow-left': ArrowLeft,
+    'arrow-right': ArrowRight,
   }
   const Cmp = $derived(map[name])
 </script>

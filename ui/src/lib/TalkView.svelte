@@ -234,7 +234,7 @@
               class="btn preset-filled-primary-500 text-xs inline-flex items-center gap-1.5"
               onclick={() => openRoom(room)}
               title="Open this Talk room in your browser"
-            >Open <Icon name="share-links" size={14} /></button>
+            >Open <Icon name="open-link" size={14} /></button>
           </li>
         {/each}
       </ul>
