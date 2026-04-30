@@ -117,6 +117,19 @@ pub async fn fetch_capabilities(
         .await
         .map_err(|e| NimbusError::Protocol(format!("capabilities bad JSON: {e}")))?;
 
+    // Tasks (and older Notes) don't publish capability blocks under
+    // /cloud/capabilities — they only register a navigation entry
+    // and a CalDAV / REST endpoint.  Hit /cloud/navigation/apps as a
+    // fallback so the chip flips on for any server where the user
+    // can actually open the app.  Best-effort: if the call 404s on
+    // an ancient NC version we just leave the navigation set empty
+    // and fall back to whatever the capabilities tree already told
+    // us.
+    let nav_apps = fetch_navigation_apps(&server, username, app_password)
+        .await
+        .unwrap_or_default();
+    let has_nav = |id: &str| nav_apps.iter().any(|a| a == id);
+
     let dav_present = env.ocs.data.capabilities.dav.is_some();
     let caps = NextcloudCapabilities {
         version: env.ocs.data.version.and_then(|v| v.string),
@@ -125,8 +138,8 @@ pub async fn fetch_capabilities(
         caldav: dav_present,
         carddav: dav_present,
         office: env.ocs.data.capabilities.richdocuments.is_some(),
-        notes: env.ocs.data.capabilities.notes.is_some(),
-        tasks: env.ocs.data.capabilities.tasks.is_some(),
+        notes: env.ocs.data.capabilities.notes.is_some() || has_nav("notes"),
+        tasks: env.ocs.data.capabilities.tasks.is_some() || has_nav("tasks"),
     };
     tracing::info!(
         "Nextcloud capabilities: version={:?} talk={} files={} dav={} office={} notes={} tasks={}",
@@ -139,6 +152,44 @@ pub async fn fetch_capabilities(
         caps.tasks,
     );
     Ok(caps)
+}
+
+/// Hit `/ocs/v2.php/cloud/navigation/apps?format=json` and return
+/// the `id` of every navigation entry the user can see.  Used as a
+/// fallback signal for apps that don't publish a `capabilities`
+/// block (notably Tasks, which only registers a CalDAV VTODO
+/// provider + a nav entry).  A 404 / non-success / parse error
+/// resolves to an empty list — the caller treats that as "no
+/// extra signal", not as a hard auth failure.
+async fn fetch_navigation_apps(
+    server: &str,
+    username: &str,
+    app_password: &str,
+) -> Result<Vec<String>, NimbusError> {
+    let url = format!("{server}/ocs/v2.php/cloud/navigation/apps?format=json");
+    let http = client::build()?;
+    let resp = http
+        .get(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("navigation/apps request failed: {e}")))?;
+    if !resp.status().is_success() {
+        return Ok(Vec::new());
+    }
+    let env: OcsEnvelope<Vec<NavApp>> = resp
+        .json()
+        .await
+        .map_err(|e| NimbusError::Protocol(format!("navigation/apps bad JSON: {e}")))?;
+    Ok(env.ocs.data.into_iter().filter_map(|a| a.id).collect())
+}
+
+#[derive(Debug, Deserialize)]
+struct NavApp {
+    #[serde(default)]
+    id: Option<String>,
 }
 
 // ── Tests ──────────────────────────────────────────────────────
