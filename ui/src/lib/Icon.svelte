@@ -47,8 +47,9 @@
     | 'quote' | 'text-color' | 'highlight-text'
     | 'undo' | 'redo'
     | 'passphrase' | 'security-key'
-    // v5 — people categories + map + time
+    // v5 — people categories + map + time + folder ops
     | 'group' | 'address-book' | 'team' | 'location' | 'time' | 'sun'
+    | 'add-folder' | 'delete-folder'
 </script>
 
 <script lang="ts">
@@ -160,6 +161,8 @@
   import Location from './icons/Location.svelte'
   import Time from './icons/Time.svelte'
   import Sun from './icons/Sun.svelte'
+  import AddFolder from './icons/AddFolder.svelte'
+  import DeleteFolder from './icons/DeleteFolder.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -277,6 +280,8 @@
     'location': Location,
     'time': Time,
     'sun': Sun,
+    'add-folder': AddFolder,
+    'delete-folder': DeleteFolder,
   }
   const Cmp = $derived(map[name])
 </script>
