@@ -849,7 +849,7 @@
               Lead time follows the event's own reminder.
             </span>
           </span>
-        </label>
+        </div>
 
         <!-- Default calendar.  Used by the EventEditor as the
              pre-selected calendar in create-mode, and by the
