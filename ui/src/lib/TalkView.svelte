@@ -42,6 +42,15 @@
   let loading = $state(false)
   let error = $state('')
   let showCreate = $state(false)
+  /** Archived rooms live behind a collapsible header at the bottom
+      of the list — most users rarely care about them, so we default
+      to collapsed and let them expand on demand.  Persisted only
+      for the lifetime of the view (no localStorage); reopening
+      TalkView starts collapsed again, which matches what NC's
+      web UI does. */
+  let showArchived = $state(false)
+  const activeRooms = $derived(rooms.filter((r) => !r.is_archived))
+  const archivedRooms = $derived(rooms.filter((r) => r.is_archived))
 
   // Periodic refresh — 30s is the same cadence the Nextcloud web UI
   // polls at. Long enough to be cheap, short enough that the unread
@@ -93,16 +102,10 @@
     if (!opts.silent) error = ''
     try {
       const list = await invoke<TalkRoom[]>('list_talk_rooms', { ncId: accountId })
-      // Sort: active rooms first, archived rooms grouped at the
-      // bottom — same UX Nextcloud's web Talk surfaces.  Within each
-      // group, newest activity wins so the freshest conversation
-      // floats to the top.
-      list.sort((a, b) => {
-        const aArch = a.is_archived ? 1 : 0
-        const bArch = b.is_archived ? 1 : 0
-        if (aArch !== bArch) return aArch - bArch
-        return b.last_activity - a.last_activity
-      })
+      // Sort by last activity desc within each group; the template
+      // splits active vs. archived into two visual sections so we
+      // don't need to interleave them here.
+      list.sort((a, b) => b.last_activity - a.last_activity)
       rooms = list
     } catch (e) {
       if (!opts.silent) error = formatError(e) || 'Failed to load Talk rooms'
@@ -238,49 +241,80 @@
         No Talk rooms yet. Click <strong>+ New room</strong> to start your first conversation.
       </div>
     {:else}
-      <ul class="flex-1 overflow-y-auto divide-y divide-surface-200 dark:divide-surface-800">
-        {#each rooms as room (room.token)}
-          <li class="px-5 py-3 flex items-center gap-3 hover:bg-surface-100 dark:hover:bg-surface-800 {room.is_archived ? 'opacity-60' : ''}">
-            <span class="flex-shrink-0 text-surface-600 dark:text-surface-300"><Icon name={roomTypeIcon(room.room_type)} size={20} /></span>
+      {#snippet roomRow(room: TalkRoom)}
+        <li class="px-5 py-3 flex items-center gap-3 hover:bg-surface-100 dark:hover:bg-surface-800 {room.is_archived ? 'opacity-60' : ''}">
+          <span class="flex-shrink-0 text-surface-600 dark:text-surface-300"><Icon name={roomTypeIcon(room.room_type)} size={20} /></span>
 
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-2">
-                <span class="font-medium truncate">{room.display_name}</span>
-                {#if room.is_archived}
-                  <span class="badge text-xs flex-shrink-0 preset-tonal-surface" title="This Talk room is archived">Archived</span>
-                {/if}
-                {#if room.unread_messages > 0}
-                  <span
-                    class="badge text-xs flex-shrink-0
-                           {room.unread_mention ? 'preset-filled-error-500' : 'preset-filled-primary-500'}"
-                    title={room.unread_mention ? 'You were mentioned' : 'Unread messages'}
-                  >{room.unread_messages}</span>
-                {/if}
-              </div>
-              <p class="text-xs text-surface-500 truncate">
-                {formatRelative(room.last_activity)}
-              </p>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="font-medium truncate">{room.display_name}</span>
+              {#if room.unread_messages > 0}
+                <span
+                  class="badge text-xs flex-shrink-0
+                         {room.unread_mention ? 'preset-filled-error-500' : 'preset-filled-primary-500'}"
+                  title={room.unread_mention ? 'You were mentioned' : 'Unread messages'}
+                >{room.unread_messages}</span>
+              {/if}
             </div>
+            <p class="text-xs text-surface-500 truncate">
+              {formatRelative(room.last_activity)}
+            </p>
+          </div>
 
-            <button
-              class="btn preset-outlined-surface-500 text-xs inline-flex items-center gap-1.5"
-              onclick={() => shareRoom(room)}
-              title="Open a new mail with this room's join link"
-            ><Icon name="share-links" size={14} /> Share link</button>
-            <button
-              class="btn preset-filled-primary-500 text-xs inline-flex items-center gap-1.5"
-              onclick={() => openRoom(room)}
-              title="Open this Talk room in your browser"
-            >Open <Icon name="open-link" size={14} /></button>
-            <button
-              class="btn preset-outlined-error-500 text-xs inline-flex items-center gap-1.5 hover:bg-error-500/15 hover:text-error-500"
-              disabled={deletingToken === room.token}
-              onclick={() => void deleteRoom(room)}
-              title="Delete this Talk room for everyone"
-            ><Icon name={deletingToken === room.token ? 'loading' : 'trash'} size={14} /> {deletingToken === room.token ? 'Deleting…' : 'Delete'}</button>
-          </li>
-        {/each}
-      </ul>
+          <button
+            class="btn preset-outlined-surface-500 text-xs inline-flex items-center gap-1.5"
+            onclick={() => shareRoom(room)}
+            title="Open a new mail with this room's join link"
+          ><Icon name="share-links" size={14} /> Share link</button>
+          <button
+            class="btn preset-filled-primary-500 text-xs inline-flex items-center gap-1.5"
+            onclick={() => openRoom(room)}
+            title="Open this Talk room in your browser"
+          >Open <Icon name="open-link" size={14} /></button>
+          <button
+            class="btn preset-outlined-error-500 text-xs inline-flex items-center gap-1.5 hover:bg-error-500/15 hover:text-error-500"
+            disabled={deletingToken === room.token}
+            onclick={() => void deleteRoom(room)}
+            title="Delete this Talk room for everyone"
+          ><Icon name={deletingToken === room.token ? 'loading' : 'trash'} size={14} /> {deletingToken === room.token ? 'Deleting…' : 'Delete'}</button>
+        </li>
+      {/snippet}
+      <div class="flex-1 overflow-y-auto flex flex-col">
+        <ul class="divide-y divide-surface-200 dark:divide-surface-800">
+          {#each activeRooms as room (room.token)}
+            {@render roomRow(room)}
+          {/each}
+        </ul>
+        {#if archivedRooms.length > 0}
+          <!-- Collapsible archived divider — clicking the header
+               toggles a section that lists every archived room.
+               Defaults collapsed; the chevron + count tells the
+               user there's something hidden without forcing
+               them to scroll past dimmed rows they rarely
+               touch. -->
+          <button
+            type="button"
+            class="w-full px-5 py-2 flex items-center gap-2 text-sm border-t border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 hover:bg-surface-200 dark:hover:bg-surface-700 text-surface-700 dark:text-surface-200"
+            onclick={() => (showArchived = !showArchived)}
+            aria-expanded={showArchived}
+          >
+            <span
+              class="inline-block transition-transform text-surface-500"
+              style="transform: rotate({showArchived ? 90 : 0}deg)"
+              aria-hidden="true"
+            >▸</span>
+            <span class="font-medium">Archived</span>
+            <span class="text-xs text-surface-500">({archivedRooms.length})</span>
+          </button>
+          {#if showArchived}
+            <ul class="divide-y divide-surface-200 dark:divide-surface-800">
+              {#each archivedRooms as room (room.token)}
+                {@render roomRow(room)}
+              {/each}
+            </ul>
+          {/if}
+        {/if}
+      </div>
     {/if}
   {/if}
 </div>
