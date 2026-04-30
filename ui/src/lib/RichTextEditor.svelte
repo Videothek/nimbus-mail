@@ -689,45 +689,23 @@
             badgeText = ext.toUpperCase().slice(0, 4)
             badgeBg = '#a855f7' // purple
           }
-          // Body badge (#158 v2): minimalist document mark —
-          // a coloured-stroke document body with the format
-          // code in white sitting in its own coloured band at
-          // the bottom.  Built from nested <span>s with
-          // inline-styled backgrounds so it survives every
-          // major MUA's content sanitiser (SVG would get
-          // stripped, clip-path was making the corner fold
-          // collide with the format letters).
-          //
-          // Outer box: neutral white background + 1.5 px
-          // coloured border + 2 px corner radius.
-          // Bottom band: absolute strip filled with the format
-          // colour, white text inside.
-          // Position is em-based so the badge scales with the
-          // surrounding line height.
-          const badgeOuterStyle =
-            'position:relative;display:inline-block;width:1.5em;height:1.95em;' +
-            'margin-right:6px;vertical-align:-0.45em;' +
-            'background:#ffffff;' +
-            `border:1.5px solid ${badgeBg};` +
-            'border-radius:2px;' +
-            'box-sizing:border-box;'
-          // The corner fold — a tiny CSS triangle in the top-
-          // right corner.  Cheap and survives sanitisers.
-          const badgeFoldStyle =
-            'position:absolute;top:0;right:0;width:0;height:0;' +
-            `border-style:solid;border-width:0 0.45em 0.45em 0;` +
-            // Border-color shorthand: T R B L.  Right edge in
-            // the format colour gives the fold edge; bottom is
-            // the white "underside" of the fold.
-            `border-color:transparent ${badgeBg} transparent transparent;`
-          // The bottom band carrying the format code.
-          const badgeBandStyle =
-            'position:absolute;bottom:0;left:0;right:0;height:0.95em;' +
+          // Body badge (#158 final): plain coloured pill.  The
+          // document-mark experiment was disrupting the body
+          // line height regardless of how we sized it, so we
+          // keep the FileTypeIcon document treatment on the
+          // chip strip (which has its own row) and use a
+          // simple inline pill in flowing body text.  Same
+          // colour palette so the format is still recognised
+          // at a glance; pure inline-styled <span> so it
+          // survives every MUA sanitiser and renders
+          // identically across clients.
+          const badgeStyle =
+            'display:inline-block;min-width:2.4em;padding:1px 6px;margin-right:6px;' +
             `background:${badgeBg};color:#ffffff;` +
-            'font-size:0.5em;font-weight:800;letter-spacing:0.06em;' +
-            'line-height:1.7em;text-align:center;' +
+            'border-radius:4px;font-size:0.68em;font-weight:800;' +
             'font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;' +
-            'text-transform:uppercase;'
+            'letter-spacing:0.05em;text-align:center;vertical-align:middle;' +
+            'line-height:1.4;'
           return [
             'a',
             {
@@ -738,19 +716,11 @@
               'data-cid': cid,
               'data-filename': label,
               style:
-                // Subtle pill carrier — neutral surface so the
-                // document mark + filename is what the eye
-                // lands on.
                 'display:inline-flex;align-items:center;padding:1px 8px 1px 3px;' +
                 'border-radius:999px;background:rgba(120,120,120,0.10);' +
                 'color:inherit;text-decoration:none;font-weight:500;',
             },
-            [
-              'span',
-              { style: badgeOuterStyle, 'aria-hidden': 'true' },
-              ['span', { style: badgeFoldStyle }, ''],
-              ['span', { style: badgeBandStyle }, badgeText],
-            ],
+            ['span', { style: badgeStyle }, badgeText],
             label,
           ]
         },
