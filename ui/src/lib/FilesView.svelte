@@ -276,7 +276,7 @@
           {#if sharing}
             Sharing…
           {:else}
-            <Icon name="open-link" size={14} class="inline-block align-text-bottom mr-1.5" />New mail with link
+            <Icon name="share-links" size={14} class="inline-block align-text-bottom mr-1.5" />New mail with link
           {/if}
         </button>
         <button
