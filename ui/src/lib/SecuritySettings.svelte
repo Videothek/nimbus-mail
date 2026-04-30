@@ -38,6 +38,17 @@
     credentials: FidoCredential[]
   }
 
+  /** Whether the registered methods meet the safety bar for
+   *  enabling FIDO-only mode: at least one passphrase OR ≥ 2
+   *  hardware keys.  Without one of those, losing a single key
+   *  would lock the cache permanently. */
+  function safeForFidoOnlyMode(s: FidoStatus | null): boolean {
+    if (!s) return false
+    const passphraseCount = s.credentials.filter((c) => c.kind === 'passphrase').length
+    const fidoCount = s.credentials.filter((c) => c.kind === 'fido_prf').length
+    return passphraseCount >= 1 || fidoCount >= 2
+  }
+
   let status = $state<FidoStatus | null>(null)
   let loading = $state(true)
   let busy = $state(false)
@@ -142,6 +153,31 @@
       await loadStatus()
     } catch (e) {
       error = formatError(e) || 'Failed to enroll passphrase'
+    } finally {
+      busy = false
+    }
+  }
+
+  async function enableFidoOnly() {
+    if (busy) return
+    if (!safeForFidoOnlyMode(status)) {
+      error =
+        'Register a recovery passphrase or a second hardware key first — otherwise losing your one method would lock the cache permanently.'
+      return
+    }
+    if (
+      !confirm(
+        'Switch to FIDO-only mode?\n\nThe plain master key will be removed from your OS keychain. Future app launches will require you to authenticate with one of your registered methods before the cache can be opened.\n\nThis takes effect on the next launch.',
+      )
+    )
+      return
+    busy = true
+    error = ''
+    try {
+      await invoke('enable_fido_only_mode')
+      await loadStatus()
+    } catch (e) {
+      error = formatError(e) || 'Failed to switch to FIDO-only mode'
     } finally {
       busy = false
     }
@@ -338,14 +374,43 @@
         {/if}
       </div>
 
-      {#if status && status.hasPlainKey}
-        <p class="text-xs text-surface-500">
-          The plain master key remains in the OS keychain alongside any
-          registered hardware keys — Nimbus opens the cache without
-          asking for a tap. A future release will let you switch to
-          FIDO-only mode, where the cache only opens after you
-          authenticate at startup.
-        </p>
+      <!-- FIDO-only mode switch.  When on, the plain master key
+           is removed from the keychain and every cold launch
+           requires authentication via the lock screen.
+           Disabled until the registered methods cover a
+           recovery path (≥ 1 passphrase or ≥ 2 hardware keys). -->
+      {#if status}
+        <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4">
+          <div class="flex items-start gap-3">
+            <Toggle
+              checked={!status.hasPlainKey}
+              disabled={busy ||
+                (status.hasPlainKey && !safeForFidoOnlyMode(status)) ||
+                !status.hasPlainKey}
+              label="Require authentication at startup"
+              onchange={(v) => {
+                if (v && status?.hasPlainKey) void enableFidoOnly()
+              }}
+            />
+            <div>
+              <p class="font-medium leading-tight">Require authentication at startup</p>
+              <p class="text-xs text-surface-500 leading-tight mt-1">
+                {#if !status.hasPlainKey}
+                  Active — the cache will only open after you authenticate
+                  with one of the registered methods.
+                {:else if safeForFidoOnlyMode(status)}
+                  When on, Nimbus will drop the plain master key from your
+                  OS keychain and prompt for authentication on every launch.
+                  Takes effect on the next start.
+                {:else}
+                  Register a recovery passphrase or a second hardware key
+                  first — losing a single method would otherwise lock the
+                  cache permanently.
+                {/if}
+              </p>
+            </div>
+          </div>
+        </div>
       {/if}
 
       {#if error}

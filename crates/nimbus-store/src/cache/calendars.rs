@@ -181,7 +181,7 @@ impl Cache {
         nc_account_id: &str,
         rows: &[CalendarRow],
     ) -> Result<(), CacheError> {
-        let mut conn = self.pool.get()?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
 
         // Insert / update every calendar in the server list. We
@@ -254,7 +254,7 @@ impl Cache {
         nc_account_id: &str,
         row: &CalendarRow,
     ) -> Result<String, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let id = format!("{nc_account_id}::{}", row.path);
         conn.execute(
             "INSERT INTO calendars
@@ -290,7 +290,7 @@ impl Cache {
         if display_name.is_none() && color.is_none() {
             return Ok(());
         }
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE calendars
              SET display_name = COALESCE(?2, display_name),
@@ -304,7 +304,7 @@ impl Cache {
     /// Layer 1 toggle — removes the calendar from the sidebar entirely.
     /// Purely client-side; never touches the server.
     pub fn set_calendar_hidden(&self, calendar_id: &str, hidden: bool) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE calendars SET hidden = ?2 WHERE id = ?1",
             params![calendar_id, hidden as i64],
@@ -316,7 +316,7 @@ impl Cache {
     /// events from the agenda grid. Purely client-side; never touches
     /// the server.
     pub fn set_calendar_muted(&self, calendar_id: &str, muted: bool) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE calendars SET muted = ?2 WHERE id = ?1",
             params![calendar_id, muted as i64],
@@ -329,7 +329,7 @@ impl Cache {
     /// CalDAV DELETE so the sidebar forgets the collection without
     /// waiting for the next discovery sweep to prune it.
     pub fn remove_calendar(&self, calendar_id: &str) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute("DELETE FROM calendars WHERE id = ?1", params![calendar_id])?;
         Ok(())
     }
@@ -337,7 +337,7 @@ impl Cache {
     /// All cached calendars for one Nextcloud account, alphabetised
     /// by display name.
     pub fn list_calendars(&self, nc_account_id: &str) -> Result<Vec<CachedCalendar>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, nextcloud_account_id, path, display_name, color,
                     ctag, sync_token, last_synced_at, hidden, muted
@@ -377,7 +377,7 @@ impl Cache {
         &self,
         nc_account_id: &str,
     ) -> Result<Option<DateTime<Utc>>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let ts: Option<i64> = conn
             .query_row(
                 "SELECT MAX(last_synced_at)
@@ -396,7 +396,7 @@ impl Cache {
         &self,
         calendar_id: &str,
     ) -> Result<Option<CalendarSyncState>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let row = conn
             .query_row(
                 "SELECT sync_token, ctag, last_synced_at
@@ -449,7 +449,7 @@ impl Cache {
         new_sync_token: Option<&str>,
         new_ctag: Option<&str>,
     ) -> Result<(), CacheError> {
-        let mut conn = self.pool.get()?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let now = Utc::now().timestamp();
 
@@ -572,7 +572,7 @@ impl Cache {
             return Ok(Vec::new());
         }
 
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let placeholders = sql_placeholders(calendar_ids.len());
         let sql = format!(
             "SELECT {EVENT_COLUMNS}
@@ -622,7 +622,7 @@ impl Cache {
             return Ok(ExpansionInput::default());
         }
 
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let placeholders = sql_placeholders(calendar_ids.len());
 
         // ── Singletons in-window ────────────────────────────────
@@ -710,7 +710,7 @@ impl Cache {
     /// `ON DELETE CASCADE` handles the events side, so this is one
     /// statement.
     pub fn wipe_nextcloud_calendars(&self, nc_account_id: &str) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "DELETE FROM calendars WHERE nextcloud_account_id = ?1",
             params![nc_account_id],
@@ -729,7 +729,7 @@ impl Cache {
         &self,
         event_id: &str,
     ) -> Result<Option<CalendarEventServerHandle>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let row = conn
             .query_row(
                 "SELECT e.uid, e.href, e.etag, e.recurrence_id, e.ics_raw,
@@ -763,7 +763,7 @@ impl Cache {
         &self,
         calendar_id: &str,
     ) -> Result<Option<(String, String)>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let row = conn
             .query_row(
                 "SELECT nextcloud_account_id, path FROM calendars WHERE id = ?1",
@@ -784,7 +784,7 @@ impl Cache {
         calendar_id: &str,
         row: &CalendarEventRow,
     ) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let id = event_row_id(calendar_id, &row.uid, row.recurrence_id);
         let rdate_json =
             serde_json::to_string(&row.rdate.iter().map(|d| d.timestamp()).collect::<Vec<_>>())
@@ -854,7 +854,7 @@ impl Cache {
     /// state on next open.  Overwrites a previous answer, which is
     /// the right semantics: changing your mind replaces the row.
     pub fn upsert_rsvp_response(&self, uid: &str, partstat: &str) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let now = Utc::now().timestamp();
         conn.execute(
             "INSERT INTO rsvp_responses (uid, partstat, responded_at)
@@ -871,7 +871,7 @@ impl Cache {
     /// `Ok(None)` if the user has never answered this invite (the
     /// card should show the fresh Accept/Decline/Tentative state).
     pub fn get_rsvp_response(&self, uid: &str) -> Result<Option<String>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let row = conn
             .query_row(
                 "SELECT partstat FROM rsvp_responses WHERE uid = ?1",
@@ -889,7 +889,7 @@ impl Cache {
     /// to the cancelled banner.  Idempotent: re-recording the
     /// same UID just refreshes `cancelled_at`.
     pub fn mark_invite_cancelled(&self, uid: &str) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let now = Utc::now().timestamp();
         conn.execute(
             "INSERT INTO cancelled_invites (uid, cancelled_at)
@@ -906,7 +906,7 @@ impl Cache {
     /// user doesn't unwittingly respond to an already-cancelled
     /// meeting.
     pub fn is_invite_cancelled(&self, uid: &str) -> Result<bool, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let hit: Option<i64> = conn
             .query_row(
                 "SELECT 1 FROM cancelled_invites WHERE uid = ?1",
@@ -923,7 +923,7 @@ impl Cache {
     /// the UID — we need to map that back to the local event so we
     /// can remove it from the user's calendar.
     pub fn find_event_id_by_uid(&self, uid: &str) -> Result<Option<String>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let row = conn
             .query_row(
                 "SELECT id FROM calendar_events WHERE uid = ?1 LIMIT 1",
@@ -938,7 +938,7 @@ impl Cache {
     /// DELETE to the server, so the next `get_cached_events` call
     /// doesn't ghost-render the deleted row until the next sync.
     pub fn delete_event_by_id(&self, event_id: &str) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "DELETE FROM calendar_events WHERE id = ?1",
             params![event_id],
