@@ -1185,6 +1185,13 @@
          own unfinished work, so re-opening it in Compose is the only
          gesture that makes sense. -->
     <div class="flex items-center gap-2 px-6 py-2 border-b border-surface-200 dark:border-surface-700 text-sm">
+      <!-- Toolbar action buttons (#179): icon-only with hover
+           tooltips.  Labels live in `title` + `aria-label` so the
+           strip stays compact and the visual rhythm is uniform.
+           Edit-draft keeps its label because it's the *only*
+           affordance in the Drafts variant — losing the word
+           there would leave the toolbar with a single mystery
+           pencil. -->
       {#if isDraftsFolder}
         <button
           class="btn btn-sm preset-filled-primary-500 inline-flex items-center gap-1.5"
@@ -1193,39 +1200,45 @@
         ><Icon name="compose" size={16} /> Edit draft</button>
       {:else}
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
           onclick={() => email && onreply?.(email)}
           title="Reply"
-        ><Icon name="reply" size={16} /> Reply</button>
+          aria-label="Reply"
+        ><Icon name="reply" size={16} /></button>
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
           onclick={() => email && onreplyall?.(email)}
           title="Reply to everyone"
-        ><Icon name="reply-all" size={16} /> Reply All</button>
+          aria-label="Reply to everyone"
+        ><Icon name="reply-all" size={16} /></button>
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
           onclick={() => email && onforward?.(email)}
           title="Forward"
-        ><Icon name="forward" size={16} /> Forward</button>
+          aria-label="Forward"
+        ><Icon name="forward" size={16} /></button>
         {#if oncreatetalk}
           <button
-            class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
+            class="btn btn-sm preset-outlined-primary-500 inline-flex items-center justify-center"
             onclick={() => email && oncreatetalk?.(email)}
             title="Create a Nextcloud Talk room with the participants of this thread"
-          ><Icon name="meetings" size={16} /> Talk</button>
+            aria-label="Create Talk room"
+          ><Icon name="meetings" size={16} /></button>
         {/if}
         {#if onsavenote}
           <button
-            class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
+            class="btn btn-sm preset-outlined-primary-500 inline-flex items-center justify-center"
             onclick={() => email && onsavenote?.(email)}
             title="Save this email as a Nextcloud note"
-          ><Icon name="notes" size={16} /> Save as note</button>
+            aria-label="Save as note"
+          ><Icon name="notes" size={16} /></button>
         {/if}
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
           onclick={toggleRead}
           title={email.is_read ? 'Mark this message as unread' : 'Mark this message as read'}
-        ><Icon name={email.is_read ? 'unread' : 'read'} size={16} /> {email.is_read ? 'Mark unread' : 'Mark read'}</button>
+          aria-label={email.is_read ? 'Mark as unread' : 'Mark as read'}
+        ><Icon name={email.is_read ? 'unread' : 'read'} size={16} /></button>
       {/if}
       <div class="flex-1"></div>
       {#if !inStandaloneWindow && email && uid != null}
@@ -1234,15 +1247,17 @@
              a click there would just spawn another identical
              window, which is never what you want. -->
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
           onclick={() => email && uid != null && openMailInStandaloneWindow(email.account_id, email.folder, uid)}
           title="Open this mail in a separate window"
-        ><Icon name="full-screen" size={16} /> Open in window</button>
+          aria-label="Open in window"
+        ><Icon name="full-screen" size={16} /></button>
       {/if}
       {#if email.body_html}
         <!-- Per-message background toggle — flips the white-canvas
-             default just for the open mail. The label always shows
-             where a click will take you, not the current state. -->
+             default just for the open mail.  Kept text-only because
+             the family has no "page background" glyph; the label is
+             short and tells the user where a click will take them. -->
         <button
           class="btn btn-sm preset-outlined-surface-500"
           onclick={() => (whiteBackgroundOverride = !effectiveWhiteBackground)}
@@ -1256,20 +1271,23 @@
            the same icons + ordering the sidebar uses, plus an
            inline filter for accounts with lots of folders. -->
       <button
-        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
         onclick={() => (moveMenuOpen = true)}
         title="Move this message to a different folder"
-      ><Icon name="move-to-folder" size={16} /> Move</button>
+        aria-label="Move to folder"
+      ><Icon name="move-to-folder" size={16} /></button>
       <button
-        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
         onclick={archiveMessage}
         title="Move this message to the Archive folder"
-      ><Icon name="archive" size={16} /> Archive</button>
+        aria-label="Archive"
+      ><Icon name="archive" size={16} /></button>
       <button
-        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+        class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
         onclick={deleteMessage}
         title="Move this message to Trash (permanently deletes if already in Trash or if the account has no Trash folder)"
-      ><Icon name="trash" size={16} /> Delete</button>
+        aria-label="Delete"
+      ><Icon name="trash" size={16} /></button>
     </div>
 
     <!-- Calendar invite (#58 / iMIP).  Mounted above the
@@ -1368,16 +1386,24 @@
                   onclick={() => openInPdfViewer(att)}
                   title="Open in Nextcloud's built-in PDF viewer"
                 >
-                  {busy ? '…' : '📄 Open PDF'}
+                  {#if busy}
+                    …
+                  {:else}
+                    <Icon name="open-in-browser" size={12} class="inline-block align-text-bottom mr-1" />Open PDF
+                  {/if}
                 </button>
               {:else}
                 <button
-                  class="btn btn-sm preset-filled-primary-500 text-xs"
+                  class="btn btn-sm preset-filled-primary-500 text-xs inline-flex items-center gap-1.5"
                   disabled={busy}
                   onclick={() => downloadAttachment(att)}
                   title="Download to your computer"
                 >
-                  {busy ? '…' : '⬇ Download'}
+                  {#if busy}
+                    …
+                  {:else}
+                    <Icon name="download" size={12} /> Download
+                  {/if}
                 </button>
               {/if}
 
@@ -1417,32 +1443,32 @@
                   {:else if isPdf}
                     <button
                       role="menuitem"
-                      class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+                      class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 inline-flex items-center gap-2"
                       onclick={runAndClose(() => openInPdfViewer(att))}
-                    >📄 Open PDF</button>
+                    ><Icon name="open-in-browser" size={14} /> Open PDF</button>
                   {/if}
                   <button
                     role="menuitem"
-                    class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+                    class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 inline-flex items-center gap-2"
                     onclick={runAndClose(() => printAttachment(att))}
                     title="Open this attachment in its default desktop app (Ctrl/Cmd-P there to print)"
-                  >🖥 Open in Desktop App</button>
+                  ><Icon name="open-on-desktop" size={14} /> Open in Desktop App</button>
                   <button
                     role="menuitem"
-                    class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+                    class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 inline-flex items-center gap-2"
                     onclick={runAndClose(() => downloadAttachment(att))}
-                  >⬇ Save to disk…</button>
+                  ><Icon name="download" size={14} /> Save to disk…</button>
                   <button
                     role="menuitem"
-                    class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+                    class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 inline-flex items-center gap-2"
                     onclick={runAndClose(() => startSaveToNextcloud(att))}
-                  >☁ Save to Nextcloud…</button>
+                  ><Icon name="cloud" size={14} /> Save to Nextcloud…</button>
                   <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
                   <button
                     role="menuitem"
-                    class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+                    class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 inline-flex items-center gap-2"
                     onclick={runAndClose(() => copyFilename(att))}
-                  >📋 Copy filename</button>
+                  ><Icon name="share-links" size={14} /> Copy filename</button>
                 </div>
               {/if}
             </li>
