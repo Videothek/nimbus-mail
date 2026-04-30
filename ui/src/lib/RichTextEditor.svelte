@@ -689,21 +689,34 @@
             badgeText = ext.toUpperCase().slice(0, 4)
             badgeBg = '#a855f7' // purple
           }
-          // Modernised badge (#158): filled pill in the format
-          // colour with bolder white text, slightly tighter
-          // letter-spacing, and a soft shadow for depth so it
-          // reads as a sticker rather than a flat slab.  Same
-          // visual language as the new FileTypeIcon — the
-          // recipient sees a consistent treatment between the
-          // attachment chip strip and the inline body
-          // reference.
+          // Modernised badge (#158): same document-silhouette
+          // shape FileTypeIcon uses, but rendered with CSS
+          // `clip-path` so it works inside an HTML mail body
+          // (where inline SVG is stripped by most clients).
+          // The clip-path cuts a corner fold out of a filled
+          // coloured rectangle; clients that strip the
+          // property degrade gracefully to a plain rounded
+          // rectangle (still the format colour, still the
+          // white code inside), which was the previous look.
+          //
+          // Width/height are em-based so the badge scales with
+          // the surrounding line height — looks consistent at
+          // any zoom level.
+          const docPolygon =
+            'polygon(0 0, 70% 0, 100% 28%, 100% 100%, 0 100%)'
           const badgeStyle =
-            'display:inline-block;min-width:2.4em;padding:2px 6px;margin-right:6px;' +
+            'display:inline-block;width:1.7em;height:2em;margin-right:6px;' +
             `background:${badgeBg};color:#ffffff;` +
-            'border-radius:6px;font-size:0.68em;font-weight:800;' +
+            `clip-path:${docPolygon};-webkit-clip-path:${docPolygon};` +
+            'border-radius:2px;font-size:0.55em;font-weight:800;' +
+            'line-height:2.05em;letter-spacing:0.05em;text-align:center;' +
+            'vertical-align:middle;' +
             'font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;' +
-            'letter-spacing:0.06em;text-align:center;vertical-align:middle;' +
-            'line-height:1.3;box-shadow:inset 0 -1px 0 rgba(0,0,0,0.18);'
+            // Inset shadow makes the corner-fold edge read as a
+            // crease in clients that honour clip-path; in those
+            // that don't, it just adds subtle depth to the
+            // fallback rectangle.
+            'box-shadow:inset 0 -1px 0 rgba(0,0,0,0.22);'
           return [
             'a',
             {
