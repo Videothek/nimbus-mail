@@ -404,13 +404,25 @@
                   also fire.
                 -->
                 {#if !pickFolderMode}
-                  <input
-                    type="checkbox"
-                    class="checkbox"
-                    checked={selected.has(entry.path)}
-                    onclick={(e) => e.stopPropagation()}
-                    onchange={() => toggleSelected(entry.path, entry.is_dir)}
-                  />
+                  {@const isChecked = selected.has(entry.path)}
+                  <!-- Compact circular toggle (#160).  No checkmark
+                       glyph — just a filled primary-500 dot when on,
+                       outlined surface-400 ring when off.  Matches
+                       the new icon-sized affordances used elsewhere
+                       in the picker. -->
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={isChecked}
+                    aria-label={isChecked ? `Deselect ${entry.name}` : `Select ${entry.name}`}
+                    class="w-4 h-4 shrink-0 rounded-full transition-colors {isChecked
+                      ? 'bg-primary-500'
+                      : 'border-2 border-surface-400 dark:border-surface-500 hover:border-surface-600 dark:hover:border-surface-300'}"
+                    onclick={(e) => {
+                      e.stopPropagation()
+                      toggleSelected(entry.path, entry.is_dir)
+                    }}
+                  ></button>
                 {/if}
                 {#if iconName}
                   <span class="w-9 h-9 flex items-center justify-center shrink-0 text-surface-500">

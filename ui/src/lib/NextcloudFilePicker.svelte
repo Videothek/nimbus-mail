@@ -98,6 +98,23 @@
   let downloading = $state(false)
   let sharing = $state(false)
 
+  /** Per-file download status surfaced as a progress strip while
+   *  `attachSelected` runs (#160).  Keys are the full NC paths
+   *  the user ticked.  `pending` rows show a queued chip,
+   *  `downloading` an active spinner, `done` a green check, and
+   *  `failed` a red mark with the underlying error string. */
+  type DownloadStatus =
+    | { kind: 'pending' }
+    | { kind: 'downloading' }
+    | { kind: 'done' }
+    | { kind: 'failed'; message: string }
+  let downloadStatus = $state<Map<string, DownloadStatus>>(new Map())
+  function setStatus(path: string, status: DownloadStatus) {
+    const next = new Map(downloadStatus)
+    next.set(path, status)
+    downloadStatus = next
+  }
+
   // Password-protect-the-share modal. `null` = the prompt isn't open;
   // `paths` is the snapshot of selection at the moment the user
   // clicked "Share as link" so toggling the file tree behind the
@@ -186,27 +203,41 @@
     if (filePaths.length === 0) return
     downloading = true
     error = ''
+    // Seed every selected path as pending so the user sees the
+    // full list of files the picker is about to fetch.  Each row
+    // flips to `downloading` immediately before its IPC fires
+    // and to `done` / `failed` when the response lands (#160).
+    const seeded = new Map<string, DownloadStatus>()
+    for (const p of filePaths) seeded.set(p, { kind: 'pending' })
+    downloadStatus = seeded
     try {
       // Run all downloads in parallel — Tauri bridges each invoke to
       // its own async task so this genuinely parallelises.
       const results = await Promise.all(
         filePaths.map(async (p) => {
-          const bytes = await invoke<number[]>('download_nextcloud_file', {
-            ncId: accountId,
-            path: p,
-          })
-          // Content-type from the current folder's entries when
-          // available; fall back to a neutral default for files
-          // selected in other folders (the SMTP build path
-          // re-derives from filename when this is unset).
-          const ct =
-            entries.find((e) => e.path === p)?.content_type ??
-            'application/octet-stream'
-          return {
-            filename: basename(p),
-            content_type: ct,
-            data: bytes,
-          } satisfies Attachment
+          setStatus(p, { kind: 'downloading' })
+          try {
+            const bytes = await invoke<number[]>('download_nextcloud_file', {
+              ncId: accountId,
+              path: p,
+            })
+            // Content-type from the current folder's entries when
+            // available; fall back to a neutral default for files
+            // selected in other folders (the SMTP build path
+            // re-derives from filename when this is unset).
+            const ct =
+              entries.find((e) => e.path === p)?.content_type ??
+              'application/octet-stream'
+            setStatus(p, { kind: 'done' })
+            return {
+              filename: basename(p),
+              content_type: ct,
+              data: bytes,
+            } satisfies Attachment
+          } catch (e) {
+            setStatus(p, { kind: 'failed', message: formatError(e) || 'Failed' })
+            throw e
+          }
         }),
       )
       onpicked(results)
@@ -311,6 +342,41 @@
       <p class="px-5 py-2 text-sm text-red-500 border-t border-surface-200 dark:border-surface-700">
         {error}
       </p>
+    {/if}
+
+    {#if downloadStatus.size > 0 && (downloading || [...downloadStatus.values()].some((s) => s.kind === 'failed'))}
+      <!-- Per-file download status strip (#160).  Rendered while
+           the picker is fetching, and stays visible if any file
+           failed so the user can read the error before
+           dismissing.  Successful runs auto-dismiss when the
+           picker closes via `onpicked`. -->
+      <div class="px-5 py-2 border-t border-surface-200 dark:border-surface-700 max-h-40 overflow-y-auto space-y-1">
+        {#each [...downloadStatus] as [path, status] (path)}
+          <div class="flex items-center gap-2 text-xs">
+            <span class="shrink-0 w-4 h-4 flex items-center justify-center">
+              {#if status.kind === 'pending'}
+                <span class="w-2 h-2 rounded-full bg-surface-400"></span>
+              {:else if status.kind === 'downloading'}
+                <span class="text-primary-500"><Icon name="loading" size={14} /></span>
+              {:else if status.kind === 'done'}
+                <span class="text-success-500"><Icon name="success" size={14} /></span>
+              {:else}
+                <span class="text-error-500"><Icon name="error" size={14} /></span>
+              {/if}
+            </span>
+            <span class="flex-1 truncate text-surface-700 dark:text-surface-300">{basename(path)}</span>
+            {#if status.kind === 'failed'}
+              <span class="shrink-0 text-error-500 truncate max-w-[180px]" title={status.message}>{status.message}</span>
+            {:else if status.kind === 'done'}
+              <span class="shrink-0 text-success-500">Done</span>
+            {:else if status.kind === 'downloading'}
+              <span class="shrink-0 text-primary-500">Downloading…</span>
+            {:else}
+              <span class="shrink-0 text-surface-500">Queued</span>
+            {/if}
+          </div>
+        {/each}
+      </div>
     {/if}
 
     <footer class="px-5 py-3 border-t border-surface-200 dark:border-surface-700 flex items-center gap-2">
