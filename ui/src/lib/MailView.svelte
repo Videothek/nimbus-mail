@@ -898,17 +898,15 @@
     return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
   }
 
-  /** Returns an emoji glyph for media types that read better as
-   *  pictographs.  Documents (pdf / office / zip / images /
-   *  markdown) fall through to `null` so the chip renders the
-   *  typed `FileTypeIcon` SVG instead of an emoji. */
-  function attachmentEmoji(att: EmailAttachment): string | null {
-    const ct = att.content_type || ''
-    const fn = att.filename.toLowerCase()
-    // Plain text files that aren't markdown still get the memo
-    // emoji — a CHANGELOG.txt looks more "note" than "code".
-    if (ct.startsWith('text/') && !ct.includes('markdown') && !fn.endsWith('.md') && !fn.endsWith('.markdown'))
-      return '📝'
+  /** Always returns `null` now — every attachment falls through
+   *  to `FileTypeIcon`, which knows how to draw a typed badge
+   *  (PDF / DOC / XLS / …) when it recognises the format, and a
+   *  plain document silhouette as the universal fallback for
+   *  unrecognised content-types and extensionless filenames.
+   *  The function is kept as a single seam so future per-type
+   *  emoji can be reintroduced without re-threading the chip
+   *  render below. */
+  function attachmentEmoji(_att: EmailAttachment): string | null {
     return null
   }
 
