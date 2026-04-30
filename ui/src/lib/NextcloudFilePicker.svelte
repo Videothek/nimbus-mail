@@ -485,7 +485,7 @@
     tabindex="-1"
     onmousedown={(e) => { if (e.target === e.currentTarget && !sharing) sharePrompt = null }}
   >
-    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-96 max-w-full p-5">
+    <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-[28rem] max-w-full p-5">
       <h3 class="text-base font-semibold mb-1">Password-protect link?</h3>
       <p class="text-xs text-surface-500 mb-3">
         {sharePrompt.paths.length === 1
@@ -535,7 +535,7 @@
         <p class="text-xs text-red-500 mb-3 wrap-break-word">{error}</p>
       {/if}
 
-      <div class="flex justify-end gap-2">
+      <div class="flex flex-wrap justify-end gap-2">
         <button
           class="btn preset-outlined-surface-500"
           disabled={sharing}
