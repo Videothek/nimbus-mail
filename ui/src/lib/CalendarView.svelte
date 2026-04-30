@@ -1113,26 +1113,28 @@
       <h2 class="text-xl font-semibold">Calendar</h2>
       <div class="flex items-center gap-1 ml-2">
         <button
-          class="btn preset-tonal-surface text-sm px-2"
+          class="p-1.5 rounded-md text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
           onclick={prevWeek}
           aria-label="Previous week"
           title="Previous week"
         >
-          <Icon name="nav-backward" size={16} />
+          <Icon name="nav-backward" size={18} />
         </button>
         <button
-          class="btn preset-tonal-surface text-sm px-3 inline-flex items-center gap-1.5"
+          class="p-1.5 rounded-md text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
           onclick={goToToday}
+          aria-label="Jump to today"
+          title="Jump to today"
         >
-          <Icon name="today" size={14} /> Today
+          <Icon name="today" size={18} />
         </button>
         <button
-          class="btn preset-tonal-surface text-sm px-2"
+          class="p-1.5 rounded-md text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors"
           onclick={nextWeek}
           aria-label="Next week"
           title="Next week"
         >
-          <Icon name="nav-forward" size={16} />
+          <Icon name="nav-forward" size={18} />
         </button>
       </div>
       <span class="text-sm font-medium ml-2">{weekRangeLabel()}</span>

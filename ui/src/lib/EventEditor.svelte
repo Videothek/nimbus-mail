@@ -1605,8 +1605,17 @@
                         organizer
                       </span>
                     {:else if a.status && a.status.toUpperCase() !== 'NEEDS-ACTION'}
-                      <span class="text-[10px] uppercase tracking-wide text-surface-500 leading-tight" title="Response status">
-                        {a.status.toLowerCase()}
+                      {@const s = a.status.toUpperCase()}
+                      {@const rsvpName = s === 'ACCEPTED' ? 'rsvp-accept'
+                        : s === 'DECLINED' ? 'rsvp-decline'
+                        : s === 'TENTATIVE' ? 'rsvp-tentative'
+                        : 'help'}
+                      {@const rsvpColor = s === 'ACCEPTED' ? 'text-success-500'
+                        : s === 'DECLINED' ? 'text-error-500'
+                        : s === 'TENTATIVE' ? 'text-warning-500'
+                        : 'text-surface-500'}
+                      <span class="leading-tight {rsvpColor}" title={`Response: ${a.status.toLowerCase()}`}>
+                        <Icon name={rsvpName} size={14} />
                       </span>
                     {:else if c && c.organization}
                       <span class="text-[11px] text-surface-500 leading-tight truncate max-w-[220px]">{c.organization}</span>
