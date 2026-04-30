@@ -114,42 +114,50 @@
 </script>
 
 {#if kind}
-  <!-- Modern filled-document mark (#158): the whole document
-       shape is filled with the format colour, the corner-fold
-       reads as a translucent overlay, and the format code lives
-       in white inside.  Same visual language modern file
-       pickers (VSCode Material Icons, Gmail, Apple Files) all
-       use — faster to recognise at a glance than the previous
-       outline-with-tiny-label and instantly tells you the
-       format from across the screen. -->
+  <!-- Minimalist file mark (#158 v2).  Apple Files / Notion-
+       style layout: a clean light document body with a subtle
+       outline + corner fold up top, and the format code in
+       white inside a coloured band at the bottom.  Keeping the
+       text in its own band means the corner fold never bumps
+       into the letters — readable at every size. -->
   <svg
     xmlns="http://www.w3.org/2000/svg"
     viewBox="0 0 24 24"
     class="{cls} {kind.colorClass} shrink-0"
     aria-label={kind.label}
   >
-    <!-- Document body, filled -->
+    <!-- Document body — neutral white-ish fill, subtle border
+         in the format colour.  We use `currentColor` for the
+         border + bottom band so the icon re-tints with the
+         text-* utility class on the parent. -->
     <path
       d="M6.5 2.5h7L19 8v12.5a1.5 1.5 0 0 1 -1.5 1.5h-11A1.5 1.5 0 0 1 5 20.5v-16.5A1.5 1.5 0 0 1 6.5 2.5z"
-      fill="currentColor"
+      fill="white"
       stroke="currentColor"
-      stroke-width="0.8"
+      stroke-width="1.4"
       stroke-linejoin="round"
     />
-    <!-- Translucent corner fold -->
+    <!-- Corner fold — small triangle, just the document
+         affordance, never crowds the bottom band. -->
     <path
       d="M13.5 2.5v4.5a1 1 0 0 0 1 1H19"
-      fill="rgba(255,255,255,0.32)"
-      stroke="rgba(255,255,255,0.5)"
-      stroke-width="0.6"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.2"
       stroke-linejoin="round"
     />
-    <!-- Format label -->
+    <!-- Format band along the bottom — solid colour with
+         enough rounding to feel like part of the document. -->
+    <path
+      d="M5 14.5h14v6a1.5 1.5 0 0 1 -1.5 1.5h-11A1.5 1.5 0 0 1 5 20.5z"
+      fill="currentColor"
+    />
+    <!-- Format label, white on the band -->
     <text
       x="12"
-      y="17.4"
+      y="19.4"
       text-anchor="middle"
-      font-size="5.4"
+      font-size="4.8"
       font-weight="800"
       letter-spacing="0.4"
       fill="white"
@@ -158,9 +166,8 @@
     >{kind.label}</text>
   </svg>
 {:else}
-  <!-- Untyped fallback: same filled-document silhouette in a
-       neutral surface tone so it sits visually next to the
-       coloured siblings without competing with them. -->
+  <!-- Untyped fallback — same silhouette in neutral surface
+       tone, no bottom band (no format to advertise). -->
   <svg
     xmlns="http://www.w3.org/2000/svg"
     viewBox="0 0 24 24"
@@ -169,16 +176,16 @@
   >
     <path
       d="M6.5 2.5h7L19 8v12.5a1.5 1.5 0 0 1 -1.5 1.5h-11A1.5 1.5 0 0 1 5 20.5v-16.5A1.5 1.5 0 0 1 6.5 2.5z"
-      fill="currentColor"
+      fill="white"
       stroke="currentColor"
-      stroke-width="0.8"
+      stroke-width="1.4"
       stroke-linejoin="round"
     />
     <path
       d="M13.5 2.5v4.5a1 1 0 0 0 1 1H19"
-      fill="rgba(255,255,255,0.32)"
-      stroke="rgba(255,255,255,0.5)"
-      stroke-width="0.6"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.2"
       stroke-linejoin="round"
     />
   </svg>
