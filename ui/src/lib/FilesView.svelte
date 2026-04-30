@@ -74,6 +74,22 @@
     return path.split('/').filter(Boolean).pop() ?? path
   }
 
+  /** Per-file download status surfaced as a progress strip while
+   *  `sendAsAttachment` runs (#160).  Same shape as the one in
+   *  NextcloudFilePicker — keys are NC paths, values cycle
+   *  pending → downloading → done | failed. */
+  type DownloadStatus =
+    | { kind: 'pending' }
+    | { kind: 'downloading' }
+    | { kind: 'done' }
+    | { kind: 'failed'; message: string }
+  let downloadStatus = $state<Map<string, DownloadStatus>>(new Map())
+  function setDownloadStatus(path: string, status: DownloadStatus) {
+    const next = new Map(downloadStatus)
+    next.set(path, status)
+    downloadStatus = next
+  }
+
   /** Download every selected file (folders are skipped — Nextcloud has
       no zip-folder endpoint) and open Compose with them pre-attached. */
   async function sendAsAttachment() {
@@ -83,24 +99,34 @@
     if (filePaths.length === 0) return
     attaching = true
     error = ''
+    const seeded = new Map<string, DownloadStatus>()
+    for (const p of filePaths) seeded.set(p, { kind: 'pending' })
+    downloadStatus = seeded
     try {
       // Same parallelisation rationale as the picker: each invoke is
       // an independent task, so this scales with file count rather
       // than serialising.
       const attachments = await Promise.all(
         filePaths.map(async (p) => {
-          const bytes = await invoke<number[]>('download_nextcloud_file', {
-            ncId: accountId,
-            path: p,
-          })
-          const ct =
-            entries.find((e) => e.path === p)?.content_type ??
-            'application/octet-stream'
-          return {
-            filename: basename(p),
-            content_type: ct,
-            data: bytes,
-          } satisfies Attachment
+          setDownloadStatus(p, { kind: 'downloading' })
+          try {
+            const bytes = await invoke<number[]>('download_nextcloud_file', {
+              ncId: accountId,
+              path: p,
+            })
+            const ct =
+              entries.find((e) => e.path === p)?.content_type ??
+              'application/octet-stream'
+            setDownloadStatus(p, { kind: 'done' })
+            return {
+              filename: basename(p),
+              content_type: ct,
+              data: bytes,
+            } satisfies Attachment
+          } catch (e) {
+            setDownloadStatus(p, { kind: 'failed', message: formatError(e) || 'Failed' })
+            throw e
+          }
         }),
       )
       oncompose({ attachments })
@@ -188,6 +214,39 @@
       <p class="px-5 py-2 text-sm text-red-500 border-t border-surface-200 dark:border-surface-700">
         {error}
       </p>
+    {/if}
+
+    {#if downloadStatus.size > 0 && (attaching || [...downloadStatus.values()].some((s) => s.kind === 'failed'))}
+      <!-- Per-file download status strip (#160).  Mirrors the
+           NextcloudFilePicker progress UI so the user sees exactly
+           which file is being fetched and which (if any) errored. -->
+      <div class="px-5 py-2 border-t border-surface-200 dark:border-surface-700 max-h-40 overflow-y-auto space-y-1">
+        {#each [...downloadStatus] as [path, status] (path)}
+          <div class="flex items-center gap-2 text-xs">
+            <span class="shrink-0 w-4 h-4 flex items-center justify-center">
+              {#if status.kind === 'pending'}
+                <span class="w-2 h-2 rounded-full bg-surface-400"></span>
+              {:else if status.kind === 'downloading'}
+                <span class="text-primary-500"><Icon name="loading" size={14} /></span>
+              {:else if status.kind === 'done'}
+                <span class="text-success-500"><Icon name="success" size={14} /></span>
+              {:else}
+                <span class="text-error-500"><Icon name="error" size={14} /></span>
+              {/if}
+            </span>
+            <span class="flex-1 truncate text-surface-700 dark:text-surface-300">{basename(path)}</span>
+            {#if status.kind === 'failed'}
+              <span class="shrink-0 text-error-500 truncate max-w-[180px]" title={status.message}>{status.message}</span>
+            {:else if status.kind === 'done'}
+              <span class="shrink-0 text-success-500">Done</span>
+            {:else if status.kind === 'downloading'}
+              <span class="shrink-0 text-primary-500">Downloading…</span>
+            {:else}
+              <span class="shrink-0 text-surface-500">Queued</span>
+            {/if}
+          </div>
+        {/each}
+      </div>
     {/if}
 
     <!-- Action footer. Both buttons are bulk-aware: select N items and
