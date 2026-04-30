@@ -22,7 +22,7 @@
   import {
     enrollFidoCredential,
     evaluateFidoPrf,
-    isPrfSupported,
+    isWebAuthnAvailable,
   } from './webauthnPrf'
 
   interface FidoCredential {
@@ -40,7 +40,10 @@
   let loading = $state(true)
   let busy = $state(false)
   let error = $state('')
-  let prfSupported = $state(false)
+  // Just a coarse "WebAuthn API exists" check.  Don't gate on
+  // PRF capability up front — older engines mis-report it; let
+  // the actual `credentials.create` reveal the truth.
+  const webauthnAvailable = $state(isWebAuthnAvailable())
 
   let newLabel = $state('')
 
@@ -57,7 +60,6 @@
 
   $effect(() => {
     void loadStatus()
-    void isPrfSupported().then((v) => (prfSupported = v))
   })
 
   async function addKey() {
@@ -133,13 +135,13 @@
 
   {#if loading}
     <p class="text-sm text-surface-500">Loading…</p>
-  {:else if !prfSupported}
+  {:else if !webauthnAvailable}
     <div class="rounded-md border border-warning-500/40 bg-warning-500/10 p-4 text-sm">
-      Your platform's WebAuthn implementation doesn't expose the PRF
-      extension we need to derive a stable key from your authenticator.
-      Update your OS / browser engine, or pick a different platform —
-      modern Safari, Edge / Chrome, and recent WebKitGTK builds all
-      support it.
+      WebAuthn isn't available in this build's webview.  Hardware
+      authentication needs the OS-shipped browser engine to expose
+      <code>navigator.credentials</code>; update your platform's
+      webview component (libwebkit2gtk on Linux, WebView2 on
+      Windows, system Safari on macOS) and try again.
     </div>
   {:else}
     <div class="space-y-4">

@@ -34,27 +34,24 @@ function b64ToBuf(s: string): Uint8Array {
 }
 
 /**
- * True if the current webview exposes the WebAuthn PRF extension.
- * Used by the Settings UI to gate the "Add hardware key" button —
- * older WebKitGTK builds don't ship PRF support.
+ * Coarse check that WebAuthn itself is wired up.  We deliberately
+ * *don't* gate on `getClientCapabilities().extensionPrf` here —
+ * older engines (Linux WebKitGTK < 2.46, in particular) advertise
+ * `extensionPrf: false` even when an authenticator that supports
+ * hmac-secret would otherwise work, and there are
+ * authenticator+engine combinations that surprise the static
+ * capability table either way.  The honest source of truth is
+ * whether `credentials.create({ extensions: { prf: ... } })`
+ * returns a PRF output; the UI just calls it and surfaces a
+ * specific error if the result is missing.
  */
-export async function isPrfSupported(): Promise<boolean> {
-  // PublicKeyCredential is the entry point for WebAuthn; if it's
-  // not present the engine doesn't know about the spec at all.
-  if (typeof PublicKeyCredential === 'undefined') return false
-  if (typeof PublicKeyCredential.getClientCapabilities === 'function') {
-    try {
-      const caps = await PublicKeyCredential.getClientCapabilities()
-      const r = caps as Record<string, boolean>
-      if (typeof r.extensionPrf === 'boolean') return r.extensionPrf
-    } catch {
-      /* fall through to feature-test */
-    }
-  }
-  // Best-effort feature detect — if we got this far, assume the
-  // extension *might* work and let the caller surface a real
-  // error from the create() call if it doesn't.
-  return true
+export function isWebAuthnAvailable(): boolean {
+  return (
+    typeof PublicKeyCredential !== 'undefined' &&
+    typeof navigator !== 'undefined' &&
+    !!navigator.credentials &&
+    typeof navigator.credentials.create === 'function'
+  )
 }
 
 export interface EnrolledCredential {
@@ -118,8 +115,32 @@ export async function enrollFidoCredential(
   }
   const prfFirst = exts.prf?.results?.first
   if (!prfFirst) {
+    // Three reasons we'd land here:
+    //   1. The webview doesn't implement the PRF extension.  On
+    //      Linux this means WebKitGTK < 2.46.  Update libwebkit2gtk
+    //      via the system package manager — Ubuntu 24.04, Fedora
+    //      40, and Arch all carry 2.46+ on stable.
+    //   2. The selected authenticator doesn't support hmac-secret.
+    //      Most YubiKey 5 / SoloKey 2 / Touch ID / Windows Hello
+    //      builds do; some older third-party USB keys do not.
+    //   3. `prf.enabled` came back true at create-time but the
+    //      engine elected not to evaluate the salt during this
+    //      registration (a few WebKit builds defer first eval to
+    //      the first credentials.get).  We could retry via
+    //      credentials.get with the same salt, but in practice
+    //      this surfaces the same root cause as #1.
+    const enabled = exts.prf?.enabled === true
+    if (enabled) {
+      throw new Error(
+        'Authenticator registered, but the PRF extension didn\'t evaluate at enroll time. ' +
+          'Try a different authenticator, or wait for the next browser engine update.',
+      )
+    }
     throw new Error(
-      'Authenticator did not return a PRF output. Your hardware key or browser may not support WebAuthn PRF (hmac-secret).',
+      'PRF extension unavailable from this WebAuthn implementation. ' +
+        'On Linux this usually means WebKitGTK is below 2.46 — update libwebkit2gtk ' +
+        '(Ubuntu 24.04+, Fedora 40+, Arch all ship 2.46+). On macOS / Windows the OS ' +
+        'shipped engines support PRF on recent versions.',
     )
   }
   return {
