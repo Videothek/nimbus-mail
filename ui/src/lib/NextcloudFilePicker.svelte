@@ -546,9 +546,7 @@
           disabled={sharing}
           onclick={() => void commitShare()}
         >
-          {#if sharing}Sharing…
-          {:else if sharePrompt.password.trim()}Create with password
-          {:else}Share without password{/if}
+          {#if sharing}Sharing…{:else}Share{/if}
         </button>
       </div>
     </div>
