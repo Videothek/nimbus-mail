@@ -1043,6 +1043,17 @@
   /** Round a Date up to the next half-hour boundary.  Mirrors what
       a user would type when scheduling a fresh meeting "now-ish":
       11:07 → 11:30, 11:30 → 12:00. */
+  /** Prefix the email subject with "RE: " to mark the event as a
+      response to the thread.  Skips the prefix when the subject
+      already starts with RE:/AW:/SV: (case-insensitive) so we don't
+      stack "RE: RE: RE:" on a long reply chain. */
+  function meetingSubject(subject: string): string {
+    const s = subject.trim()
+    if (!s) return 'RE: Meeting'
+    if (/^(re|aw|sv)\s*:/i.test(s)) return s
+    return `RE: ${s}`
+  }
+
   function nextHalfHour(d: Date): Date {
     const out = new Date(d)
     out.setSeconds(0, 0)
@@ -1120,7 +1131,7 @@
         calendarId: initialCalendarId,
         start,
         end,
-        summary: mail.subject || 'Meeting',
+        summary: meetingSubject(mail.subject),
         requiredAttendees: required,
         optionalAttendees: optional,
         createTalkRoom: true,
