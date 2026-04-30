@@ -620,6 +620,7 @@ mod tests {
                 unread_messages: self.unread_messages,
                 unread_mention: self.unread_mention,
                 last_activity: self.last_activity,
+                is_archived: self.is_archived,
             }
         }
     }
