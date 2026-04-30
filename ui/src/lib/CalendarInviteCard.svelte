@@ -334,6 +334,17 @@
     return at > 0 ? a.email.slice(0, at) : a.email
   }
 
+  /** Two-letter avatar fallback for the attendee chips — same
+   *  pattern EventEditor's chips use so the visual rhythm
+   *  carries across surfaces. */
+  function attendeeInitials(a: InviteAttendee): string {
+    const src = attendeeName(a).trim()
+    if (!src) return '?'
+    const parts = src.split(/\s+/).filter(Boolean)
+    if (parts.length === 1) return parts[0][0].toUpperCase()
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+  }
+
   /** Optimistic PARTSTAT overrides keyed by lower-cased email,
    *  applied on top of the static `invite.attendees` snapshot
    *  so the user's chip flips to their just-picked response
@@ -848,8 +859,9 @@
     </div>
   {/if}
   {#if invite.attendees.length > 0}
-    <div class="text-xs text-surface-500 mt-1">
-      {invite.attendees.length} attendee{invite.attendees.length === 1 ? '' : 's'}
+    <div class="text-xs text-surface-500 mt-1 flex items-center gap-1.5">
+      <Icon name="contacts" size={12} class="shrink-0" />
+      <span>{invite.attendees.length} attendee{invite.attendees.length === 1 ? '' : 's'}</span>
     </div>
   {/if}
 
@@ -1015,15 +1027,33 @@
           <div class="text-[10px] uppercase tracking-wider text-surface-500 mb-1.5">
             Attendees ({invite.attendees.length})
           </div>
-          <div class="flex flex-wrap gap-1.5">
+          <!-- Attendee chips — same shape EventEditor uses
+               (avatar + RSVP overlay badge), just simpler
+               because the invite card has no contact-photo
+               lookup so every avatar shows initials. -->
+          <div class="flex flex-wrap gap-2">
             {#each invite.attendees as a (a.email)}
+              {@const partstat = effectiveStatus(a).toUpperCase()}
+              {@const showRsvpBadge = partstat && partstat !== 'NEEDS-ACTION'}
               {@const g = attendeeStatusGlyph(a)}
               <span
-                class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs bg-surface-200 dark:bg-surface-700"
-                title={a.email + ` — ${effectiveStatus(a).toLowerCase()}`}
+                class="inline-flex items-center gap-3 pl-1 pr-2 py-1 rounded-full text-xs bg-surface-200 dark:bg-surface-700 max-w-full"
+                title={a.email + ` — ${partstat.toLowerCase()}`}
               >
-                <span class="shrink-0 {g.colorClass}" aria-hidden="true"><Icon name={g.name} size={12} /></span>
-                <span class="truncate max-w-[180px]">{attendeeName(a)}</span>
+                <span class="relative w-7 h-7 flex-shrink-0">
+                  <div class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 flex items-center justify-center text-[11px] font-semibold">
+                    {attendeeInitials(a)}
+                  </div>
+                  {#if showRsvpBadge}
+                    <span
+                      class="absolute bottom-0 -right-2 w-4 h-4 rounded-full bg-surface-50 dark:bg-surface-900 ring-1 ring-surface-200 dark:ring-surface-700 flex items-center justify-center leading-none {g.colorClass}"
+                      aria-label={`Response: ${partstat.toLowerCase()}`}
+                    >
+                      <Icon name={g.name} size={10} class="block" />
+                    </span>
+                  {/if}
+                </span>
+                <span class="truncate max-w-[180px] leading-tight font-medium">{attendeeName(a)}</span>
               </span>
             {/each}
           </div>
