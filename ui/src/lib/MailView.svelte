@@ -16,7 +16,7 @@
   import NextcloudFilePicker from './NextcloudFilePicker.svelte'
   import MoveFolderPicker from './MoveFolderPicker.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
-  import AttachmentThumb from './AttachmentThumb.svelte'
+  import AttachmentThumb, { seedThumbFromBase64 } from './AttachmentThumb.svelte'
   import CalendarInviteCard, { type InviteSummary } from './CalendarInviteCard.svelte'
   import { openMailInStandaloneWindow } from './standaloneMailWindow'
 
@@ -129,6 +129,35 @@
   let loading = $state(false)
   let refreshing = $state(false)
   let error = $state('')
+
+  // Seed the in-memory thumb cache (#157) from any thumbnails
+  // we previously persisted for this message.  Runs whenever
+  // the open message id changes.  By the time AttachmentThumb
+  // mounts in the chip strip below, its cacheKey lookup hits
+  // and the bytesProvider never fires — no IPC round-trip, no
+  // GStreamer pipeline cycle, no Blob copy.
+  $effect(() => {
+    if (!email || uid == null) return
+    const acc = email.account_id
+    const fld = email.folder
+    const u = uid
+    void invoke<{ partId: number; mime: string; base64: string }[]>(
+      'get_attachment_previews',
+      { accountId: acc, folder: fld, uid: u },
+    )
+      .then((rows) => {
+        for (const r of rows) {
+          seedThumbFromBase64({
+            cacheKey: `${acc}::${fld}::${u}::${r.partId}`,
+            mime: r.mime,
+            base64: r.base64,
+          })
+        }
+      })
+      .catch((e) => {
+        console.warn('get_attachment_previews failed', e)
+      })
+  })
 
   // ── Calendar invite (#58 / iMIP) ──────────────────────────────
   // Inbound mail carrying a `text/calendar` attachment surfaces an
@@ -1264,6 +1293,12 @@
                   contentType={att.content_type}
                   filename={att.filename}
                   cacheKey={`${email!.account_id}::${email!.folder}::${uid}::${att.part_id}`}
+                  persistTo={{
+                    accountId: email!.account_id,
+                    folder: email!.folder,
+                    uid: uid!,
+                    partId: att.part_id,
+                  }}
                   bytesProvider={tooLarge
                     ? undefined
                     : () =>

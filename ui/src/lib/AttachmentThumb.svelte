@@ -116,6 +116,132 @@
     if (key === null) return null
     return imageBlobGet(key) ?? cacheGet(key) ?? null
   }
+
+  /** Seed the in-memory thumb cache from a base64-encoded
+   *  thumbnail loaded from the on-disk cache (#157).  Builds
+   *  a `data:` URL in place rather than allocating a Blob —
+   *  saves an O(n) array copy and survives the data URL's
+   *  natural session lifetime. */
+  export function seedThumbFromBase64(opts: {
+    cacheKey: string
+    mime: string
+    base64: string
+  }): void {
+    const { cacheKey, mime, base64 } = opts
+    if (!cacheKey || !base64) return
+    if (imageBlobGet(cacheKey)) return
+    const url = `data:${mime || 'image/jpeg'};base64,${base64}`
+    imageBlobPut(cacheKey, url)
+  }
+
+  // ── On-disk persistence helpers (#157) ─────────────────────
+  //
+  // Both run off the critical path via requestIdleCallback so
+  // the user's render is never blocked by the downsample +
+  // base64 + IPC round-trip.
+
+  type PersistTarget = {
+    accountId: string
+    folder: string
+    uid: number
+    partId: number
+  }
+
+  function dataUrlToBytes(dataUrl: string): { mime: string; bytes: Uint8Array } | null {
+    const m = dataUrl.match(/^data:([^;,]+)(?:;[^,]*)?,(.*)$/)
+    if (!m) return null
+    const mime = m[1]
+    const payload = m[2]
+    const isB64 = /;base64/.test(dataUrl.slice(0, dataUrl.indexOf(',')))
+    let binary: string
+    try {
+      binary = isB64 ? atob(payload) : decodeURIComponent(payload)
+    } catch {
+      return null
+    }
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    return { mime, bytes }
+  }
+
+  function scheduleIdle(cb: () => void): void {
+    const w = window as unknown as {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => void
+    }
+    if (typeof w.requestIdleCallback === 'function') {
+      w.requestIdleCallback(cb, { timeout: 800 })
+    } else {
+      setTimeout(cb, 50)
+    }
+  }
+
+  /** Persist a JPEG/PNG data URL straight to the on-disk
+   *  cache (used by the video extractor — its output is
+   *  already a small JPEG). */
+  export async function persistFromDataUrl(
+    target: PersistTarget,
+    dataUrl: string,
+  ): Promise<void> {
+    return new Promise<void>((resolve) => {
+      scheduleIdle(async () => {
+        try {
+          const decoded = dataUrlToBytes(dataUrl)
+          if (!decoded) return resolve()
+          await invoke('put_attachment_preview', {
+            accountId: target.accountId,
+            folder: target.folder,
+            uid: target.uid,
+            partId: target.partId,
+            mime: decoded.mime,
+            bytes: Array.from(decoded.bytes),
+          })
+        } catch (e) {
+          console.warn('put_attachment_preview failed', e)
+        } finally {
+          resolve()
+        }
+      })
+    })
+  }
+
+  /** Load an image blob URL, downsample it to ≤256 px on the
+   *  long edge, and persist as JPEG.  Used for image
+   *  attachments where the rendered <img> uses the full-size
+   *  blob URL but the on-disk cache only needs the thumbnail
+   *  (saves space and skips the bytesProvider on next open). */
+  export async function persistFromBlobUrl(
+    target: PersistTarget,
+    blobUrl: string,
+    _contentType?: string | null,
+  ): Promise<void> {
+    return new Promise<void>((resolve) => {
+      scheduleIdle(() => {
+        const img = new Image()
+        img.onload = async () => {
+          try {
+            const MAX = 256
+            const scale = Math.min(1, MAX / Math.max(img.width || MAX, img.height || MAX))
+            const w = Math.max(1, Math.round((img.width || MAX) * scale))
+            const h = Math.max(1, Math.round((img.height || MAX) * scale))
+            const canvas = document.createElement('canvas')
+            canvas.width = w
+            canvas.height = h
+            const ctx = canvas.getContext('2d')
+            if (!ctx) return resolve()
+            ctx.drawImage(img, 0, 0, w, h)
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.78)
+            await persistFromDataUrl(target, dataUrl)
+          } catch (e) {
+            console.warn('persistFromBlobUrl failed', e)
+          } finally {
+            resolve()
+          }
+        }
+        img.onerror = () => resolve()
+        img.src = blobUrl
+      })
+    })
+  }
   // Serialise extractions so a folder full of videos doesn't
   // spin up N pipelines simultaneously — Linux WebKit hits a
   // visible stall when more than two or three pipelines are
@@ -193,6 +319,7 @@
   // the one-time extraction.  Everything else falls through to
   // <FileTypeIcon>.
   import FileTypeIcon from './FileTypeIcon.svelte'
+  import { invoke } from '@tauri-apps/api/core'
 
   interface Props {
     /** Bytes the host already has in memory (Compose path).
@@ -214,6 +341,12 @@
      *  `bytesProvider`), pass an account/path-derived string so
      *  re-mounts hit the cache instead of re-decoding. */
     cacheKey?: string | null
+    /** When set, the rendered thumbnail is also persisted to
+     *  the on-disk cache (`put_attachment_preview` Tauri
+     *  command) so subsequent mounts of the same email skip
+     *  the bytes fetch + re-extraction.  Only makes sense for
+     *  MailView attachments — Compose drafts are ephemeral. */
+    persistTo?: { accountId: string; folder: string; uid: number; partId: number } | null
   }
   let {
     bytes = null,
@@ -222,6 +355,7 @@
     filename,
     class: cls = 'w-9 h-9',
     cacheKey = null,
+    persistTo = null,
   }: Props = $props()
 
   function ext(): string {
@@ -290,10 +424,15 @@
         const url = makeBlobUrl(b)
         imageBlobPut(key, url)
         imgUrl = url
+        // Persist a downsampled JPEG to the on-disk cache so a
+        // future mount of this attachment skips the
+        // bytesProvider call entirely (#157).
+        if (persistTo) void persistFromBlobUrl(persistTo, url, contentType)
       } else if (isVideo()) {
         const frame = await loadFrame(b)
         if (cancelled) return
         imgUrl = frame
+        if (frame && persistTo) void persistFromDataUrl(persistTo, frame)
       }
     }
     if (bytes && bytes.length > 0) {
