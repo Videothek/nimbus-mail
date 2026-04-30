@@ -1,0 +1,1 @@
+Original icons designed for Nimbus Mail, 2026

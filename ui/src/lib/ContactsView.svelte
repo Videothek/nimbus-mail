@@ -1060,7 +1060,7 @@
           : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
         onclick={() => (selectedScope = 'all')}
       >
-        <span class="w-6 text-center">👥</span>
+        <span class="w-6 flex items-center justify-center"><Icon name="meetings" size={16} /></span>
         <span class="flex-1 truncate">All contacts</span>
         <span class="text-xs text-surface-500">{contacts.length}</span>
       </button>
@@ -1403,12 +1403,17 @@
   <aside class="w-80 shrink-0 border-r border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800 flex flex-col">
     {#if activeTab === 'contacts'}
     <div class="p-3 flex flex-col gap-2">
-      <input
-        type="search"
-        class="input"
-        placeholder="Search"
-        bind:value={query}
-      />
+      <div class="relative">
+        <span class="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
+          <Icon name="search" size={14} />
+        </span>
+        <input
+          type="search"
+          class="input pl-7"
+          placeholder="Search"
+          bind:value={query}
+        />
+      </div>
       <button class="btn preset-filled-primary-500" onclick={startNew}>
         + New contact
       </button>

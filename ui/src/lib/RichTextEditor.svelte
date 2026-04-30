@@ -1513,8 +1513,8 @@
            user expects Send + Save + Undo to be reachable
            regardless of which tab is open. -->
       <div class="ml-auto flex items-center gap-1 px-1">
-        <button class="tb" title="Undo (Ctrl+Z)" onclick={() => doUndo()}>↩</button>
-        <button class="tb" title="Redo (Ctrl+Y)" onclick={() => doRedo()}>↪</button>
+        <button class="tb" title="Undo (Ctrl+Z)" aria-label="Undo" onclick={() => doUndo()}><Icon name="undo" size={14} /></button>
+        <button class="tb" title="Redo (Ctrl+Y)" aria-label="Redo" onclick={() => doRedo()}><Icon name="redo" size={14} /></button>
         {#if actionsTrailing}
           <span class="w-px h-5 bg-surface-300 dark:bg-surface-600 mx-1"></span>
           {@render actionsTrailing()}
@@ -1618,12 +1618,12 @@
 
         <!-- Colors -->
         <label class="rt-btn cursor-pointer" title="Text color">
-          <span class="rt-btn-icon" style="border-bottom: 3px solid currentColor;">A</span>
+          <span class="rt-btn-icon"><Icon name="text-color" size={16} /></span>
           <span class="rt-btn-label">Color</span>
           <input type="color" class="w-0 h-0 opacity-0 absolute" onchange={setColor} />
         </label>
         <label class="rt-btn cursor-pointer" title="Highlight color">
-          <span class="rt-btn-icon"><span class="bg-yellow-200 dark:bg-yellow-300 px-0.5 rounded-sm text-surface-900">H</span></span>
+          <span class="rt-btn-icon"><Icon name="highlight-text" size={16} /></span>
           <span class="rt-btn-label">Highlight</span>
           <input type="color" value="#fde68a" class="w-0 h-0 opacity-0 absolute" onchange={setHighlight} />
         </label>
@@ -1633,16 +1633,16 @@
         <!-- Clear formatting — strips marks AND collapses to plain
              paragraph (matches Outlook's "Clear all formatting"). -->
         <button class="rt-btn" title="Clear all formatting" onclick={clearFormatting}>
-          <span class="rt-btn-icon">🧹</span>
+          <span class="rt-btn-icon"><Icon name="clear" size={16} /></span>
           <span class="rt-btn-label">Clear</span>
         </button>
       {:else if activeTab === 'insert'}
         <button class="rt-btn {active('link')}" title="Insert link" onclick={setLink}>
-          <span class="rt-btn-icon">🔗</span>
+          <span class="rt-btn-icon"><Icon name="open-link" size={16} /></span>
           <span class="rt-btn-label">Link</span>
         </button>
         <button class="rt-btn" title="Insert image from local file" onclick={() => addImageFromFile()}>
-          <span class="rt-btn-icon">🖼️</span>
+          <span class="rt-btn-icon"><Icon name="insert-image" size={16} /></span>
           <span class="rt-btn-label">Image</span>
         </button>
         <button
@@ -1650,7 +1650,7 @@
           title={onrequestncimage ? 'Insert image from Nextcloud' : 'Insert image from URL'}
           onclick={() => addImageFromNcOrUrl()}
         >
-          <span class="rt-btn-icon">{onrequestncimage ? '☁️' : '🌐'}</span>
+          <span class="rt-btn-icon"><Icon name={onrequestncimage ? 'cloud' : 'open-link'} size={16} /></span>
           <span class="rt-btn-label">{onrequestncimage ? 'NC image' : 'From URL'}</span>
         </button>
 
@@ -1659,7 +1659,7 @@
         <!-- Table picker -->
         <div class="relative inline-block">
           <button class="rt-btn" title="Insert table at cursor" onclick={openTablePicker}>
-            <span class="rt-btn-icon">▦</span>
+            <span class="rt-btn-icon"><Icon name="table" size={16} /></span>
             <span class="rt-btn-label">Table</span>
           </button>
           {#if showTablePicker}
@@ -1703,7 +1703,7 @@
              follow-up).  Click outside or pick an emoji to dismiss. -->
         <div class="relative inline-block">
           <button class="rt-btn" title="Insert emoji" onclick={() => (showEmojiPicker = !showEmojiPicker)}>
-            <span class="rt-btn-icon">😀</span>
+            <span class="rt-btn-icon"><Icon name="emoji" size={16} /></span>
             <span class="rt-btn-label">Emoji</span>
           </button>
           {#if showEmojiPicker}
@@ -1732,36 +1732,36 @@
              email compatibility. -->
         {@const tblOn = tableActive()}
         <button class="rt-btn" title="Add row above" disabled={!tblOn} onclick={tblAddRowAbove}>
-          <span class="rt-btn-icon">⤴︎</span>
+          <span class="rt-btn-icon"><Icon name="insert-row-above" size={16} /></span>
           <span class="rt-btn-label">Row above</span>
         </button>
         <button class="rt-btn" title="Add row below" disabled={!tblOn} onclick={tblAddRowBelow}>
-          <span class="rt-btn-icon">⤵︎</span>
+          <span class="rt-btn-icon"><Icon name="insert-row-below" size={16} /></span>
           <span class="rt-btn-label">Row below</span>
         </button>
         <button class="rt-btn" title="Add column left" disabled={!tblOn} onclick={tblAddColLeft}>
-          <span class="rt-btn-icon">⇤</span>
+          <span class="rt-btn-icon"><Icon name="insert-column-left" size={16} /></span>
           <span class="rt-btn-label">Col left</span>
         </button>
         <button class="rt-btn" title="Add column right" disabled={!tblOn} onclick={tblAddColRight}>
-          <span class="rt-btn-icon">⇥</span>
+          <span class="rt-btn-icon"><Icon name="insert-column-right" size={16} /></span>
           <span class="rt-btn-label">Col right</span>
         </button>
         <button class="rt-btn" title="Delete current row" disabled={!tblOn} onclick={tblDeleteRow}>
-          <span class="rt-btn-icon">−↔</span>
+          <span class="rt-btn-icon"><Icon name="delete-row" size={16} /></span>
           <span class="rt-btn-label">Del row</span>
         </button>
         <button class="rt-btn" title="Delete current column" disabled={!tblOn} onclick={tblDeleteCol}>
-          <span class="rt-btn-icon">−↕</span>
+          <span class="rt-btn-icon"><Icon name="delete-column" size={16} /></span>
           <span class="rt-btn-label">Del col</span>
         </button>
         <label class="rt-btn cursor-pointer" title="Cell background colour" class:opacity-50={!tblOn}>
-          <span class="rt-btn-icon">🎨</span>
+          <span class="rt-btn-icon"><Icon name="highlight-text" size={16} /></span>
           <span class="rt-btn-label">Cell colour</span>
           <input type="color" class="w-0 h-0 opacity-0 absolute" disabled={!tblOn} onchange={tblSetCellColor} />
         </label>
         <button class="rt-btn" title="Clear cell background colour" disabled={!tblOn} onclick={tblClearCellColor}>
-          <span class="rt-btn-icon">⌫</span>
+          <span class="rt-btn-icon"><Icon name="clear" size={16} /></span>
           <span class="rt-btn-label">Clear fill</span>
         </button>
         <button class="rt-btn" title="Delete entire table" disabled={!tblOn} onclick={tblDelete}>
@@ -1787,11 +1787,11 @@
 
         <!-- Lists -->
         <button class="rt-btn {active('bulletList')}" title="Bullet list" onclick={() => $editor?.chain().focus().toggleBulletList().run()}>
-          <span class="rt-btn-icon">•</span>
+          <span class="rt-btn-icon"><Icon name="bullet-list" size={16} /></span>
           <span class="rt-btn-label">Bullets</span>
         </button>
         <button class="rt-btn {active('orderedList')}" title="Numbered list" onclick={() => $editor?.chain().focus().toggleOrderedList().run()}>
-          <span class="rt-btn-icon">1.</span>
+          <span class="rt-btn-icon"><Icon name="numbered-list" size={16} /></span>
           <span class="rt-btn-label">Numbered</span>
         </button>
 
@@ -1799,26 +1799,26 @@
 
         <!-- Alignment -->
         <button class="rt-btn {activeAttrs({ textAlign: 'left' })}" title="Align left" onclick={() => $editor?.chain().focus().setTextAlign('left').run()}>
-          <span class="rt-btn-icon">⇤</span>
+          <span class="rt-btn-icon"><Icon name="align-left" size={16} /></span>
           <span class="rt-btn-label">Left</span>
         </button>
         <button class="rt-btn {activeAttrs({ textAlign: 'center' })}" title="Align center" onclick={() => $editor?.chain().focus().setTextAlign('center').run()}>
-          <span class="rt-btn-icon">≡</span>
+          <span class="rt-btn-icon"><Icon name="align-center" size={16} /></span>
           <span class="rt-btn-label">Center</span>
         </button>
         <button class="rt-btn {activeAttrs({ textAlign: 'right' })}" title="Align right" onclick={() => $editor?.chain().focus().setTextAlign('right').run()}>
-          <span class="rt-btn-icon">⇥</span>
+          <span class="rt-btn-icon"><Icon name="align-right" size={16} /></span>
           <span class="rt-btn-label">Right</span>
         </button>
         <button class="rt-btn {activeAttrs({ textAlign: 'justify' })}" title="Justify" onclick={() => $editor?.chain().focus().setTextAlign('justify').run()}>
-          <span class="rt-btn-icon">☰</span>
+          <span class="rt-btn-icon"><Icon name="justify" size={16} /></span>
           <span class="rt-btn-label">Justify</span>
         </button>
 
         <span class="rt-divider"></span>
 
         <button class="rt-btn {active('blockquote')}" title="Blockquote" onclick={() => cmd().toggleBlockquote().run()}>
-          <span class="rt-btn-icon">❝</span>
+          <span class="rt-btn-icon"><Icon name="quote" size={16} /></span>
           <span class="rt-btn-label">Quote</span>
         </button>
       {:else}

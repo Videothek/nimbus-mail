@@ -575,7 +575,7 @@
                       passphraseConfirm = ''
                       passphraseEditing = true
                     }}
-                  ><Icon name="compose" size={14} /></button>
+                  ><Icon name="passphrase" size={14} /></button>
                 {/if}
                 <button
                   class="btn btn-sm preset-outlined-error-500"
