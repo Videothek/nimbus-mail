@@ -5035,6 +5035,11 @@ struct AttachmentPreviewView {
 /// or downsamples the preview; subsequent opens of the same
 /// message read all of them back in a single query via
 /// `get_attachment_previews`.
+///
+/// Bytes arrive base64-encoded — Tauri's default JSON serializer
+/// turns a `Vec<u8>` into a `[123, 45, ...]` number array on the
+/// wire, which is roughly 3× the raw size.  A base64 string is
+/// ≈1.33× and decodes server-side in microseconds.
 #[tauri::command]
 fn put_attachment_preview(
     account_id: String,
@@ -5042,9 +5047,13 @@ fn put_attachment_preview(
     uid: u32,
     part_id: u32,
     mime: String,
-    bytes: Vec<u8>,
+    base64: String,
     cache: State<'_, Cache>,
 ) -> Result<(), NimbusError> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let bytes = STANDARD
+        .decode(base64.as_bytes())
+        .map_err(|e| NimbusError::Other(format!("attachment preview base64 decode: {e}")))?;
     cache
         .put_attachment_preview(&account_id, &folder, uid, part_id, &mime, &bytes)
         .map_err(NimbusError::from)
