@@ -107,6 +107,11 @@ ical = { version = "0.11", default-features = false, features = ["vcard", "ical"
 # vCard PHOTO is base64-encoded inline; we decode once on import so
 # the cached row holds raw image bytes.
 base64 = "0.22"
+# AES-256-GCM for the FIDO wrap of the SQLCipher master key
+# (#164).  Used to seal the master key under a per-credential
+# PRF output so the plain key never persists in the keychain
+# once FIDO mode is enabled.
+aes-gcm = "0.10"
 # UUIDs for fresh vCard UIDs on contact create — we picked `urn:uuid:`
 # form to match what other CardDAV clients emit.
 uuid = { version = "1", features = ["v4"] }
