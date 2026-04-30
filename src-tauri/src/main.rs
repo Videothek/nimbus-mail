@@ -6893,6 +6893,8 @@ fn save_font_cache_file(file: &FontCacheFile) {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FidoCredentialView {
+    /// `"fido_prf"` or `"passphrase"`.
+    kind: String,
     credential_id: String,
     label: String,
     salt: String,
@@ -6922,6 +6924,10 @@ fn fido_status() -> Result<FidoStatusView, NimbusError> {
             .wraps
             .into_iter()
             .map(|w| FidoCredentialView {
+                kind: match w.kind {
+                    nimbus_store::fido::WrapKind::FidoPrf => "fido_prf".to_string(),
+                    nimbus_store::fido::WrapKind::Passphrase => "passphrase".to_string(),
+                },
                 credential_id: w.credential_id,
                 label: w.label,
                 salt: w.salt,
@@ -6965,9 +6971,101 @@ fn fido_enroll(
     let credential_id = fido::decode_b64(&credential_id_b64)?;
     let salt = fido::decode_b64(&salt_b64)?;
     let prf_output = fido::decode_b64(&prf_output_b64)?;
-    let wrap = fido::wrap_master_key(&master_key, &prf_output, &credential_id, &salt, label)?;
+    let wrap = fido::wrap_master_key(
+        fido::WrapKind::FidoPrf,
+        &master_key,
+        &prf_output,
+        &credential_id,
+        &salt,
+        label,
+    )?;
     nimbus_store::cache::key::add_wrap(wrap)?;
     Ok(())
+}
+
+/// Wrap the current master key under a passphrase-derived AES key
+/// (PBKDF2-HMAC-SHA-256, 720 000 iters).  Doubles as recovery
+/// passphrase for Phase 1B and as the test path on platforms
+/// where WebAuthn PRF isn't reachable yet (Linux WebKitGTK <
+/// 2.46).  Salt + synthetic credential id are server-side
+/// generated so the frontend never produces them.
+#[tauri::command]
+fn fido_enroll_passphrase(passphrase: String, label: String) -> Result<(), NimbusError> {
+    use nimbus_store::fido;
+    if passphrase.trim().is_empty() {
+        return Err(NimbusError::Other("passphrase must not be empty".into()));
+    }
+    let env = nimbus_store::cache::key::load_envelope()?;
+    let plain_hex = env.plain_key.as_deref().ok_or_else(|| {
+        NimbusError::Auth(
+            "Cannot enroll a passphrase while the database is FIDO-only (use unlock first)".into(),
+        )
+    })?;
+    let master_key = hex::decode(plain_hex)
+        .map_err(|e| NimbusError::Storage(format!("master key hex decode: {e}")))?;
+    let salt = fido::generate_salt()?;
+    let id = fido::generate_passphrase_id()?;
+    let aes_key = fido::derive_passphrase_key(&passphrase, &salt)?;
+    let wrap = fido::wrap_master_key(
+        fido::WrapKind::Passphrase,
+        &master_key,
+        &aes_key,
+        &id,
+        &salt,
+        label,
+    )?;
+    nimbus_store::cache::key::add_wrap(wrap)?;
+    Ok(())
+}
+
+/// Test-only: verify a passphrase wraps unlock the master key.
+/// Phase 1B will call this from the lock screen when the user
+/// chooses passphrase unlock; today it lets users sanity-check
+/// their passphrase entry on Linux without restructuring boot.
+/// Returns `true` on success, `false` on a wrong passphrase /
+/// no matching wrap, error on storage / crypto failure.
+#[tauri::command]
+fn fido_verify_passphrase(passphrase: String) -> Result<bool, NimbusError> {
+    use nimbus_store::fido::{self, WrapKind};
+    let env = nimbus_store::cache::key::load_envelope()?;
+    for wrap in &env.wraps {
+        if wrap.kind != WrapKind::Passphrase {
+            continue;
+        }
+        let salt = fido::decode_b64(&wrap.salt)?;
+        let aes_key = fido::derive_passphrase_key(&passphrase, &salt)?;
+        if fido::unwrap_master_key(wrap, &aes_key).is_ok() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Mirror of `fido_verify_passphrase` for FIDO PRF wraps.  The
+/// frontend has already run WebAuthn `credentials.get` against
+/// the credential's stored salt and forwards the PRF output
+/// here.  Phase 1B's lock screen will use this; today it lets
+/// you sanity-check that a registered hardware key still works.
+#[tauri::command]
+fn fido_verify_prf(
+    credential_id_b64: String,
+    prf_output_b64: String,
+) -> Result<bool, NimbusError> {
+    use nimbus_store::fido::{self, WrapKind};
+    let env = nimbus_store::cache::key::load_envelope()?;
+    let prf = fido::decode_b64(&prf_output_b64)?;
+    for wrap in &env.wraps {
+        if wrap.kind != WrapKind::FidoPrf {
+            continue;
+        }
+        if wrap.credential_id != credential_id_b64 {
+            continue;
+        }
+        if fido::unwrap_master_key(wrap, &prf).is_ok() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Remove a registered credential.  Refuses to drop the last wrap
@@ -7579,6 +7677,9 @@ fn main() {
             fido_status,
             fido_generate_salt,
             fido_enroll,
+            fido_enroll_passphrase,
+            fido_verify_passphrase,
+            fido_verify_prf,
             fido_remove,
             update_app_settings,
             import_custom_theme,

@@ -87,8 +87,11 @@ use aes_gcm::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use chrono::Utc;
 use getrandom::getrandom;
+use hmac::Hmac;
 use nimbus_core::NimbusError;
+use pbkdf2::pbkdf2;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
 /// Bytes in a master key (AES-256).
 const MASTER_KEY_LEN: usize = 32;
@@ -96,19 +99,55 @@ const MASTER_KEY_LEN: usize = 32;
 const PRF_LEN: usize = 32;
 /// AES-GCM nonce length.
 const NONCE_LEN: usize = 12;
-/// Bytes in a wrap salt — the WebAuthn PRF eval input.
+/// Bytes in a wrap salt — the WebAuthn PRF eval input AND the
+/// PBKDF2 salt for passphrase wraps.  Same value, different
+/// derivation downstream.
 const SALT_LEN: usize = 32;
 
-/// One sealed copy of the master key, bound to a single registered
-/// FIDO credential.
+/// PBKDF2-HMAC-SHA-256 iteration count for passphrase wraps.
+/// OWASP's 2024 floor for SHA-256 is 600 000 — we round up to
+/// match a Bitwarden-class baseline.  At ~1 ms per 100 000 iters
+/// on modern CPUs this is ~7 ms total at unlock, imperceptible.
+pub const PASSPHRASE_PBKDF2_ITERS: u32 = 720_000;
+
+/// What kind of source produced the AES key that sealed a wrap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WrapKind {
+    /// FIDO2 WebAuthn PRF / hmac-secret extension.  The
+    /// `credential_id` field identifies the authenticator and
+    /// the `salt` is fed back to WebAuthn's `prf.eval.first` at
+    /// unlock to reproduce the same 32-byte output.
+    FidoPrf,
+    /// PBKDF2-HMAC-SHA-256(passphrase, salt, iters).  Used for
+    /// the recovery-passphrase fallback (so a lost hardware key
+    /// isn't a permanent lockout) and as a development-only path
+    /// on platforms whose WebAuthn implementation can't reach
+    /// PRF / hmac-secret yet (Linux WebKitGTK < 2.46, …).
+    Passphrase,
+}
+
+/// One sealed copy of the master key.  Bound to a single
+/// authentication "method" — either a registered FIDO credential
+/// (one wrap per authenticator) or a passphrase.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WrappedKey {
-    /// Base64-encoded WebAuthn credential id.
+    /// Which derivation produced the AES key for this wrap.
+    /// `#[serde(default = ...)]` keeps pre-#164-passphrase
+    /// envelopes (which only had FIDO PRF wraps) deserialising
+    /// cleanly as `FidoPrf`.
+    #[serde(default = "default_wrap_kind")]
+    pub kind: WrapKind,
+    /// Base64-encoded WebAuthn credential id (FIDO PRF wraps).
+    /// Empty for passphrase wraps; a synthetic id is stored
+    /// instead so the entry has a stable identity for the UI's
+    /// "remove this method" action.
     pub credential_id: String,
-    /// Base64-encoded random 32-byte salt — the PRF input we
-    /// re-supply at unlock to derive the same secret.
+    /// Base64-encoded random 32-byte salt.  PRF input for FIDO,
+    /// PBKDF2 salt for passphrase.
     pub salt: String,
-    /// User-readable label.  `"YubiKey 5C"`, `"Touch ID — MacBook"`.
+    /// User-readable label.  `"YubiKey 5C"`, `"Touch ID — MacBook"`,
+    /// `"Recovery passphrase"`.
     pub label: String,
     /// Base64-encoded AES-GCM nonce (12 bytes).
     pub nonce: String,
@@ -117,6 +156,10 @@ pub struct WrappedKey {
     /// Unix epoch seconds — purely informational, surfaced in the
     /// Settings list.
     pub created_at: i64,
+}
+
+fn default_wrap_kind() -> WrapKind {
+    WrapKind::FidoPrf
 }
 
 /// The keychain entry's payload.  See the module-level doc for the
@@ -175,8 +218,9 @@ pub fn serialize_envelope(env: &KeychainEnvelope) -> Result<String, NimbusError>
 /// `WrappedKey.salt` and *must* be supplied to WebAuthn at unlock
 /// time as the PRF eval input.
 pub fn wrap_master_key(
+    kind: WrapKind,
     master_key: &[u8],
-    prf_output: &[u8],
+    aes_key: &[u8],
     credential_id: &[u8],
     salt: &[u8],
     label: String,
@@ -187,16 +231,16 @@ pub fn wrap_master_key(
             master_key.len()
         )));
     }
-    if prf_output.len() != PRF_LEN {
+    if aes_key.len() != PRF_LEN {
         return Err(NimbusError::Storage(format!(
-            "wrap_master_key: prf_output must be {PRF_LEN} bytes, got {}",
-            prf_output.len()
+            "wrap_master_key: aes_key must be {PRF_LEN} bytes, got {}",
+            aes_key.len()
         )));
     }
     let mut nonce_bytes = [0u8; NONCE_LEN];
     getrandom(&mut nonce_bytes)
         .map_err(|e| NimbusError::Storage(format!("wrap nonce RNG: {e}")))?;
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(prf_output));
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(aes_key));
     let ct = cipher
         .encrypt(
             Nonce::from_slice(&nonce_bytes),
@@ -207,6 +251,7 @@ pub fn wrap_master_key(
         )
         .map_err(|e| NimbusError::Storage(format!("AES-GCM seal: {e}")))?;
     Ok(WrappedKey {
+        kind,
         credential_id: B64.encode(credential_id),
         salt: B64.encode(salt),
         label,
@@ -214,6 +259,30 @@ pub fn wrap_master_key(
         ciphertext: B64.encode(&ct),
         created_at: Utc::now().timestamp(),
     })
+}
+
+/// Derive a 32-byte AES key from a user passphrase and the
+/// stored salt via PBKDF2-HMAC-SHA-256.  Same input always
+/// produces the same output, so the user can unlock by typing
+/// the passphrase again.
+pub fn derive_passphrase_key(passphrase: &str, salt: &[u8]) -> Result<[u8; PRF_LEN], NimbusError> {
+    if passphrase.is_empty() {
+        return Err(NimbusError::Other("passphrase must not be empty".into()));
+    }
+    let mut out = [0u8; PRF_LEN];
+    pbkdf2::<Hmac<Sha256>>(passphrase.as_bytes(), salt, PASSPHRASE_PBKDF2_ITERS, &mut out)
+        .map_err(|e| NimbusError::Storage(format!("pbkdf2 derive: {e}")))?;
+    Ok(out)
+}
+
+/// Generate a synthetic credential id for a passphrase wrap.
+/// Lets the UI uniquely identify and remove a passphrase entry
+/// the same way it'd identify a FIDO credential.  16 random
+/// bytes — collisions are not a concern.
+pub fn generate_passphrase_id() -> Result<[u8; 16], NimbusError> {
+    let mut buf = [0u8; 16];
+    getrandom(&mut buf).map_err(|e| NimbusError::Storage(format!("synth id RNG: {e}")))?;
+    Ok(buf)
 }
 
 /// Open a single wrap with the FIDO PRF output computed at unlock
@@ -286,14 +355,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wrap_then_unwrap_roundtrips() {
+    fn wrap_then_unwrap_roundtrips_fido() {
         let master = [0xAB_u8; MASTER_KEY_LEN];
         let prf = [0xCD_u8; PRF_LEN];
         let cred = b"fake-credential-id";
         let salt = generate_salt().unwrap();
-        let wrap = wrap_master_key(&master, &prf, cred, &salt, "Test".into()).unwrap();
+        let wrap =
+            wrap_master_key(WrapKind::FidoPrf, &master, &prf, cred, &salt, "Test".into())
+                .unwrap();
         let recovered = unwrap_master_key(&wrap, &prf).unwrap();
         assert_eq!(recovered, master);
+    }
+
+    #[test]
+    fn wrap_then_unwrap_roundtrips_passphrase() {
+        let master = [0x77_u8; MASTER_KEY_LEN];
+        let salt = generate_salt().unwrap();
+        let id = generate_passphrase_id().unwrap();
+        let key = derive_passphrase_key("correct horse battery staple", &salt).unwrap();
+        let wrap =
+            wrap_master_key(WrapKind::Passphrase, &master, &key, &id, &salt, "Recovery".into())
+                .unwrap();
+        let derived =
+            derive_passphrase_key("correct horse battery staple", &salt).unwrap();
+        let recovered = unwrap_master_key(&wrap, &derived).unwrap();
+        assert_eq!(recovered, master);
+    }
+
+    #[test]
+    fn unwrap_with_wrong_passphrase_fails() {
+        let master = [0x01_u8; MASTER_KEY_LEN];
+        let salt = generate_salt().unwrap();
+        let id = generate_passphrase_id().unwrap();
+        let key = derive_passphrase_key("right answer", &salt).unwrap();
+        let wrap =
+            wrap_master_key(WrapKind::Passphrase, &master, &key, &id, &salt, "X".into())
+                .unwrap();
+        let wrong = derive_passphrase_key("wrong answer", &salt).unwrap();
+        assert!(unwrap_master_key(&wrap, &wrong).is_err());
     }
 
     #[test]
@@ -303,7 +402,8 @@ mod tests {
         let wrong_prf = [0x03_u8; PRF_LEN];
         let cred = b"id";
         let salt = generate_salt().unwrap();
-        let wrap = wrap_master_key(&master, &prf, cred, &salt, "X".into()).unwrap();
+        let wrap =
+            wrap_master_key(WrapKind::FidoPrf, &master, &prf, cred, &salt, "X".into()).unwrap();
         assert!(unwrap_master_key(&wrap, &wrong_prf).is_err());
     }
 
