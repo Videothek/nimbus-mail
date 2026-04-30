@@ -689,34 +689,45 @@
             badgeText = ext.toUpperCase().slice(0, 4)
             badgeBg = '#a855f7' // purple
           }
-          // Modernised badge (#158): same document-silhouette
-          // shape FileTypeIcon uses, but rendered with CSS
-          // `clip-path` so it works inside an HTML mail body
-          // (where inline SVG is stripped by most clients).
-          // The clip-path cuts a corner fold out of a filled
-          // coloured rectangle; clients that strip the
-          // property degrade gracefully to a plain rounded
-          // rectangle (still the format colour, still the
-          // white code inside), which was the previous look.
+          // Body badge (#158 v2): minimalist document mark —
+          // a coloured-stroke document body with the format
+          // code in white sitting in its own coloured band at
+          // the bottom.  Built from nested <span>s with
+          // inline-styled backgrounds so it survives every
+          // major MUA's content sanitiser (SVG would get
+          // stripped, clip-path was making the corner fold
+          // collide with the format letters).
           //
-          // Width/height are em-based so the badge scales with
-          // the surrounding line height — looks consistent at
-          // any zoom level.
-          const docPolygon =
-            'polygon(0 0, 70% 0, 100% 28%, 100% 100%, 0 100%)'
-          const badgeStyle =
-            'display:inline-block;width:1.7em;height:2em;margin-right:6px;' +
+          // Outer box: neutral white background + 1.5 px
+          // coloured border + 2 px corner radius.
+          // Bottom band: absolute strip filled with the format
+          // colour, white text inside.
+          // Position is em-based so the badge scales with the
+          // surrounding line height.
+          const badgeOuterStyle =
+            'position:relative;display:inline-block;width:1.5em;height:1.95em;' +
+            'margin-right:6px;vertical-align:-0.45em;' +
+            'background:#ffffff;' +
+            `border:1.5px solid ${badgeBg};` +
+            'border-radius:2px;' +
+            'box-sizing:border-box;'
+          // The corner fold — a tiny CSS triangle in the top-
+          // right corner.  Cheap and survives sanitisers.
+          const badgeFoldStyle =
+            'position:absolute;top:0;right:0;width:0;height:0;' +
+            `border-style:solid;border-width:0 0.45em 0.45em 0;` +
+            // Border-color shorthand: T R B L.  Right edge in
+            // the format colour gives the fold edge; bottom is
+            // the white "underside" of the fold.
+            `border-color:transparent ${badgeBg} transparent transparent;`
+          // The bottom band carrying the format code.
+          const badgeBandStyle =
+            'position:absolute;bottom:0;left:0;right:0;height:0.95em;' +
             `background:${badgeBg};color:#ffffff;` +
-            `clip-path:${docPolygon};-webkit-clip-path:${docPolygon};` +
-            'border-radius:2px;font-size:0.55em;font-weight:800;' +
-            'line-height:2.05em;letter-spacing:0.05em;text-align:center;' +
-            'vertical-align:middle;' +
+            'font-size:0.5em;font-weight:800;letter-spacing:0.06em;' +
+            'line-height:1.7em;text-align:center;' +
             'font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;' +
-            // Inset shadow makes the corner-fold edge read as a
-            // crease in clients that honour clip-path; in those
-            // that don't, it just adds subtle depth to the
-            // fallback rectangle.
-            'box-shadow:inset 0 -1px 0 rgba(0,0,0,0.22);'
+            'text-transform:uppercase;'
           return [
             'a',
             {
@@ -728,13 +739,18 @@
               'data-filename': label,
               style:
                 // Subtle pill carrier — neutral surface so the
-                // coloured badge inside is what the eye lands
-                // on, not a competing background block.
+                // document mark + filename is what the eye
+                // lands on.
                 'display:inline-flex;align-items:center;padding:1px 8px 1px 3px;' +
                 'border-radius:999px;background:rgba(120,120,120,0.10);' +
                 'color:inherit;text-decoration:none;font-weight:500;',
             },
-            ['span', { style: badgeStyle }, badgeText],
+            [
+              'span',
+              { style: badgeOuterStyle, 'aria-hidden': 'true' },
+              ['span', { style: badgeFoldStyle }, ''],
+              ['span', { style: badgeBandStyle }, badgeText],
+            ],
             label,
           ]
         },
