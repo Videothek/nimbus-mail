@@ -1245,6 +1245,7 @@
         oncompose={() => openCompose()}
         onaccountschanged={checkAccounts}
         onmessagemoved={onMessageRemoved}
+        onmovesfailed={() => refreshToken++}
       />
       <!-- Mail-list column: SearchBar on top, then either MailList
            or SearchResults depending on whether the user is
