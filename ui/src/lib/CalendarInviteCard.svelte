@@ -828,7 +828,7 @@
 
   <!-- Time slot.  Front-and-centre so the user can decide
        "does this fit" before clicking anything. -->
-  <div class="text-surface-700 dark:text-surface-300 mb-1 inline-flex items-center gap-1.5">
+  <div class="text-surface-700 dark:text-surface-300 mb-1 flex items-center gap-1.5">
     <Icon name="time" size={14} class="shrink-0" />
     <span class="font-medium">{timeRange}</span>
     {#if durationLabel}
@@ -837,7 +837,7 @@
   </div>
 
   {#if invite.location}
-    <div class="text-surface-700 dark:text-surface-300 mb-1 inline-flex items-center gap-1.5">
+    <div class="text-surface-700 dark:text-surface-300 mb-1 flex items-center gap-1.5">
       <Icon name="location" size={14} class="shrink-0" />
       <span>{invite.location}</span>
     </div>
