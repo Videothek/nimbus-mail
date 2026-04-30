@@ -111,6 +111,16 @@
     draftSource?: { accountId: string; folder: string; uid: number }
   }
 
+  /** Payload handed back to the parent when a background send
+   *  fails — see `onsendfailed` below.  Carries everything the
+   *  parent needs to reopen Compose pre-filled with the draft so
+   *  the user doesn't lose their work (#156). */
+  export interface SendFailurePayload {
+    errorMessage: string
+    draft: ComposeInitial
+    fromAccountId: string
+  }
+
   interface Props {
     /** Every configured mail account. Drives the From: picker; with
         a single account the picker collapses to a static label. */
@@ -121,6 +131,16 @@
     accountId: string
     initial?: ComposeInitial
     onclose: () => void
+    /** Fires when the background send pipeline (#156) hits an IMAP
+     *  error after the modal has already closed.  The parent should
+     *  reopen Compose with `payload.draft` so the user can retry
+     *  without retyping.  Optional — when omitted, send failures
+     *  after close are reported via console.warn only. */
+    onsendfailed?: (payload: SendFailurePayload) => void
+    /** Pre-populates the in-modal error banner — used by App.svelte
+     *  when re-opening Compose after a background send failure so
+     *  the reason the modal came back is visible right away. */
+    initialError?: string
     /** True when Compose is the root of a popped-out standalone
         window (#110).  Hides the "Pop out" button (would just spawn
         another duplicate) and removes the modal overlay so the
@@ -132,6 +152,8 @@
     accountId,
     initial,
     onclose,
+    onsendfailed,
+    initialError = '',
     inStandaloneWindow = false,
   }: Props = $props()
 
@@ -446,7 +468,11 @@
   }
 
   let sending = $state(false)
-  let error = $state('')
+  // `initialError` seeds the banner when Compose is re-opened
+  // after a background send failure (#156).  Cleared by the next
+  // `send()` validation pass — the user retrying is the implicit
+  // dismissal.
+  let error = $state(initialError)
 
   // ── Talk room creation from Compose ────────────────────────
   // The "Add Event" flow used to live here too — it's been removed
@@ -949,159 +975,194 @@
       error = 'At least one recipient is required.'
       return
     }
-    sending = true
+
+    // #156: close the modal immediately and run the IMAP
+    // submission in the background.  Big attachments take 10+
+    // seconds; keeping the user staring at a "Sending…" button
+    // for that whole window is exactly what the issue asks us to
+    // stop.  Snapshot every value the post-validation pipeline
+    // reads from component scope BEFORE `onclose()` so the work
+    // survives the unmount cleanly.
+    const snap = {
+      fromAccountId,
+      fromHeader,
+      to,
+      cc,
+      bcc,
+      subject,
+      body,
+      bodyHtml,
+      toList,
+      ccList: splitAddrs(cc),
+      bccList: splitAddrs(bcc),
+      attachments: [...attachments],
+      talkRoomToken,
+      talkRoomIsPublic,
+      talkRoomParticipantsCopy: new Set(talkRoomParticipants),
+      ncAccountId,
+      accountsAtSend: accounts,
+      initialAtSend: initial,
+      draftSource: initial?.draftSource ?? null,
+    }
+
+    // Disarm the delete-on-discard Talk-room cleanup *now* — once
+    // the modal closes, `cancel()` won't run again, but neither
+    // will any future state mutation here propagate.  Clearing
+    // these in component scope keeps any stray re-render quiet.
+    talkRoomToken = null
+    pendingTalkParticipants = []
+
+    onclose()
+
+    void runSendPipeline(snap)
+  }
+
+  /** Background continuation of `send()` — runs after the modal
+   *  has closed.  On any IMAP error fires `onsendfailed` with a
+   *  draft-shaped snapshot so the parent can re-open Compose
+   *  pre-filled with everything the user typed.  Talk-room
+   *  invites and draft expunge are best-effort; their failures
+   *  go to console.warn since the modal that used to host the
+   *  in-line warning is gone. */
+  async function runSendPipeline(snap: {
+    fromAccountId: string
+    fromHeader: string
+    to: string
+    cc: string
+    bcc: string
+    subject: string
+    body: string
+    bodyHtml: string
+    toList: string[]
+    ccList: string[]
+    bccList: string[]
+    attachments: Attachment[]
+    talkRoomToken: string | null
+    talkRoomIsPublic: boolean
+    talkRoomParticipantsCopy: Set<string>
+    ncAccountId: string | null
+    accountsAtSend: MailAccount[]
+    initialAtSend: ComposeInitial | undefined
+    draftSource: { accountId: string; folder: string; uid: number } | null
+  }): Promise<void> {
     try {
       await invoke('send_email', {
-        accountId: fromAccountId,
+        accountId: snap.fromAccountId,
         email: {
-          from: fromHeader,
-          to: toList,
-          cc: splitAddrs(cc),
-          bcc: splitAddrs(bcc),
+          from: snap.fromHeader,
+          to: snap.toList,
+          cc: snap.ccList,
+          bcc: snap.bccList,
           reply_to: null,
-          subject,
-          body_text: htmlToText(bodyHtml),
-          body_html: bodyHtml || null,
-          attachments,
+          subject: snap.subject,
+          body_text: htmlToText(snap.bodyHtml),
+          body_html: snap.bodyHtml || null,
+          attachments: snap.attachments,
         },
       })
-      // Flush deferred Talk-room invites (#86).  The room was minted
-      // empty at compose-time; here we invite everyone who's
-      // *currently* on To / Cc — derived from the live recipient
-      // fields rather than a modal-time snapshot, because the user
-      // can (a) leave the modal's participant box blank and add
-      // recipients afterward, or (b) edit the recipient list between
-      // creating the room and clicking Send.
-      //
-      // **Bcc is deliberately excluded.**  A blind-carbon recipient
-      // exists precisely so other recipients don't see them; routing
-      // their address into a shared Talk room would unmask them to
-      // every other invitee, which would be a privacy regression.
-      // The Bcc'd person still gets the email with the join URL in
-      // the body, so they can join the room as a visitor if they
-      // want to — they just don't get explicitly invited.
-      //
-      // Failures here are non-fatal — invited recipients have the
-      // link in the body and can still join — but we surface the
-      // error so the user knows to add invites manually.  Clear
-      // `talkRoomToken` unconditionally so a follow-up discard
-      // doesn't try to delete a now-active room.
-      if (talkRoomToken) {
-        const ncId = ncAccountId
-        const room = talkRoomToken
-        const seen = new Set<string>()
-        const participantsToAdd: (
-          | { kind: 'email'; value: string }
-          | { kind: 'user'; value: string }
-        )[] = []
-        // #124: resolve each recipient against the connected NC
-        // server so internal users land in the room as themselves
-        // (`users` source) instead of as email-guests.  Tracks
-        // whether every recipient turned out internal so we can
-        // downgrade the room to private below.
-        let allInternal = true
-        // The sender (Talk-room creator) is implicitly the
-        // room's owner — NC adds them automatically.  Skip any
-        // recipient whose address resolves to *one of the user's
-        // own identities* so the organiser doesn't land in the
-        // room twice (once as the auto-owner, once as a guest).
-        // Sources we consider as "the user":
-        //   - every configured mail-account address (covers the
-        //     "I sent from a different alias than my NC profile"
-        //     case),
-        //   - the NC profile email for the room's owning account
-        //     (Sabre's principal CUA — the canonical "who am I"
-        //     on the server).
-        // Lower-cased and deduped so the lookup is a single Set
-        // hit per recipient.
-        const senderIdentities = new Set<string>()
-        for (const a of accounts) {
-          if (a.email) senderIdentities.add(a.email.toLowerCase())
+    } catch (e: any) {
+      const msg = formatError(e) || 'Failed to send'
+      console.warn('send_email failed (modal already closed)', e)
+      onsendfailed?.({
+        errorMessage: msg,
+        draft: {
+          to: snap.to,
+          cc: snap.cc,
+          bcc: snap.bcc,
+          subject: snap.subject,
+          body: snap.body,
+          attachments: snap.attachments,
+          in_reply_to: snap.initialAtSend?.in_reply_to ?? null,
+          nextcloudLinks: snap.initialAtSend?.nextcloudLinks,
+          talkLink: snap.initialAtSend?.talkLink,
+          draftSource: snap.draftSource ?? undefined,
+        },
+        fromAccountId: snap.fromAccountId,
+      })
+      return
+    }
+
+    // Flush deferred Talk-room invites (#86).  Best-effort: a
+    // failure here doesn't surface anywhere user-visible now
+    // that the modal is gone, but the participants still got
+    // the join URL in the body so the room itself remains
+    // usable.  See the original send() comment block for the
+    // full rationale on Bcc exclusion etc.
+    if (snap.talkRoomToken && snap.ncAccountId) {
+      const ncId = snap.ncAccountId
+      const room = snap.talkRoomToken
+      const seen = new Set<string>()
+      const participantsToAdd: (
+        | { kind: 'email'; value: string }
+        | { kind: 'user'; value: string }
+      )[] = []
+      let allInternal = true
+      const senderIdentities = new Set<string>()
+      for (const a of snap.accountsAtSend) {
+        if (a.email) senderIdentities.add(a.email.toLowerCase())
+      }
+      try {
+        const profileEmail = await invoke<string | null>(
+          'get_nextcloud_user_email',
+          { ncId },
+        )
+        if (profileEmail) senderIdentities.add(profileEmail.toLowerCase())
+      } catch (e) {
+        console.warn('get_nextcloud_user_email failed', e)
+      }
+      for (const raw of [...snap.toList, ...snap.ccList]) {
+        const addr = bareAddr(raw)
+        if (!addr) continue
+        const key = addr.toLowerCase()
+        if (seen.has(key) || snap.talkRoomParticipantsCopy.has(key)) continue
+        if (senderIdentities.has(key)) continue
+        seen.add(key)
+        const match = await resolveInternal(ncId, addr)
+        if (match) {
+          participantsToAdd.push({ kind: 'user', value: match.user_id })
+          continue
         }
-        if (ncAccountId) {
+        allInternal = false
+        participantsToAdd.push({ kind: 'email', value: addr })
+      }
+      if (participantsToAdd.length > 0) {
+        try {
+          await invoke('add_talk_participants', {
+            ncId,
+            roomToken: room,
+            participants: participantsToAdd,
+          })
+        } catch (e) {
+          console.warn('add_talk_participants after send failed', e)
+        }
+        if (allInternal && snap.talkRoomIsPublic) {
           try {
-            const profileEmail = await invoke<string | null>(
-              'get_nextcloud_user_email',
-              { ncId: ncAccountId },
-            )
-            if (profileEmail) senderIdentities.add(profileEmail.toLowerCase())
-          } catch (e) {
-            // Soft-fail — we still have the mail-account
-            // identities to filter with.
-            console.warn('get_nextcloud_user_email failed', e)
-          }
-        }
-        for (const raw of [...splitAddrs(to), ...splitAddrs(cc)]) {
-          const addr = bareAddr(raw)
-          if (!addr) continue
-          const key = addr.toLowerCase()
-          if (seen.has(key) || talkRoomParticipants.has(key)) continue
-          if (senderIdentities.has(key)) continue
-          seen.add(key)
-          if (ncId) {
-            const match = await resolveInternal(ncId, addr)
-            if (match) {
-              participantsToAdd.push({ kind: 'user', value: match.user_id })
-              continue
-            }
-            allInternal = false
-          }
-          participantsToAdd.push({ kind: 'email', value: addr })
-        }
-        if (ncId && participantsToAdd.length > 0) {
-          try {
-            await invoke('add_talk_participants', {
+            await invoke('set_talk_room_public', {
               ncId,
               roomToken: room,
-              participants: participantsToAdd,
+              public: false,
             })
-            for (const p of participantsToAdd) {
-              talkRoomParticipants.add(p.value.toLowerCase())
-            }
           } catch (e) {
-            console.warn('add_talk_participants after send failed', e)
-            error = `Sent, but Talk invites couldn't be delivered: ${formatError(e)}`
-          }
-          // Downgrade to private when every invited recipient is
-          // internal — the externals-only public-link affordance is
-          // moot at that point and matching EventEditor's policy
-          // keeps the two surfaces' Talk-room behaviour consistent.
-          if (allInternal && talkRoomIsPublic) {
-            try {
-              await invoke('set_talk_room_public', {
-                ncId,
-                roomToken: room,
-                public: false,
-              })
-              talkRoomIsPublic = false
-            } catch (e) {
-              console.warn('set_talk_room_public(false) failed', e)
-            }
+            console.warn('set_talk_room_public(false) failed', e)
           }
         }
       }
-      pendingTalkParticipants = []
-      // Mail sent successfully — the room is now "live" so cancel /
-      // close should NOT delete it.  Drop the token to disarm the
-      // delete-on-discard path.
-      talkRoomToken = null
+    }
 
-      // Clean up the server-side draft we opened from (if any) so
-      // the user doesn't end up with a "sent" copy in Sent AND the
-      // unfinished draft still sitting in Drafts. A failure here is
-      // non-fatal — the mail already went out — but we still want
-      // the user to notice so they can manually discard the stale
-      // draft rather than find it sitting in Drafts days later.
-      const expungeErr = await expungeDraftSource()
-      if (expungeErr) {
-        error = `Sent, but removing the original draft failed: ${expungeErr}`
-        return
+    // Expunge the original Drafts copy so the mailbox holds
+    // exactly one version of the message.  Best-effort post-
+    // close: a failure leaves a stale draft which the user can
+    // discard manually, but it doesn't undo the send.
+    if (snap.draftSource) {
+      try {
+        await invoke('delete_message', {
+          accountId: snap.draftSource.accountId,
+          folder: snap.draftSource.folder,
+          uid: snap.draftSource.uid,
+        })
+      } catch (e) {
+        console.warn('expunge draft after background send failed', e)
       }
-      onclose()
-    } catch (e: any) {
-      error = formatError(e) || 'Failed to send'
-    } finally {
-      sending = false
     }
   }
 
