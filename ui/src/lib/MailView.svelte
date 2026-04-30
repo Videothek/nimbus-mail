@@ -105,6 +105,12 @@
         cc/bcc/subject/body) — used when the user clicks a
         `mailto:` link inside a rendered email. */
     onmailto?: (init: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string }) => void
+    /** Bindable refresh hint — see the equivalent prop on
+     *  `MailList`.  The network re-fetch after the cache paint
+     *  flips this true; `App.svelte` aggregates it with
+     *  MailList's flag and shows a calm spinner on the
+     *  IconRail's active-account avatar (#161). */
+    refreshing?: boolean
   }
   let {
     accountId,
@@ -123,11 +129,11 @@
     inStandaloneWindow = false,
     forceWhiteBackground = true,
     onmailto,
+    refreshing = $bindable(false),
   }: Props = $props()
 
   let email = $state<Email | null>(null)
   let loading = $state(false)
-  let refreshing = $state(false)
   let error = $state('')
 
   /** Pre-fetch persisted thumbnails for one message and seed
@@ -1151,9 +1157,6 @@
       <div class="flex items-start justify-between mb-2 gap-4">
         <h2 class="text-xl font-semibold">{email.subject || '(no subject)'}</h2>
         <div class="flex items-center gap-3 shrink-0">
-          {#if refreshing}
-            <span class="text-xs text-surface-500">Refreshing…</span>
-          {/if}
           <span class="text-sm text-surface-500">{formatFullDate(email.date)}</span>
         </div>
       </div>

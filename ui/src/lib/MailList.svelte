@@ -67,6 +67,12 @@
         envelope and run the auto-advance flow when the moved row
         was the currently-open one. */
     onmessagemoved?: (removedUid: number) => void
+    /** Bindable hint to the parent that the network refresh after
+     *  the cache-paint is still in flight.  `App.svelte` ORs this
+     *  with MailView's flag and surfaces it as a calm spinner on
+     *  the active-account avatar in the IconRail (#161) — the
+     *  inline "Refreshing…" strip used to live here. */
+    refreshing?: boolean
   }
   let {
     accounts = [],
@@ -78,6 +84,7 @@
     onselect,
     envelopes = $bindable([]),
     onmessagemoved,
+    refreshing = $bindable(false),
   }: Props = $props()
 
   /** Short label for the per-row account chip in unified mode. We
@@ -99,7 +106,6 @@
   // after the cache has rendered, so the UI can show a subtle hint
   // without blanking the list.
   let loading = $state(true)
-  let refreshing = $state(false)
   let error = $state('')
 
   // ── Multi-select (#89, follow-up) ─────────────────────────────
@@ -426,11 +432,6 @@
 </script>
 
 <div class="flex-1 flex flex-col min-w-0">
-  {#if refreshing}
-    <div class="px-3 py-1 text-[11px] text-surface-500 border-b border-surface-100 dark:border-surface-800">
-      Refreshing…
-    </div>
-  {/if}
 
   <!-- Email list -->
   <div class="flex-1 overflow-y-auto">

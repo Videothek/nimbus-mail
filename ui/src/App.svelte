@@ -82,6 +82,10 @@
         special-use / keyword rules in `folderIcon`. Optional for
         the same back-compat reason as `folder_icons`. */
     folder_icon_overrides?: Record<string, string>
+    /** Display order in the IconRail; lower = top.  Lets us pick
+     *  the visually-first account on launch instead of the one
+     *  that happens to be first in the DB's insertion order. */
+    sort_order?: number
   }
   let accounts = $state<Account[]>([])
   let activeAccountId = $state<string | null>(null)
@@ -161,6 +165,15 @@
     account_id: string
   }
   let mailListEnvelopes = $state<MailListEnvelope[]>([])
+
+  // Network-refresh state for the IconRail's active-account
+  // avatar spinner (#161).  Each child component (MailList,
+  // MailView) flips its own flag while a post-cache fetch is
+  // in flight; we OR them so a refresh in either pane lights
+  // the same indicator.
+  let mailListRefreshing = $state(false)
+  let mailViewRefreshing = $state(false)
+  const mailRefreshing = $derived(mailListRefreshing || mailViewRefreshing)
 
   // ── Search state ────────────────────────────────────────────
   // `searchQuery` drives the mail-list column: non-empty query OR
@@ -531,11 +544,19 @@
       accounts = list
       if (list.length > 0) {
         // Keep the current selection if it still exists (e.g. after
-        // adding another account); otherwise fall back to the first.
-        // This also handles the "active account was just removed"
-        // case from AccountSettings.
+        // adding another account); otherwise fall back to the
+        // visually-first account.  `list` is in insertion order; the
+        // IconRail and sidebar render by `sort_order`, so we sort
+        // here to match — otherwise the auto-picked account isn't
+        // the one the user sees at the top of the rail (#161).
         if (!activeAccountId || !list.some((a) => a.id === activeAccountId)) {
-          activeAccountId = list[0].id
+          const sorted = [...list].sort((a, b) => {
+            const ao = a.sort_order ?? 0
+            const bo = b.sort_order ?? 0
+            if (ao !== bo) return ao - bo
+            return a.id.localeCompare(b.id)
+          })
+          activeAccountId = sorted[0].id
         }
         currentView = 'inbox'
       } else {
@@ -575,8 +596,16 @@
    * id automatically turns unified mode off.
    */
   function selectAccount(id: string) {
+    // Picking an account from the IconRail always means "show me
+    // mail for this account" — even from calendar / contacts /
+    // settings, where the rail is still visible.  Flip the view
+    // before any of the early-return paths so a click from
+    // another view always lands you in the inbox (#161).
+    const wasOnMail = currentView === 'inbox'
+    if (currentView !== 'inbox') currentView = 'inbox'
+
     if (id === '__all__') {
-      if (unifiedMode) return
+      if (unifiedMode && wasOnMail) return
       unifiedMode = true
       selectedFolder = 'INBOX'
       selectedUid = null
@@ -587,7 +616,7 @@
       refreshToken++
       return
     }
-    if (!unifiedMode && id === activeAccountId) return
+    if (!unifiedMode && id === activeAccountId && wasOnMail) return
     unifiedMode = false
     activeAccountId = id
     selectedFolder = 'INBOX'
@@ -1096,6 +1125,7 @@
       accountId={activeAccountId}
       unified={unifiedMode}
       currentView={currentView}
+      mailRefreshing={mailRefreshing}
       onselectaccount={selectAccount}
       onselectview={onSelectView}
     />
@@ -1180,6 +1210,7 @@
               refreshToken={refreshToken}
               onselect={selectMessage}
               bind:envelopes={mailListEnvelopes}
+              bind:refreshing={mailListRefreshing}
               onmessagemoved={onMessageRemoved}
             />
           {/if}
@@ -1201,6 +1232,7 @@
         oneditdraft={onEditDraft}
         onmessageremoved={onMessageRemoved}
         onmailto={(init) => openCompose(init)}
+        bind:refreshing={mailViewRefreshing}
       />
     {/if}
 
