@@ -361,14 +361,14 @@
         <p class="text-xs text-red-500 mb-3 wrap-break-word">{error}</p>
       {/if}
 
-      <div class="flex flex-wrap justify-end gap-2">
+      <div class="flex justify-end gap-2">
         <button
-          class="btn preset-outlined-surface-500"
+          class="btn preset-outlined-surface-500 shrink-0"
           disabled={sharing}
           onclick={() => (sharePrompt = null)}
         >Cancel</button>
         <button
-          class="btn preset-filled-primary-500"
+          class="btn preset-filled-primary-500 shrink-0 whitespace-nowrap"
           disabled={sharing}
           onclick={() => void commitShare()}
         >
