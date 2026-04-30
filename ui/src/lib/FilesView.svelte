@@ -61,7 +61,31 @@
   // Same password-prompt shape as NextcloudFilePicker — see commit
   // notes there. Snapshot the selection at click time so toggling
   // the file tree behind the modal can't change what gets shared.
-  let sharePrompt = $state<{ paths: string[]; password: string } | null>(null)
+  // `permissions` is the OCS bitfield value; `hasFolders` drives
+  // the dropdown's folder-only options.
+  let sharePrompt = $state<{
+    paths: string[]
+    password: string
+    permissions: number
+    hasFolders: boolean
+  } | null>(null)
+
+  /** Permission combinations Nextcloud's own share UI exposes.
+   *  Same shape as NextcloudFilePicker — kept in lockstep so the
+   *  two surfaces' Share dialogs offer identical choices. */
+  const PERMISSION_OPTIONS = [
+    { value: 1, label: 'View only', hint: 'Recipient can read / download.', folderOnly: false },
+    { value: 3, label: 'View and edit', hint: 'Recipient can edit the file in Nextcloud.', folderOnly: false },
+    { value: 15, label: 'View, edit, upload, delete', hint: 'Folder share with full read-write — recipient can drop files in and modify existing ones.', folderOnly: true },
+    { value: 4, label: 'File drop (upload only)', hint: 'Folder share where recipients can upload but not see the contents.', folderOnly: true },
+  ] as const
+
+  function visiblePermissionOptions(hasFolders: boolean) {
+    return PERMISSION_OPTIONS.filter((o) => !o.folderOnly || hasFolders)
+  }
+  function permHint(value: number): string {
+    return PERMISSION_OPTIONS.find((o) => o.value === value)?.hint ?? ''
+  }
 
   let selectedFileCount = $derived.by(() => {
     let n = 0
@@ -143,17 +167,23 @@
       share button inside the picker is used. */
   function sendAsLink() {
     if (selected.size === 0) return
-    sharePrompt = { paths: Array.from(selected), password: '' }
+    const hasFolders = entries.some((e) => e.is_dir && selected.has(e.path)) || selectedFolderCount > 0
+    sharePrompt = {
+      paths: Array.from(selected),
+      password: '',
+      permissions: 1,
+      hasFolders,
+    }
     error = ''
   }
 
-  /** Mint the share links with the password the user picked
-      (empty = unprotected, omitted from the OCS form on the Rust
-      side) and hand them off to Compose. Same error shape as the
-      previous one-click flow. */
+  /** Mint the share links with the password + permissions the
+      user picked (empty password = unprotected, omitted from the
+      OCS form on the Rust side) and hand them off to Compose.
+      Same error shape as the previous one-click flow. */
   async function commitShare() {
     if (!sharePrompt) return
-    const { paths, password } = sharePrompt
+    const { paths, password, permissions } = sharePrompt
     sharing = true
     error = ''
     try {
@@ -164,6 +194,7 @@
             ncId: accountId,
             path: p,
             password: pw,
+            permissions,
           })
           return { filename: basename(p), url }
         }),
@@ -357,6 +388,25 @@
         }}
       />
 
+      <!-- Permissions dropdown — mirrors the NextcloudFilePicker
+           share-prompt so both surfaces' Share dialogs offer the
+           same set of choices.  Folder-only options are filtered
+           out when the selection is purely files. -->
+      <label class="block text-xs text-surface-500 mb-1" for="files-share-perms">Permissions</label>
+      <select
+        id="files-share-perms"
+        class="input w-full text-sm px-2 py-1.5 rounded-md mb-1"
+        bind:value={sharePrompt.permissions}
+        disabled={sharing}
+      >
+        {#each visiblePermissionOptions(sharePrompt.hasFolders) as opt}
+          <option value={opt.value}>{opt.label}</option>
+        {/each}
+      </select>
+      <p class="text-[11px] text-surface-500 mb-3">
+        {permHint(sharePrompt.permissions)}
+      </p>
+
       {#if error}
         <p class="text-xs text-red-500 mb-3 wrap-break-word">{error}</p>
       {/if}
@@ -371,11 +421,7 @@
           class="btn preset-filled-primary-500 shrink-0 whitespace-nowrap"
           disabled={sharing}
           onclick={() => void commitShare()}
-        >
-          {#if sharing}Sharing…
-          {:else if sharePrompt.password.trim()}Create with password
-          {:else}Share without password{/if}
-        </button>
+        >{#if sharing}Sharing…{:else}Share{/if}</button>
       </div>
     </div>
   </div>
