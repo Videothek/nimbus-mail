@@ -181,32 +181,53 @@
 </script>
 
 <section class="space-y-6">
-  <header class="flex items-start justify-between gap-4">
-    <div>
-      <h2 class="text-xl font-semibold">Security</h2>
-      <p class="text-sm text-surface-500 mt-1 max-w-xl">
-        Hardware-backed authentication for the local mail cache. Register a
-        hardware key (YubiKey, Apple Touch ID, Windows Hello, …) to seal the
-        cache's encryption key behind a tap or biometric.
-      </p>
-    </div>
-    <!-- Master toggle.  When off, the sub-sections grey out and
-         their controls reject input — clear visual signal that
-         the feature is opt-in. -->
-    <label class="flex items-center gap-2 shrink-0 cursor-pointer">
-      <span class="text-sm font-medium">Key Encryption</span>
-      <input
-        type="checkbox"
-        class="toggle"
-        checked={keyEncryptionEnabled}
-        onchange={(e) => setKeyEncryption((e.currentTarget as HTMLInputElement).checked)}
-      />
-    </label>
+  <header>
+    <h2 class="text-xl font-semibold">Security</h2>
+    <p class="text-sm text-surface-500 mt-1 max-w-xl">
+      Hardware-backed authentication for the local mail cache. Register a
+      hardware key (YubiKey, Apple Touch ID, Windows Hello, …) to seal the
+      cache's encryption key behind a tap or biometric.
+    </p>
   </header>
 
   {#if loading}
     <p class="text-sm text-surface-500">Loading…</p>
   {:else}
+    <!-- Master toggle.  Sits above the registration sections,
+         left-aligned, rendered as a true iOS-style switch
+         (track + sliding thumb) rather than a native checkbox.
+         When off, every section below greys out and stops
+         accepting input — clear visual signal that the feature
+         is opt-in. -->
+    <div class="flex items-center gap-3">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={keyEncryptionEnabled}
+        aria-label="Enable key encryption"
+        onclick={() => setKeyEncryption(!keyEncryptionEnabled)}
+        class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-150
+               focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2
+               focus:ring-offset-surface-50 dark:focus:ring-offset-surface-900
+               {keyEncryptionEnabled
+                 ? 'bg-primary-500'
+                 : 'bg-surface-300 dark:bg-surface-600'}"
+      >
+        <span
+          class="inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform duration-150
+                 {keyEncryptionEnabled ? 'translate-x-5' : 'translate-x-0.5'}"
+        ></span>
+      </button>
+      <div>
+        <p class="font-medium leading-tight">Key Encryption</p>
+        <p class="text-xs text-surface-500 leading-tight">
+          {keyEncryptionEnabled
+            ? 'On — register methods below'
+            : 'Off — the cache uses the plain key from the OS keychain'}
+        </p>
+      </div>
+    </div>
+
     <div
       class="space-y-4 transition-opacity {keyEncryptionEnabled
         ? ''
