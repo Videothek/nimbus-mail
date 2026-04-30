@@ -198,6 +198,7 @@
         bytes: a.data,
         contentType: a.content_type,
         filename: a.filename,
+        cacheKey: a.content_id,
       })
     }
   })
@@ -921,12 +922,17 @@
     attachments = [...attachments, ...picked]
     // Pre-warm the thumbnail cache off the critical path so the
     // editor's `/` picker opens to fully-rendered tiles instead
-    // of icons that progressively swap in.
+    // of icons that progressively swap in.  Keyed by the stable
+    // content_id string so the picker's `thumbUrlSync` lookup
+    // hits regardless of Svelte's $state proxy wrapping the
+    // bytes array (which would change object identity and miss
+    // a WeakMap-by-ref lookup).
     for (const a of picked) {
       prewarmAttachmentThumb({
         bytes: a.data,
         contentType: a.content_type,
         filename: a.filename,
+        cacheKey: a.content_id,
       })
     }
     input.value = ''
@@ -1324,6 +1330,7 @@
                 bytes={att.data}
                 contentType={att.content_type}
                 filename={att.filename}
+                cacheKey={att.content_id}
                 class="w-7 h-7"
               />
               <span>{att.filename}</span>
@@ -1436,6 +1443,7 @@
           bytes: a.data,
           contentType: a.content_type,
           filename: a.filename,
+          cacheKey: a.content_id,
         })
       }
     }}

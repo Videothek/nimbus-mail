@@ -1918,6 +1918,11 @@
     {:else}
       {#each attachmentPicker.items as a, i (a.content_id)}
         {@const thumb = thumbUrlSync({
+          // Key by content_id (stable string) — not by the
+          // bytes ref, which gets wrapped in a $state proxy
+          // by the time it reaches us and would miss the
+          // WeakMap-by-ref cache prewarm() populated.
+          cacheKey: a.content_id,
           bytes: a.data ?? null,
           contentType: a.content_type ?? null,
           filename: a.filename,
