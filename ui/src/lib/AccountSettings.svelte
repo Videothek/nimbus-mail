@@ -11,6 +11,7 @@
   import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
   import { enable as autostartEnable, disable as autostartDisable, isEnabled as autostartIsEnabled } from '@tauri-apps/plugin-autostart'
   import NextcloudSettings from './NextcloudSettings.svelte'
+  import SecuritySettings from './SecuritySettings.svelte'
   import EmojiPicker from './EmojiPicker.svelte'
   import {
     STOCK_THEMES,
@@ -80,7 +81,7 @@
   // categories users actually look for.  The nav lives in a
   // left column and `activeCategory` gates which section block
   // renders so each panel stays focused.
-  type SettingsCategory = 'general' | 'design' | 'mail' | 'calendar' | 'nextcloud'
+  type SettingsCategory = 'general' | 'design' | 'mail' | 'calendar' | 'nextcloud' | 'security'
   let activeCategory = $state<SettingsCategory>('general')
   interface CategoryEntry {
     id: SettingsCategory
@@ -93,6 +94,7 @@
     { id: 'mail', label: 'E-Mail', icon: '📧' },
     { id: 'calendar', label: 'Calendar', icon: '📅' },
     { id: 'nextcloud', label: 'Nextcloud', icon: '☁️' },
+    { id: 'security', label: 'Security', icon: '🔒' },
   ]
 
   // ── State ───────────────────────────────────────────────────
@@ -1252,6 +1254,10 @@
 
     {#if activeCategory === 'nextcloud'}
     <NextcloudSettings />
+    {/if}
+
+    {#if activeCategory === 'security'}
+    <SecuritySettings />
     {/if}
     </div>
   </div>

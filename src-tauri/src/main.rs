@@ -6882,6 +6882,109 @@ fn save_font_cache_file(file: &FontCacheFile) {
     }
 }
 
+// ── FIDO unlock (#164, Phase 1A) ──────────────────────────────
+//
+// These commands manage the wraps inside the keychain envelope.
+// They don't yet replace the plain-mode startup path — registering
+// keys is observable via the Settings UI, and the unlock-at-boot
+// flow lands as a separate phase once the wrap/unwrap loop is
+// hardware-verified.
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FidoCredentialView {
+    credential_id: String,
+    label: String,
+    salt: String,
+    created_at: i64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FidoStatusView {
+    /// Always Some in plain / hybrid mode, None once the keychain
+    /// is in FIDO-only mode (Phase 1B+).
+    has_plain_key: bool,
+    /// How many credentials the user has registered.
+    credentials: Vec<FidoCredentialView>,
+}
+
+/// Snapshot of the keychain envelope.  Used by Settings to render
+/// the "Hardware authentication" panel and (later) by the boot
+/// path to decide whether to require an unlock before opening the
+/// cache.
+#[tauri::command]
+fn fido_status() -> Result<FidoStatusView, NimbusError> {
+    let env = nimbus_store::cache::key::load_envelope()?;
+    Ok(FidoStatusView {
+        has_plain_key: env.plain_key.is_some(),
+        credentials: env
+            .wraps
+            .into_iter()
+            .map(|w| FidoCredentialView {
+                credential_id: w.credential_id,
+                label: w.label,
+                salt: w.salt,
+                created_at: w.created_at,
+            })
+            .collect(),
+    })
+}
+
+/// Generate a fresh PRF salt for a new enrollment.  The frontend
+/// supplies it as the `prf.eval.first` input to `navigator.
+/// credentials.create` so the authenticator returns the matching
+/// PRF output.
+#[tauri::command]
+fn fido_generate_salt() -> Result<String, NimbusError> {
+    let salt = nimbus_store::fido::generate_salt()?;
+    Ok(nimbus_store::fido::encode_b64(&salt))
+}
+
+/// Wrap the current master key under a freshly-registered FIDO
+/// credential's PRF output.  Frontend has already called
+/// WebAuthn `credentials.create` with the salt from
+/// `fido_generate_salt`, received the credential id and the PRF
+/// bytes back, and forwards them here for storage.
+#[tauri::command]
+fn fido_enroll(
+    credential_id_b64: String,
+    salt_b64: String,
+    prf_output_b64: String,
+    label: String,
+) -> Result<(), NimbusError> {
+    use nimbus_store::fido;
+    let env = nimbus_store::cache::key::load_envelope()?;
+    let plain_hex = env.plain_key.as_deref().ok_or_else(|| {
+        NimbusError::Auth(
+            "Cannot enroll a credential while the database is FIDO-only (use unlock first)".into(),
+        )
+    })?;
+    let master_key = hex::decode(plain_hex)
+        .map_err(|e| NimbusError::Storage(format!("master key hex decode: {e}")))?;
+    let credential_id = fido::decode_b64(&credential_id_b64)?;
+    let salt = fido::decode_b64(&salt_b64)?;
+    let prf_output = fido::decode_b64(&prf_output_b64)?;
+    let wrap = fido::wrap_master_key(&master_key, &prf_output, &credential_id, &salt, label)?;
+    nimbus_store::cache::key::add_wrap(wrap)?;
+    Ok(())
+}
+
+/// Remove a registered credential.  Refuses to drop the last wrap
+/// when the keychain is in FIDO-only mode (would orphan the
+/// encrypted DB).
+#[tauri::command]
+fn fido_remove(credential_id_b64: String) -> Result<(), NimbusError> {
+    let env = nimbus_store::cache::key::load_envelope()?;
+    if env.plain_key.is_none() && env.wraps.len() <= 1 {
+        return Err(NimbusError::Other(
+            "Cannot remove the last hardware key while FIDO-only mode is active".into(),
+        ));
+    }
+    nimbus_store::cache::key::remove_wrap(&credential_id_b64)?;
+    Ok(())
+}
+
 /// Return the cached font list to the frontend.  Reads from
 /// the shared `SystemFontsCache` populated at startup; if the
 /// cache is somehow empty (startup warmer failed or hasn't run
@@ -7473,6 +7576,10 @@ fn main() {
             // Issue #16: tray + notifications + preferences
             get_app_settings,
             list_system_fonts,
+            fido_status,
+            fido_generate_salt,
+            fido_enroll,
+            fido_remove,
             update_app_settings,
             import_custom_theme,
             remove_custom_theme,
