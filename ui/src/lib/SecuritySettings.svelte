@@ -65,13 +65,27 @@
   const PASSPHRASE_LABEL = 'Recovery passphrase'
   let passphraseValue = $state('')
   let passphraseConfirm = $state('')
-  /** Master "Key Encryption" toggle.  Gates whether the
-   *  enrollment forms below are interactive — the rest of the
-   *  panel greys out when this is off so the section reads as
-   *  "feature opt-in".  Persisted in localStorage; flipping it
-   *  doesn't yet flip the backend into FIDO-only mode (that's
-   *  Phase 1B), but it scopes the UI so users who don't want
-   *  the feature don't accidentally enroll a credential. */
+  /** Master "Key Encryption" toggle.  Drives both the
+   *  registration UI gate AND the backend FIDO-only-mode
+   *  switch:
+   *
+   *  - User flips ON: registration UI becomes interactive.
+   *    As soon as the registered methods cover a recovery
+   *    path (≥ 1 passphrase or ≥ 2 hardware keys), the
+   *    backend automatically drops the plain master key from
+   *    the keychain envelope — every subsequent cold launch
+   *    will require authentication.
+   *  - User flips OFF: registration UI greys out.  If the
+   *    backend is already in FIDO-only mode, we can't
+   *    transparently restore the plain key (we'd need to
+   *    re-derive the master via the unlock flow), so we
+   *    surface that as a clear error and leave the toggle
+   *    on until the user does the disable dance manually.
+   *
+   *  Persisted in localStorage so the user's intent survives
+   *  launches even when no methods are registered yet
+   *  (toggle stays "on" but the backend stays plain-mode
+   *  until they enroll a method). */
   let keyEncryptionEnabled = $state(false)
   $effect(() => {
     try {
@@ -80,14 +94,53 @@
       /* localStorage may be unavailable in some webview modes */
     }
   })
-  function setKeyEncryption(v: boolean) {
-    keyEncryptionEnabled = v
+  function persistToggle(v: boolean) {
     try {
       localStorage.setItem('nimbus.keyEncryption', v ? '1' : '0')
     } catch {
-      /* swallow — same reason as above */
+      /* swallow — webview may not expose localStorage */
     }
   }
+  async function setKeyEncryption(v: boolean) {
+    if (busy) return
+    if (v) {
+      keyEncryptionEnabled = true
+      persistToggle(true)
+      // The backend flip happens in the $effect below once the
+      // user has actually registered a recovery method.
+    } else {
+      // Turning off: if we're still in plain mode (no FIDO-only
+      // activation has happened yet) the toggle is purely a UI
+      // gate — flip it freely.  If FIDO-only mode is active we
+      // need a real disable path, which isn't wired yet.
+      if (status && !status.hasPlainKey) {
+        error =
+          'Disabling key encryption while the cache is in FIDO-only mode is not yet supported. Re-add your accounts to revert.'
+        return
+      }
+      keyEncryptionEnabled = false
+      persistToggle(false)
+    }
+  }
+  /** Auto-activate FIDO-only mode when the toggle is on AND
+   *  the registered methods cover a recovery path AND the
+   *  backend still has the plain master key.  Saves the user
+   *  from having to find a separate "activate" button. */
+  $effect(() => {
+    if (busy) return
+    if (!keyEncryptionEnabled) return
+    if (!status) return
+    if (!status.hasPlainKey) return // already FIDO-only
+    if (!safeForFidoOnlyMode(status)) return
+    void (async () => {
+      try {
+        await invoke('enable_fido_only_mode')
+        await loadStatus()
+      } catch (e) {
+        error = formatError(e) || 'Failed to activate key encryption'
+      }
+    })()
+  })
 
   async function loadStatus() {
     loading = true
@@ -158,31 +211,6 @@
     }
   }
 
-  async function enableFidoOnly() {
-    if (busy) return
-    if (!safeForFidoOnlyMode(status)) {
-      error =
-        'Register a recovery passphrase or a second hardware key first — otherwise losing your one method would lock the cache permanently.'
-      return
-    }
-    if (
-      !confirm(
-        'Switch to FIDO-only mode?\n\nThe plain master key will be removed from your OS keychain. Future app launches will require you to authenticate with one of your registered methods before the cache can be opened.\n\nThis takes effect on the next launch.',
-      )
-    )
-      return
-    busy = true
-    error = ''
-    try {
-      await invoke('enable_fido_only_mode')
-      await loadStatus()
-    } catch (e) {
-      error = formatError(e) || 'Failed to switch to FIDO-only mode'
-    } finally {
-      busy = false
-    }
-  }
-
   async function removeKey(credentialId: string, salt: string, label: string) {
     if (busy) return
     if (!confirm(`Remove "${label}"? You'll need to re-enroll to use it again.`))
@@ -240,14 +268,29 @@
       <Toggle
         checked={keyEncryptionEnabled}
         label="Enable key encryption"
-        onchange={(v) => setKeyEncryption(v)}
+        onchange={(v) => void setKeyEncryption(v)}
       />
-      <div>
+      <div class="max-w-xl">
         <p class="font-medium leading-tight">Key Encryption</p>
-        <p class="text-xs text-surface-500 leading-tight">
-          {keyEncryptionEnabled
-            ? 'On — register methods below'
-            : 'Off — the cache uses the plain key from the OS keychain'}
+        <p class="text-xs text-surface-500 leading-snug mt-1">
+          {#if !keyEncryptionEnabled}
+            Off — the cache opens automatically using the plain master key
+            stored in your OS keychain.  Turn on to seal the key behind a
+            registered hardware key, biometric, or passphrase.
+          {:else if status && !status.hasPlainKey}
+            Active — your cache is sealed.  Every cold launch will ask you
+            to authenticate with one of the registered methods below before
+            the inbox loads.
+          {:else if status && safeForFidoOnlyMode(status)}
+            Activating… your registered methods will protect the cache on
+            the next start.  (Activation usually completes within a moment
+            of enrollment.)
+          {:else}
+            On — register at least one recovery method below.  As soon as
+            you have one passphrase or two hardware keys registered, key
+            encryption activates automatically and future launches will
+            require authentication.
+          {/if}
         </p>
       </div>
     </div>
@@ -374,44 +417,6 @@
         {/if}
       </div>
 
-      <!-- FIDO-only mode switch.  When on, the plain master key
-           is removed from the keychain and every cold launch
-           requires authentication via the lock screen.
-           Disabled until the registered methods cover a
-           recovery path (≥ 1 passphrase or ≥ 2 hardware keys). -->
-      {#if status}
-        <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4">
-          <div class="flex items-start gap-3">
-            <Toggle
-              checked={!status.hasPlainKey}
-              disabled={busy ||
-                (status.hasPlainKey && !safeForFidoOnlyMode(status)) ||
-                !status.hasPlainKey}
-              label="Require authentication at startup"
-              onchange={(v) => {
-                if (v && status?.hasPlainKey) void enableFidoOnly()
-              }}
-            />
-            <div>
-              <p class="font-medium leading-tight">Require authentication at startup</p>
-              <p class="text-xs text-surface-500 leading-tight mt-1">
-                {#if !status.hasPlainKey}
-                  Active — the cache will only open after you authenticate
-                  with one of the registered methods.
-                {:else if safeForFidoOnlyMode(status)}
-                  When on, Nimbus will drop the plain master key from your
-                  OS keychain and prompt for authentication on every launch.
-                  Takes effect on the next start.
-                {:else}
-                  Register a recovery passphrase or a second hardware key
-                  first — losing a single method would otherwise lock the
-                  cache permanently.
-                {/if}
-              </p>
-            </div>
-          </div>
-        </div>
-      {/if}
 
       {#if error}
         <p class="text-sm text-red-500 wrap-break-word">{error}</p>
