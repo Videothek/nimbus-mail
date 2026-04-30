@@ -298,10 +298,9 @@
             onclick={() => (showArchived = !showArchived)}
             aria-expanded={showArchived}
           >
-            <span class="flex-1 h-px bg-surface-200 dark:bg-surface-700 group-hover:bg-surface-300 dark:group-hover:bg-surface-600 transition-colors"></span>
-            <span class="inline-flex items-center gap-1.5 shrink-0">
+            <span class="inline-flex items-center gap-2 shrink-0">
               <span
-                class="inline-block transition-transform text-xs"
+                class="inline-block transition-transform text-lg leading-none"
                 style="transform: rotate({showArchived ? 90 : 0}deg)"
                 aria-hidden="true"
               >▸</span>
