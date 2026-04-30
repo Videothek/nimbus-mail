@@ -689,12 +689,21 @@
             badgeText = ext.toUpperCase().slice(0, 4)
             badgeBg = '#a855f7' // purple
           }
+          // Modernised badge (#158): filled pill in the format
+          // colour with bolder white text, slightly tighter
+          // letter-spacing, and a soft shadow for depth so it
+          // reads as a sticker rather than a flat slab.  Same
+          // visual language as the new FileTypeIcon — the
+          // recipient sees a consistent treatment between the
+          // attachment chip strip and the inline body
+          // reference.
           const badgeStyle =
-            'display:inline-block;min-width:2.2em;padding:1px 4px;margin-right:6px;' +
+            'display:inline-block;min-width:2.4em;padding:2px 6px;margin-right:6px;' +
             `background:${badgeBg};color:#ffffff;` +
-            'border-radius:3px;font-size:0.7em;font-weight:700;' +
+            'border-radius:6px;font-size:0.68em;font-weight:800;' +
             'font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;' +
-            'letter-spacing:0.04em;text-align:center;vertical-align:middle;'
+            'letter-spacing:0.06em;text-align:center;vertical-align:middle;' +
+            'line-height:1.3;box-shadow:inset 0 -1px 0 rgba(0,0,0,0.18);'
           return [
             'a',
             {
@@ -705,9 +714,12 @@
               'data-cid': cid,
               'data-filename': label,
               style:
-                'display:inline-flex;align-items:center;padding:0 6px;border-radius:4px;' +
-                'background:rgba(245,158,11,0.12);color:#b45309;' +
-                'text-decoration:none;font-weight:500;',
+                // Subtle pill carrier — neutral surface so the
+                // coloured badge inside is what the eye lands
+                // on, not a competing background block.
+                'display:inline-flex;align-items:center;padding:1px 8px 1px 3px;' +
+                'border-radius:999px;background:rgba(120,120,120,0.10);' +
+                'color:inherit;text-decoration:none;font-weight:500;',
             },
             ['span', { style: badgeStyle }, badgeText],
             label,
