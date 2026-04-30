@@ -227,10 +227,11 @@
        has more than one account — for a single-account setup it's
        chrome with no distinct behaviour. -->
   {#if accounts.length > 1}
+    {@const allActive = unified && currentView === 'inbox'}
     <button
       class="relative w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold
              transition-colors
-             {unified
+             {allActive
                ? 'bg-primary-500 text-white ring-2 ring-offset-2 ring-offset-surface-100 dark:ring-offset-surface-800 ring-primary-500'
                : 'bg-surface-300 dark:bg-surface-700 text-surface-700 dark:text-surface-300 hover:bg-surface-400 dark:hover:bg-surface-600'}"
       title="All inboxes (unified)"
@@ -270,7 +271,12 @@
     </button>
   {/if}
   {#each sortedAccounts as a (a.id)}
-    {@const active = !unified && accountId === a.id}
+    <!-- The active ring only paints while we're actually on the
+         mail view (#161 follow-up).  When the user is in
+         calendar / contacts / settings, the avatars stay quiet
+         so the rail clearly says "click an account to see its
+         mail" rather than "this account is selected." -->
+    {@const active = !unified && accountId === a.id && currentView === 'inbox'}
     {@const unread = unreadFor(a.id)}
     <button
       class="relative w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold
