@@ -1569,19 +1569,48 @@
               {#each list as a (a.email)}
                 {@const c = contactsByEmail.get(a.email.toLowerCase())}
                 {@const photo = photoUrl(c)}
+                {@const isOrganizerSelf = userIdentities.has(a.email.toLowerCase()) && (a.role ?? '').toUpperCase() === 'CHAIR'}
+                {@const partstat = (a.status ?? '').toUpperCase()}
+                {@const showRsvpBadge = !isOrganizerSelf && partstat && partstat !== 'NEEDS-ACTION'}
+                {@const rsvpName = partstat === 'ACCEPTED' ? 'rsvp-accept'
+                  : partstat === 'DECLINED' ? 'rsvp-decline'
+                  : partstat === 'TENTATIVE' ? 'rsvp-tentative'
+                  : 'help'}
+                {@const rsvpColor = partstat === 'ACCEPTED' ? 'text-success-500'
+                  : partstat === 'DECLINED' ? 'text-error-500'
+                  : partstat === 'TENTATIVE' ? 'text-warning-500'
+                  : 'text-surface-500'}
                 <span class="inline-flex items-center gap-2 pl-1 pr-2 py-1 rounded-full text-sm bg-surface-200 dark:bg-surface-700 max-w-full">
-                  {#if photo}
-                    <img
-                      src={photo}
-                      alt=""
-                      loading="lazy"
-                      class="w-7 h-7 rounded-full object-cover flex-shrink-0"
-                    />
-                  {:else}
-                    <div class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 flex items-center justify-center text-[11px] font-semibold flex-shrink-0">
-                      {initials(chipLabel(a))}
-                    </div>
-                  {/if}
+                  <!-- Avatar + RSVP overlay (#179).  The
+                       partstat badge sits at bottom-right of
+                       the photo so a glance at the chip tells
+                       you "who + how they responded" without
+                       a second text label.  `ring-2` of the
+                       chip's surface colour cuts the badge
+                       cleanly against the avatar edge. -->
+                  <span class="relative w-7 h-7 flex-shrink-0">
+                    {#if photo}
+                      <img
+                        src={photo}
+                        alt=""
+                        loading="lazy"
+                        class="w-7 h-7 rounded-full object-cover"
+                      />
+                    {:else}
+                      <div class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 flex items-center justify-center text-[11px] font-semibold">
+                        {initials(chipLabel(a))}
+                      </div>
+                    {/if}
+                    {#if showRsvpBadge}
+                      <span
+                        class="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-surface-50 dark:bg-surface-900 ring-2 ring-surface-200 dark:ring-surface-700 flex items-center justify-center {rsvpColor}"
+                        title={`Response: ${partstat.toLowerCase()}`}
+                        aria-label={`Response: ${partstat.toLowerCase()}`}
+                      >
+                        <Icon name={rsvpName} size={10} />
+                      </span>
+                    {/if}
+                  </span>
                   <span class="flex flex-col min-w-0">
                     <span class="flex items-center gap-1.5 max-w-[260px]">
                       <span class="truncate leading-tight font-medium" title={a.email}>{chipLabel(a)}</span>
@@ -1592,7 +1621,7 @@
                         >internal</span>
                       {/if}
                     </span>
-                    {#if userIdentities.has(a.email.toLowerCase()) && (a.role ?? '').toUpperCase() === 'CHAIR'}
+                    {#if isOrganizerSelf}
                       <!-- The user's own CHAIR row is the
                            organizer.  Override whatever PARTSTAT
                            it carries (typically auto-set to
@@ -1600,22 +1629,10 @@
                            "Organizer" label, so the user doesn't
                            see themselves as just another
                            "accepted" guest.  All other CHAIRs
-                           (co-hosts) keep their response status. -->
+                           (co-hosts) keep their response status
+                           via the avatar-overlay badge above. -->
                       <span class="text-[10px] uppercase tracking-wide text-primary-600 dark:text-primary-300 leading-tight" title="You are the organizer">
                         organizer
-                      </span>
-                    {:else if a.status && a.status.toUpperCase() !== 'NEEDS-ACTION'}
-                      {@const s = a.status.toUpperCase()}
-                      {@const rsvpName = s === 'ACCEPTED' ? 'rsvp-accept'
-                        : s === 'DECLINED' ? 'rsvp-decline'
-                        : s === 'TENTATIVE' ? 'rsvp-tentative'
-                        : 'help'}
-                      {@const rsvpColor = s === 'ACCEPTED' ? 'text-success-500'
-                        : s === 'DECLINED' ? 'text-error-500'
-                        : s === 'TENTATIVE' ? 'text-warning-500'
-                        : 'text-surface-500'}
-                      <span class="leading-tight {rsvpColor}" title={`Response: ${a.status.toLowerCase()}`}>
-                        <Icon name={rsvpName} size={14} />
                       </span>
                     {:else if c && c.organization}
                       <span class="text-[11px] text-surface-500 leading-tight truncate max-w-[220px]">{c.organization}</span>
