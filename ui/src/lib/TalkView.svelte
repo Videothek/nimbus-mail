@@ -304,7 +304,7 @@
                 style="transform: rotate({showArchived ? 90 : 0}deg)"
                 aria-hidden="true"
               >▸</span>
-              <span class="font-medium tracking-wide uppercase text-xs">Archived</span>
+              <span class="font-medium">Archived</span>
               <span class="text-xs">({archivedRooms.length})</span>
             </span>
             <span class="flex-1 h-px bg-surface-200 dark:bg-surface-700 group-hover:bg-surface-300 dark:group-hover:bg-surface-600 transition-colors"></span>
