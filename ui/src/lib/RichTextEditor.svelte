@@ -762,7 +762,7 @@
                     // JPG / PNG / SVG / TIFF / FILE / …) the
                     // wire-format renderer might have prepended.
                     .replace(/^[A-Z]{2,4}\s+/, '')
-                    .replace(/^(?:🖇️|📕|📘|📗|📙|🗜️|📎)\s*/, '') || id
+                    .replace(/^(?:🖇️|📕|📘|📗|📙|🗜️|📎|🔗)\s*/, '') || id
                 return { id, label }
               },
             },
