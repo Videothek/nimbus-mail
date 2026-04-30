@@ -130,34 +130,33 @@
   let refreshing = $state(false)
   let error = $state('')
 
-  // Seed the in-memory thumb cache (#157) from any thumbnails
-  // we previously persisted for this message.  Runs whenever
-  // the open message id changes.  By the time AttachmentThumb
-  // mounts in the chip strip below, its cacheKey lookup hits
-  // and the bytesProvider never fires — no IPC round-trip, no
-  // GStreamer pipeline cycle, no Blob copy.
-  $effect(() => {
-    if (!email || uid == null) return
-    const acc = email.account_id
-    const fld = email.folder
-    const u = uid
-    void invoke<{ partId: number; mime: string; base64: string }[]>(
-      'get_attachment_previews',
-      { accountId: acc, folder: fld, uid: u },
-    )
-      .then((rows) => {
-        for (const r of rows) {
-          seedThumbFromBase64({
-            cacheKey: `${acc}::${fld}::${u}::${r.partId}`,
-            mime: r.mime,
-            base64: r.base64,
-          })
-        }
-      })
-      .catch((e) => {
-        console.warn('get_attachment_previews failed', e)
-      })
-  })
+  /** Pre-fetch persisted thumbnails for one message and seed
+   *  the in-memory thumb cache so AttachmentThumb's first
+   *  mount hits straight away (no bytesProvider call, no
+   *  codec activity).  Awaited from `load()` *before* `email`
+   *  is assigned so the chip strip never mounts ahead of the
+   *  cache. */
+  async function seedAttachmentPreviews(
+    acc: string,
+    fld: string,
+    u: number,
+  ): Promise<void> {
+    try {
+      const rows = await invoke<{ partId: number; mime: string; base64: string }[]>(
+        'get_attachment_previews',
+        { accountId: acc, folder: fld, uid: u },
+      )
+      for (const r of rows) {
+        seedThumbFromBase64({
+          cacheKey: `${acc}::${fld}::${u}::${r.partId}`,
+          mime: r.mime,
+          base64: r.base64,
+        })
+      }
+    } catch (e) {
+      console.warn('get_attachment_previews failed', e)
+    }
+  }
 
   // ── Calendar invite (#58 / iMIP) ──────────────────────────────
   // Inbound mail carrying a `text/calendar` attachment surfaces an
@@ -298,6 +297,13 @@
         // then settles into the trusted state — looks like a bug for
         // senders the user has already approved.
         trustedSender = isSenderTrusted(cached.from)
+        // Seed the in-memory thumbnail cache (#157) *before*
+        // assigning `email` — otherwise the chip strip mounts
+        // first, AttachmentThumb's own effect kicks off
+        // bytesProvider, and the seeded preview lands too late
+        // to skip the work.  Fast: a single IPC + cheap
+        // deserialise per attachment.
+        await seedAttachmentPreviews(id, f, u)
         email = cached
         loading = false
       }
@@ -316,6 +322,9 @@
       })
       if (id === accountId && f === folder && u === uid) {
         trustedSender = isSenderTrusted(fresh.from)
+        // Seed previews here too in case the cache miss path
+        // (no prior `cached`) skipped the seeding above.
+        await seedAttachmentPreviews(id, f, u)
         email = fresh
       }
     } catch (e: any) {

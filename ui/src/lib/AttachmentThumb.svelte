@@ -177,7 +177,9 @@
 
   /** Persist a JPEG/PNG data URL straight to the on-disk
    *  cache (used by the video extractor — its output is
-   *  already a small JPEG). */
+   *  already a small JPEG).  We forward the data URL's
+   *  base64 payload verbatim so Tauri's JSON serialiser
+   *  doesn't have to inflate the bytes into a number array. */
   export async function persistFromDataUrl(
     target: PersistTarget,
     dataUrl: string,
@@ -185,15 +187,17 @@
     return new Promise<void>((resolve) => {
       scheduleIdle(async () => {
         try {
-          const decoded = dataUrlToBytes(dataUrl)
-          if (!decoded) return resolve()
+          const m = dataUrl.match(/^data:([^;,]+);base64,(.*)$/)
+          if (!m) return resolve()
+          const mime = m[1]
+          const base64 = m[2]
           await invoke('put_attachment_preview', {
             accountId: target.accountId,
             folder: target.folder,
             uid: target.uid,
             partId: target.partId,
-            mime: decoded.mime,
-            bytes: Array.from(decoded.bytes),
+            mime,
+            base64,
           })
         } catch (e) {
           console.warn('put_attachment_preview failed', e)
