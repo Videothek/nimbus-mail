@@ -415,9 +415,9 @@
                     role="checkbox"
                     aria-checked={isChecked}
                     aria-label={isChecked ? `Deselect ${entry.name}` : `Select ${entry.name}`}
-                    class="w-4 h-4 shrink-0 rounded-full transition-colors {isChecked
-                      ? 'bg-primary-500'
-                      : 'border-2 border-surface-400 dark:border-surface-500 hover:border-surface-600 dark:hover:border-surface-300'}"
+                    class="w-4 h-4 shrink-0 rounded-full border-2 transition-colors {isChecked
+                      ? 'bg-primary-500 border-surface-400 dark:border-surface-500'
+                      : 'border-surface-400 dark:border-surface-500 hover:border-surface-600 dark:hover:border-surface-300'}"
                     onclick={(e) => {
                       e.stopPropagation()
                       toggleSelected(entry.path, entry.is_dir)
