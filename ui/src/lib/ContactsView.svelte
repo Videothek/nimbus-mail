@@ -881,6 +881,19 @@
     return convertFileSrc(c.id, 'contact-photo')
   }
 
+  /** Lookup map keyed by lowercase email so the mailing-list
+   *  member rows (which only carry `{displayName, email}`)
+   *  can resolve a matching Contact for its photo (#179). */
+  const contactByEmail = $derived.by(() => {
+    const m = new Map<string, Contact>()
+    for (const c of contacts) {
+      for (const e of c.email) {
+        if (e.value) m.set(e.value.toLowerCase(), c)
+      }
+    }
+    return m
+  })
+
   function onAccountChange() {
     void loadAddressbooksFor(formAccountId)
   }
@@ -1579,10 +1592,21 @@
               </p>
             {/if}
             {#each filteredMembers as m, i (`${m.email}::${i}`)}
+              {@const linkedContact = m.email ? contactByEmail.get(m.email.toLowerCase()) : undefined}
+              {@const memberPhoto = linkedContact ? photoSrc(linkedContact) : null}
               <div class="group flex items-center gap-2 px-3 py-2 rounded-md bg-surface-200/40 dark:bg-surface-700/40">
-                <span class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 text-xs font-semibold flex items-center justify-center shrink-0">
-                  {(m.displayName || m.email || '?').slice(0, 1).toUpperCase()}
-                </span>
+                {#if memberPhoto}
+                  <img
+                    src={memberPhoto}
+                    alt=""
+                    loading="lazy"
+                    class="w-7 h-7 rounded-full object-cover shrink-0"
+                  />
+                {:else}
+                  <span class="w-7 h-7 rounded-full bg-surface-300 dark:bg-surface-600 text-xs font-semibold flex items-center justify-center shrink-0">
+                    {(m.displayName || m.email || '?').slice(0, 1).toUpperCase()}
+                  </span>
+                {/if}
                 <div class="flex-1 min-w-0">
                   <p class="font-medium truncate">{m.displayName || m.email || '(unnamed)'}</p>
                   <p class="text-xs text-surface-500 truncate">
