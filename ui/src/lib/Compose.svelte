@@ -339,7 +339,7 @@
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     if (initial?.nextcloudLinks && initial.nextcloudLinks.length > 0) {
       const items = initial.nextcloudLinks
-        .map((l) => `<p>🖇️ <a href="${l.url}">${esc(l.filename)}</a></p>`)
+        .map((l) => `<p>📎 <a href="${l.url}">${esc(l.filename)}</a></p>`)
         .join('')
       html += `<p><strong>Shared via Nextcloud:</strong></p>${items}`
     }
@@ -1535,7 +1535,7 @@
       const items = links
         .map(
           (l) =>
-            `<p>🖇️ <a href="${l.url}">${esc(l.filename)}</a></p>`,
+            `<p>📎 <a href="${l.url}">${esc(l.filename)}</a></p>`,
         )
         .join('')
       const block = `<p><strong>Shared via Nextcloud:</strong></p>${items}`
