@@ -1043,15 +1043,15 @@
   /** Round a Date up to the next half-hour boundary.  Mirrors what
       a user would type when scheduling a fresh meeting "now-ish":
       11:07 → 11:30, 11:30 → 12:00. */
-  /** Prefix the email subject with "RE: " to mark the event as a
+  /** Prefix the email subject with "Re: " to mark the event as a
       response to the thread.  Skips the prefix when the subject
-      already starts with RE:/AW:/SV: (case-insensitive) so we don't
-      stack "RE: RE: RE:" on a long reply chain. */
+      already starts with Re:/Aw:/Sv: (case-insensitive) so we don't
+      stack "Re: Re: Re:" on a long reply chain. */
   function meetingSubject(subject: string): string {
     const s = subject.trim()
-    if (!s) return 'RE: Meeting'
+    if (!s) return 'Re: Meeting'
     if (/^(re|aw|sv)\s*:/i.test(s)) return s
-    return `RE: ${s}`
+    return `Re: ${s}`
   }
 
   function nextHalfHour(d: Date): Date {
