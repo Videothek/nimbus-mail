@@ -1014,7 +1014,19 @@
 
     onclose()
 
-    void runSendPipeline(snap)
+    // Defer the heavy bits past the next macrotask so Svelte
+    // gets to flush the unmount + browser gets to paint before
+    // we hit `invoke('send_email', …)`.  Without this gap, the
+    // attachment payload gets structured-cloned on the same
+    // task as the click handler, freezing the close animation
+    // for 200-800 ms with multi-MB attachments.  The `requestAnimationFrame`
+    // ensures we paint the empty state, then `setTimeout 0`
+    // hands control to the next macrotask where the IPC starts.
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        void runSendPipeline(snap)
+      }, 0)
+    })
   }
 
   /** Background continuation of `send()` — runs after the modal
