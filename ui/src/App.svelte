@@ -24,6 +24,7 @@
   import MailView from './lib/MailView.svelte'
   import AccountSetup from './lib/AccountSetup.svelte'
   import AccountSettings from './lib/AccountSettings.svelte'
+  import LockScreen from './lib/LockScreen.svelte'
   import Compose, { type ComposeInitial } from './lib/Compose.svelte'
   import ContactsView from './lib/ContactsView.svelte'
   import CalendarView from './lib/CalendarView.svelte'
@@ -84,6 +85,39 @@
   }
   let accounts = $state<Account[]>([])
   let activeAccountId = $state<string | null>(null)
+
+  // ── Database lock state (#164 Phase 1B) ─────────────────────
+  // Cache may be in FIDO-only mode at boot; in that case the
+  // lock screen mounts ahead of every other view and the rest
+  // of the app stays inert until the user authenticates.
+  interface DatabaseStatus {
+    locked: boolean
+    needsSetup: boolean
+    methods: {
+      kind: 'fido_prf' | 'passphrase'
+      credentialId: string
+      label: string
+      salt: string
+      createdAt: number
+    }[]
+  }
+  let dbStatus = $state<DatabaseStatus | null>(null)
+  let dbStatusError = $state('')
+  $effect(() => {
+    void invoke<DatabaseStatus>('database_status')
+      .then((s) => (dbStatus = s))
+      .catch((e) => {
+        console.warn('database_status failed', e)
+        dbStatusError = String(e)
+        // Fail-open: assume unlocked so the user isn't trapped on
+        // a blank screen if the IPC went wrong.  Real lock-state
+        // bugs surface as "every other IPC errors with locked".
+        dbStatus = { locked: false, needsSetup: false, methods: [] }
+      })
+  })
+  function onUnlocked() {
+    if (dbStatus) dbStatus = { ...dbStatus, locked: false }
+  }
   const activeAccountEmail = $derived(
     accounts.find((a) => a.id === activeAccountId)?.email ?? '',
   )
@@ -1010,9 +1044,23 @@
   }
 </script>
 
-<!-- Loading / Setup both run before the user has an account, so the
-     IconRail (which is keyed by accounts) isn't mounted. -->
-{#if currentView === 'loading'}
+<!-- Lock screen (#164 Phase 1B) — when the cache is in FIDO-only
+     mode at boot, the lock screen owns the whole viewport until
+     the user authenticates.  Everything else (loading, setup,
+     mail / calendar / contacts views) stays unmounted so no IPC
+     fires with the cache still locked. -->
+{#if dbStatus && dbStatus.locked}
+  <LockScreen methods={dbStatus.methods} onunlock={onUnlocked} />
+{:else if dbStatus === null}
+  <!-- Brief flash while we wait for `database_status` to land —
+       prevents the loading view from poking the cache before we
+       know whether it's locked. -->
+  <div class="h-full flex items-center justify-center bg-surface-50 dark:bg-surface-900">
+    <p class="text-surface-500">Starting up…</p>
+  </div>
+{:else if currentView === 'loading'}
+  <!-- Loading / Setup both run before the user has an account, so
+       the IconRail (which is keyed by accounts) isn't mounted. -->
   <div class="h-full flex items-center justify-center bg-surface-50 dark:bg-surface-900">
     <p class="text-surface-500">Loading...</p>
   </div>

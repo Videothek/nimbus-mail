@@ -319,16 +319,20 @@ fn migrate_from_legacy_json(cache: &Cache) -> Result<Option<Vec<Account>>, Nimbu
     Ok(Some(read_all(cache)?))
 }
 
-/// Borrow a pooled connection. Wrapper around `Cache::pool().get()`
-/// that converts the pool error into our own `NimbusError` so
-/// callers can use `?` without sprinkling `.map_err` everywhere.
+/// Borrow a pooled connection.  Thin wrapper around
+/// `Cache::conn` that maps the cache-error variant into
+/// `NimbusError` so callers can use `?` cleanly.  Returns
+/// `NimbusError::Auth` (rather than Storage) for the locked
+/// case so the IPC layer can route it to the unlock UI.
 fn conn(
     cache: &Cache,
 ) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, NimbusError> {
-    cache
-        .pool()
-        .get()
-        .map_err(|e| NimbusError::Storage(format!("checkout cache conn: {e}")))
+    cache.conn().map_err(|e| match e {
+        crate::cache::CacheError::Locked => {
+            NimbusError::Auth("Cache is locked — authenticate to unlock".into())
+        }
+        other => NimbusError::Storage(format!("checkout cache conn: {other}")),
+    })
 }
 
 #[cfg(test)]

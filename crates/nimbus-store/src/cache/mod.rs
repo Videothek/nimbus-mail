@@ -47,10 +47,13 @@ pub use contacts::{AddressbookSyncState, ContactRow, ContactServerHandle};
 pub use search::{SearchFilters, SearchHit, SearchScope};
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, TimeZone, Utc};
 use nimbus_core::NimbusError;
 use nimbus_core::models::{Email, EmailEnvelope, Folder};
+use r2d2::PooledConnection;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{OptionalExtension, params};
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -70,6 +73,12 @@ pub enum CacheError {
     Sql(#[from] rusqlite::Error),
     #[error("pool error: {0}")]
     Pool(#[from] r2d2::Error),
+    /// The cache is in FIDO-only mode (#164) and the user hasn't
+    /// authenticated yet.  Surface this from any IPC that touches
+    /// cached data so the UI can hold off until the lock screen
+    /// completes the unlock.
+    #[error("cache is locked — authenticate to unlock")]
+    Locked,
 }
 
 impl From<CacheError> for NimbusError {
@@ -92,9 +101,19 @@ pub struct SyncState {
 
 /// Handle to the local mail cache. Cheap to clone — under the hood it's
 /// an `Arc` around a connection pool.
+///
+/// The pool is `Option`-wrapped so the cache can exist in a
+/// **locked** state (#164 Phase 1B): if the keychain envelope has
+/// no plain master key, `Cache::open_default` returns a Cache
+/// whose pool is `None` and every data-touching method returns
+/// `CacheError::Locked` until `unlock_with_master_key` is called
+/// from the unlock-flow IPCs.
 #[derive(Clone)]
 pub struct Cache {
-    pool: SqlitePool,
+    pool: Arc<RwLock<Option<SqlitePool>>>,
+    /// Where the encrypted DB lives on disk.  Held so `unlock`
+    /// can open the pool without re-resolving the path.
+    path: PathBuf,
 }
 
 impl Cache {
@@ -105,8 +124,40 @@ impl Cache {
     /// (or freshly generated in) the OS keychain. See `key.rs`.
     pub fn open_default() -> Result<Self, NimbusError> {
         let path = default_cache_path()?;
-        let key_hex = key::get_or_create_master_key()?;
-        Self::open_with_key(&path, key_hex).map_err(Into::into)
+        // Honour the keychain envelope: when the user has flipped
+        // the cache into FIDO-only mode there's no plain key
+        // available, and we return a *locked* Cache whose pool
+        // stays `None` until `unlock_with_master_key` is called
+        // from the unlock IPCs.
+        let envelope = key::load_envelope()?;
+        match envelope.plain_key.as_deref() {
+            Some(hex) if hex.len() == 64 => {
+                Self::open_with_key(&path, hex.to_string()).map_err(Into::into)
+            }
+            Some(hex) => Err(NimbusError::Storage(format!(
+                "unexpected master key length: {} chars (expected 64)",
+                hex.len()
+            ))),
+            None => {
+                // No keychain entry yet — first-run; mint a key and
+                // open normally.  `get_or_create_master_key`
+                // handles the empty-keychain case for us.
+                if envelope.wraps.is_empty() {
+                    let key_hex = key::get_or_create_master_key()?;
+                    Self::open_with_key(&path, key_hex).map_err(Into::into)
+                } else {
+                    info!(
+                        "Cache is in FIDO-only mode ({} registered methods); \
+                         pool stays locked until unlock IPC runs",
+                        envelope.wraps.len()
+                    );
+                    Ok(Self {
+                        pool: Arc::new(RwLock::new(None)),
+                        path,
+                    })
+                }
+            }
+        }
     }
 
     /// Open a cache at an explicit path with a caller-supplied key.
@@ -139,7 +190,58 @@ impl Cache {
         // is available for use right after this call returns.
         let mut conn = pool.get()?;
         schema::run_migrations(&mut conn)?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool: Arc::new(RwLock::new(Some(pool))),
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// True when the pool isn't open yet — every data method
+    /// returns `Locked` until `unlock_with_master_key` runs.
+    pub fn is_locked(&self) -> bool {
+        self.pool.read().map(|g| g.is_none()).unwrap_or(true)
+    }
+
+    /// Open the pool for a previously-locked Cache.  Called from
+    /// the unlock-flow IPCs once the user has authenticated and
+    /// the master key has been recovered from a wrap.
+    /// Idempotent — a second call with the same key is a no-op.
+    pub fn unlock_with_master_key(&self, key_hex: String) -> Result<(), CacheError> {
+        if !self.is_locked() {
+            return Ok(());
+        }
+        let pool = match pool::open_pool(&self.path, key_hex.clone()) {
+            Ok(p) => p,
+            Err(e) if is_wrong_key_error(&e) && self.path.exists() => {
+                warn!(
+                    "Existing cache at {} could not be unlocked with the \
+                     supplied master key. Wiping — mail will re-sync.",
+                    self.path.display()
+                );
+                wipe_cache_files(&self.path)?;
+                pool::open_pool(&self.path, key_hex)?
+            }
+            Err(e) => return Err(e),
+        };
+        let mut conn = pool.get()?;
+        schema::run_migrations(&mut conn)?;
+        drop(conn);
+        let mut guard = self.pool.write().expect("Cache pool RwLock poisoned");
+        *guard = Some(pool);
+        Ok(())
+    }
+
+    /// Borrow a pooled connection or return `Locked`.  Every
+    /// data-touching method funnels through here so locked
+    /// state propagates uniformly.  `pub(crate)` so sibling
+    /// modules (`account_store`, …) can reuse it instead of
+    /// duplicating the lock-and-checkout dance.
+    pub(crate) fn conn(
+        &self,
+    ) -> Result<PooledConnection<SqliteConnectionManager>, CacheError> {
+        let guard = self.pool.read().expect("Cache pool RwLock poisoned");
+        let pool = guard.as_ref().ok_or(CacheError::Locked)?;
+        Ok(pool.get()?)
     }
 
     /// Open an in-memory cache for tests. Each call gets its own
@@ -153,16 +255,10 @@ impl Cache {
         let mut conn = pool.get()?;
         schema::run_migrations(&mut conn)?;
         drop(conn);
-        Ok(Self { pool })
-    }
-
-    /// Borrow the underlying connection pool. Exposed so the
-    /// `account_store` module (a sibling, not a method) can run its
-    /// own SQL without each operation paying for a fresh `Cache`
-    /// open. The pool is internally synchronised so handing out a
-    /// shared reference is safe across tasks.
-    pub fn pool(&self) -> &SqlitePool {
-        &self.pool
+        Ok(Self {
+            pool: Arc::new(RwLock::new(Some(pool))),
+            path: PathBuf::from(":memory:"),
+        })
     }
 
     /// Drop every cached row whose `account_id` isn't in `active_ids`.
@@ -178,7 +274,7 @@ impl Cache {
     /// Returns the count of orphan account ids that were pruned —
     /// zero on a clean cache, any other number is worth a log line.
     pub fn prune_orphan_accounts(&self, active_ids: &[String]) -> Result<usize, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         // Collect every distinct account_id across the three tables
         // that might hold orphans. Using a union keeps this robust
         // against one table drifting ahead of another (e.g. a past
@@ -217,7 +313,7 @@ impl Cache {
     /// Clears the cache for a specific account — called when an account
     /// is removed, or when `UIDVALIDITY` changes and we need to start fresh.
     pub fn wipe_account(&self, account_id: &str) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         // `ON DELETE CASCADE` on message_bodies means deleting from
         // messages clears the bodies too. folders / folder_sync_state
         // don't have FKs, so we clear them explicitly.
@@ -243,7 +339,7 @@ impl Cache {
         old_name: &str,
         new_name: &str,
     ) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE messages SET folder = ?3
              WHERE account_id = ?1 AND folder = ?2",
@@ -270,7 +366,7 @@ impl Cache {
     /// `ON DELETE CASCADE` handles the bodies; we explicitly drop the
     /// `folder_sync_state` row too so the next sync starts from scratch.
     pub fn wipe_folder(&self, account_id: &str, folder: &str) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "DELETE FROM messages WHERE account_id = ?1 AND folder = ?2",
             params![account_id, folder],
@@ -292,7 +388,7 @@ impl Cache {
     /// diff. The folder list is small (dozens of rows at most) so this
     /// is effectively free.
     pub fn upsert_folders(&self, account_id: &str, folders: &[Folder]) -> Result<(), CacheError> {
-        let mut conn = self.pool.get()?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM folders WHERE account_id = ?1", [account_id])?;
         {
@@ -331,7 +427,7 @@ impl Cache {
     /// behind names like `Drafts` and made the sidebar look
     /// scrambled compared to every other mail client.
     pub fn get_folders(&self, account_id: &str) -> Result<Vec<Folder>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT name, delimiter, attributes, unread_count
              FROM folders
@@ -377,7 +473,7 @@ impl Cache {
         if envelopes.is_empty() {
             return Ok(());
         }
-        let mut conn = self.pool.get()?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let now = Utc::now().timestamp();
         {
@@ -426,7 +522,7 @@ impl Cache {
         folder: &str,
         limit: u32,
     ) -> Result<Vec<EmailEnvelope>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT uid, folder, from_addr, subject, internal_date, is_read, is_starred
              FROM messages
@@ -465,7 +561,7 @@ impl Cache {
         folder: &str,
         limit: u32,
     ) -> Result<Vec<EmailEnvelope>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT account_id, uid, folder, from_addr, subject, internal_date, is_read, is_starred
              FROM messages
@@ -515,7 +611,7 @@ impl Cache {
         folder: &str,
         uid: u32,
     ) -> Result<(), CacheError> {
-        let mut conn = self.pool.get()?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
 
         let was_unread: bool = tx
@@ -560,7 +656,7 @@ impl Cache {
         account_id: &str,
         folder: &str,
     ) -> Result<Vec<u32>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT uid FROM messages
              WHERE account_id = ?1 AND folder = ?2",
@@ -592,7 +688,7 @@ impl Cache {
         folder: &str,
         uid: u32,
     ) -> Result<bool, CacheError> {
-        let mut conn = self.pool.get()?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
 
         let was_unread: bool = tx
@@ -632,7 +728,7 @@ impl Cache {
         folder: &str,
         uid: u32,
     ) -> Result<(), CacheError> {
-        let mut conn = self.pool.get()?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
 
         let was_read: bool = tx
@@ -676,7 +772,7 @@ impl Cache {
         if delta == 0 {
             return Ok(());
         }
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE folders
              SET unread_count = MAX(COALESCE(unread_count, 0) + ?3, 0)
@@ -693,7 +789,7 @@ impl Cache {
     /// (Archive, Trash) aren't typically surfaced as "unread" to the
     /// user even when they technically have `is_read = 0` rows.
     pub fn total_unread_count(&self) -> Result<u32, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM messages
              WHERE folder = 'INBOX' AND is_read = 0",
@@ -712,7 +808,7 @@ impl Cache {
     pub fn unread_counts_by_account(
         &self,
     ) -> Result<std::collections::HashMap<String, u32>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT account_id, COUNT(*) FROM messages
              WHERE folder = 'INBOX' AND is_read = 0
@@ -742,7 +838,7 @@ impl Cache {
     /// and a body row here, in a single transaction so partial rows never
     /// survive a failed write.
     pub fn upsert_message(&self, email: &Email) -> Result<(), CacheError> {
-        let mut conn = self.pool.get()?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let now = Utc::now().timestamp();
 
@@ -840,7 +936,7 @@ impl Cache {
         folder: &str,
         uid: u32,
     ) -> Result<Option<Email>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let row = conn
             .query_row(
                 "SELECT m.from_addr, m.subject, m.internal_date,
@@ -886,7 +982,7 @@ impl Cache {
         account_id: &str,
         folder: &str,
     ) -> Result<Option<SyncState>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let state = conn
             .query_row(
                 "SELECT uidvalidity, highest_uid_seen, last_synced_at
@@ -914,7 +1010,7 @@ impl Cache {
         folder: &str,
         state: &SyncState,
     ) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO folder_sync_state
                 (account_id, folder, uidvalidity, highest_uid_seen, last_synced_at)
@@ -956,7 +1052,7 @@ impl Cache {
         mime: &str,
         bytes: &[u8],
     ) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT OR REPLACE INTO attachment_previews
                  (account_id, folder, uid, part_id, mime, bytes, created_at)
@@ -975,7 +1071,7 @@ impl Cache {
         folder: &str,
         uid: u32,
     ) -> Result<Vec<AttachmentPreview>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT part_id, mime, bytes
              FROM attachment_previews

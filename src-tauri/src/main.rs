@@ -7083,6 +7083,159 @@ fn fido_remove(credential_id_b64: String) -> Result<(), NimbusError> {
     Ok(())
 }
 
+// ── Database lock + unlock (#164 Phase 1B) ────────────────────
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DatabaseStatusView {
+    /// True when no plain key is in the envelope and the cache
+    /// pool isn't open yet — the lock screen should be shown.
+    locked: bool,
+    /// True when the keychain envelope has zero registered methods
+    /// and zero plain key — the user has wiped everything;
+    /// app needs to recreate from scratch.
+    needs_setup: bool,
+    /// One entry per registered unlock method (FIDO PRF or
+    /// passphrase), used by the lock screen to render a picker.
+    methods: Vec<FidoCredentialView>,
+}
+
+/// Snapshot used by `App.svelte` on mount to decide whether to
+/// route the user to the lock screen or straight into the inbox.
+#[tauri::command]
+fn database_status(cache: State<'_, Cache>) -> Result<DatabaseStatusView, NimbusError> {
+    let env = nimbus_store::cache::key::load_envelope()?;
+    let locked = cache.is_locked();
+    Ok(DatabaseStatusView {
+        locked,
+        needs_setup: env.plain_key.is_none() && env.wraps.is_empty(),
+        methods: env
+            .wraps
+            .into_iter()
+            .map(|w| FidoCredentialView {
+                kind: match w.kind {
+                    nimbus_store::fido::WrapKind::FidoPrf => "fido_prf".to_string(),
+                    nimbus_store::fido::WrapKind::Passphrase => "passphrase".to_string(),
+                },
+                credential_id: w.credential_id,
+                label: w.label,
+                salt: w.salt,
+                created_at: w.created_at,
+            })
+            .collect(),
+    })
+}
+
+/// Unlock the cache from a passphrase.  Tries every passphrase
+/// wrap in the envelope, returns the first match.
+#[tauri::command]
+fn unlock_with_passphrase(
+    passphrase: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    use nimbus_store::fido::{self, WrapKind};
+    let env = nimbus_store::cache::key::load_envelope()?;
+    for wrap in &env.wraps {
+        if wrap.kind != WrapKind::Passphrase {
+            continue;
+        }
+        let salt = fido::decode_b64(&wrap.salt)?;
+        let aes_key = fido::derive_passphrase_key(&passphrase, &salt)?;
+        if let Ok(master) = fido::unwrap_master_key(wrap, &aes_key) {
+            let hex = hex::encode(&master);
+            cache.unlock_with_master_key(hex).map_err(NimbusError::from)?;
+            return Ok(());
+        }
+    }
+    Err(NimbusError::Auth("incorrect passphrase".into()))
+}
+
+/// Unlock the cache from a FIDO PRF assertion.  Frontend has
+/// already run WebAuthn `credentials.get` against the
+/// credential's stored salt and forwards the resulting PRF
+/// output here.
+#[tauri::command]
+fn unlock_with_prf(
+    credential_id_b64: String,
+    prf_output_b64: String,
+    cache: State<'_, Cache>,
+) -> Result<(), NimbusError> {
+    use nimbus_store::fido::{self, WrapKind};
+    let env = nimbus_store::cache::key::load_envelope()?;
+    let prf = fido::decode_b64(&prf_output_b64)?;
+    for wrap in &env.wraps {
+        if wrap.kind != WrapKind::FidoPrf || wrap.credential_id != credential_id_b64 {
+            continue;
+        }
+        let master = fido::unwrap_master_key(wrap, &prf)
+            .map_err(|_| NimbusError::Auth("hardware key produced wrong PRF output".into()))?;
+        let hex = hex::encode(&master);
+        cache.unlock_with_master_key(hex).map_err(NimbusError::from)?;
+        return Ok(());
+    }
+    Err(NimbusError::Auth(
+        "no registered hardware key matches that credential".into(),
+    ))
+}
+
+/// Switch the cache into FIDO-only mode: drop the plain master
+/// key from the keychain envelope so future cold launches MUST
+/// authenticate with one of the registered methods.  Refuses
+/// unless the user has at least one passphrase OR ≥ 2 hardware
+/// keys registered — without a recovery option we'd lock them
+/// out permanently the first time a YubiKey gets lost.
+#[tauri::command]
+fn enable_fido_only_mode() -> Result<(), NimbusError> {
+    use nimbus_store::fido::WrapKind;
+    let mut env = nimbus_store::cache::key::load_envelope()?;
+    if env.plain_key.is_none() {
+        return Ok(()); // already FIDO-only — idempotent.
+    }
+    let passphrase_count = env
+        .wraps
+        .iter()
+        .filter(|w| w.kind == WrapKind::Passphrase)
+        .count();
+    let fido_count = env
+        .wraps
+        .iter()
+        .filter(|w| w.kind == WrapKind::FidoPrf)
+        .count();
+    if passphrase_count == 0 && fido_count < 2 {
+        return Err(NimbusError::Other(
+            "Register at least one passphrase OR two hardware keys before enabling FIDO-only mode \
+             — otherwise losing a single key would lock the cache permanently."
+                .into(),
+        ));
+    }
+    env.plain_key = None;
+    nimbus_store::cache::key::save_envelope(&env)?;
+    Ok(())
+}
+
+/// Reverse of `enable_fido_only_mode` — re-store the plain
+/// master key in the envelope so the next launch opens the
+/// cache without prompting.  Only callable while the cache is
+/// already unlocked (we need the in-memory key).
+#[tauri::command]
+fn disable_fido_only_mode(cache: State<'_, Cache>) -> Result<(), NimbusError> {
+    if cache.is_locked() {
+        return Err(NimbusError::Auth(
+            "Database must be unlocked before FIDO-only mode can be disabled".into(),
+        ));
+    }
+    // We need the master key to write back into the envelope.
+    // It currently lives only inside the SQLCipher pool — we
+    // can't read it back from rusqlite, so we ask the user to
+    // re-authenticate via the unlock IPCs in a follow-up.  For
+    // now, refuse: disabling is a rare, deliberate operation.
+    Err(NimbusError::Other(
+        "Disabling FIDO-only mode isn't wired up yet — re-enroll \
+         with a fresh master by removing then re-adding accounts."
+            .into(),
+    ))
+}
+
 /// Return the cached font list to the frontend.  Reads from
 /// the shared `SystemFontsCache` populated at startup; if the
 /// cache is somehow empty (startup warmer failed or hasn't run
@@ -7681,6 +7834,11 @@ fn main() {
             fido_verify_passphrase,
             fido_verify_prf,
             fido_remove,
+            database_status,
+            unlock_with_passphrase,
+            unlock_with_prf,
+            enable_fido_only_mode,
+            disable_fido_only_mode,
             update_app_settings,
             import_custom_theme,
             remove_custom_theme,

@@ -114,7 +114,7 @@ impl Cache {
         new_sync_token: Option<&str>,
         new_ctag: Option<&str>,
     ) -> Result<(), CacheError> {
-        let mut conn = self.pool.get()?;
+        let mut conn = self.conn()?;
         let tx = conn.transaction()?;
         let now = Utc::now().timestamp();
 
@@ -233,7 +233,7 @@ impl Cache {
         &self,
         nc_account_id: &str,
     ) -> Result<Option<DateTime<Utc>>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let ts: Option<i64> = conn
             .query_row(
                 "SELECT MAX(last_synced_at)
@@ -253,7 +253,7 @@ impl Cache {
         nc_account_id: &str,
         addressbook: &str,
     ) -> Result<Option<AddressbookSyncState>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let row = conn
             .query_row(
                 "SELECT display_name, sync_token, ctag, last_synced_at
@@ -285,7 +285,7 @@ impl Cache {
     /// as a presence flag; the UI uses `get_contact_photo` to fetch
     /// the bytes on demand for whichever rows it actually paints.
     pub fn list_contacts(&self, nc_account_id: Option<&str>) -> Result<Vec<Contact>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let mut stmt;
         let rows = match nc_account_id {
             Some(nc) => {
@@ -329,7 +329,7 @@ impl Cache {
         &self,
         contact_id: &str,
     ) -> Result<Option<(String, Vec<u8>)>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let row: Option<(Option<String>, Option<Vec<u8>>)> = conn
             .query_row(
                 "SELECT photo_mime, photo_data FROM contacts WHERE id = ?1",
@@ -352,7 +352,7 @@ impl Cache {
     /// `limit` so a typo that matches half the address book doesn't
     /// tank the UI.
     pub fn search_contacts(&self, query: &str, limit: u32) -> Result<Vec<Contact>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let needle = format!("%{}%", query.replace('%', r"\%").replace('_', r"\_"));
         // emails_json is the stringified JSON array. "[]" is the
         // canonical empty form (see apply_contact_delta), so excluding
@@ -384,7 +384,7 @@ impl Cache {
     /// Number of contacts cached for a Nextcloud account — cheap to
     /// surface in the Settings UI alongside "Sync now".
     pub fn count_contacts(&self, nc_account_id: &str) -> Result<u32, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let n: i64 = conn.query_row(
             "SELECT COUNT(*) FROM contacts WHERE nextcloud_account_id = ?1",
             params![nc_account_id],
@@ -402,7 +402,7 @@ impl Cache {
         &self,
         contact_id: &str,
     ) -> Result<Option<ContactServerHandle>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let row = conn
             .query_row(
                 "SELECT nextcloud_account_id, addressbook, vcard_uid, href, etag, vcard_raw
@@ -440,7 +440,7 @@ impl Cache {
         addressbook: &str,
         row: &ContactRow,
     ) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let id = format!("{nc_account_id}::{}", row.vcard_uid);
         let emails = serde_json::to_string(&row.emails).unwrap_or_else(|_| "[]".into());
         let phones = serde_json::to_string(&row.phones).unwrap_or_else(|_| "[]".into());
@@ -516,7 +516,7 @@ impl Cache {
     where
         F: Fn(&str) -> Vec<String>,
     {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let pairs: Vec<(String, String)> = {
             let mut stmt = conn.prepare(
                 "SELECT id, vcard_raw FROM contacts
@@ -550,7 +550,7 @@ impl Cache {
     /// virtual mailing list per row.  Empty when no card has a
     /// CATEGORIES tag.
     pub fn list_contact_categories(&self) -> Result<Vec<(String, u32)>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT categories_json FROM contacts
              WHERE COALESCE(kind, '') != 'group'
@@ -593,7 +593,7 @@ impl Cache {
     /// sizes — one cheap SELECT per Lists-tab open, not per
     /// keystroke.
     pub fn list_contacts_with_category(&self, category: &str) -> Result<Vec<Contact>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, nextcloud_account_id, display_name, emails_json,
                     phones_json, organization, photo_mime,
@@ -623,7 +623,7 @@ impl Cache {
         nc_account_id: &str,
         vcard_uid: &str,
     ) -> Result<Option<ContactServerHandle>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let row = conn
             .query_row(
                 "SELECT nextcloud_account_id, addressbook, vcard_uid, href, etag, vcard_raw
@@ -652,7 +652,7 @@ impl Cache {
     pub fn get_mailing_list_suppressed(
         &self,
     ) -> Result<std::collections::HashSet<String>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id FROM mailing_list_settings
              WHERE hidden_from_autocomplete = 1",
@@ -670,7 +670,7 @@ impl Cache {
         id: &str,
         suppressed: bool,
     ) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO mailing_list_settings (id, hidden_from_autocomplete)
              VALUES (?1, ?2)
@@ -686,7 +686,7 @@ impl Cache {
     pub fn get_mailing_list_emojis(
         &self,
     ) -> Result<std::collections::HashMap<String, String>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, emoji FROM mailing_list_settings
              WHERE emoji IS NOT NULL AND emoji != ''",
@@ -701,7 +701,7 @@ impl Cache {
     }
 
     pub fn set_mailing_list_emoji(&self, id: &str, emoji: Option<&str>) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO mailing_list_settings (id, hidden_from_autocomplete, emoji)
              VALUES (?1, 0, ?2)
@@ -722,7 +722,7 @@ impl Cache {
         if old_id == new_id {
             return Ok(());
         }
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE mailing_list_settings SET id = ?2 WHERE id = ?1",
             params![old_id, new_id],
@@ -739,7 +739,7 @@ impl Cache {
     pub fn list_contact_groups(
         &self,
     ) -> Result<Vec<nimbus_core::models::ContactGroup>, CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, nextcloud_account_id, display_name,
                     member_uids_json, group_emoji, group_hidden
@@ -786,7 +786,7 @@ impl Cache {
 
     /// Toggle the local `group_hidden` flag for one group.
     pub fn set_contact_group_hidden(&self, group_id: &str, hidden: bool) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE contacts SET group_hidden = ?2 WHERE id = ?1",
             params![group_id, hidden as i64],
@@ -800,7 +800,7 @@ impl Cache {
         group_id: &str,
         emoji: Option<&str>,
     ) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE contacts SET group_emoji = ?2 WHERE id = ?1",
             params![group_id, emoji.filter(|s| !s.is_empty())],
@@ -824,7 +824,7 @@ impl Cache {
         if member_uids.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         let placeholders = member_uids
             .iter()
             .enumerate()
@@ -865,7 +865,7 @@ impl Cache {
 
     /// Remove one contact by its app-side id.
     pub fn delete_contact_by_id(&self, contact_id: &str) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute("DELETE FROM contacts WHERE id = ?1", params![contact_id])?;
         Ok(())
     }
@@ -873,7 +873,7 @@ impl Cache {
     /// Drop all contacts and sync state for a Nextcloud account —
     /// called when the user disconnects that account.
     pub fn wipe_nextcloud_contacts(&self, nc_account_id: &str) -> Result<(), CacheError> {
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
         conn.execute(
             "DELETE FROM contacts WHERE nextcloud_account_id = ?1",
             params![nc_account_id],

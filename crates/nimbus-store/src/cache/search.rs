@@ -115,7 +115,7 @@ impl Cache {
         filters: &SearchFilters,
     ) -> Result<Vec<SearchHit>, CacheError> {
         let parsed = parse_query(query);
-        let conn = self.pool.get()?;
+        let conn = self.conn()?;
 
         // Build SQL + bindings incrementally so we can toggle the
         // FTS5 join off when there's no text to match (pure filter
