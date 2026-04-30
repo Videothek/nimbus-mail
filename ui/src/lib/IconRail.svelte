@@ -75,6 +75,12 @@
      *  old Sidebar dropdown used. */
     onselectaccount: (id: string) => void
     onselectview: (view: RailView) => void
+    /** True while a network refresh is in flight in the active
+     *  mail pane (MailList or MailView).  Drives a calm spinner
+     *  ring overlay on the active account's avatar so the
+     *  "Refreshing…" hint lives somewhere persistent rather
+     *  than as a buggy strip inside the list (#161). */
+    mailRefreshing?: boolean
   }
   let {
     accounts,
@@ -83,6 +89,7 @@
     currentView,
     onselectaccount,
     onselectview,
+    mailRefreshing = false,
   }: Props = $props()
 
   /** First-letter / initial-pair fallback for the avatar bubble.
@@ -250,6 +257,13 @@
           title={`${totalUnread} unread across all inboxes`}
         >{totalUnread > 99 ? '99+' : totalUnread}</span>
       {/if}
+      {#if unified && mailRefreshing}
+        <span
+          class="pointer-events-none absolute inset-0 rounded-full border-2 border-transparent border-t-white/80 animate-spin"
+          aria-hidden="true"
+          title="Refreshing"
+        ></span>
+      {/if}
     </button>
   {/if}
   {#each sortedAccounts as a (a.id)}
@@ -279,6 +293,18 @@
         <span
           class="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 text-[10px] rounded-full bg-red-500 text-white flex items-center justify-center font-semibold ring-2 ring-surface-100 dark:ring-surface-800"
         >{unread > 99 ? '99+' : unread}</span>
+      {/if}
+      {#if active && mailRefreshing}
+        <!-- Calm refresh hint (#161): a thin spinner ring
+             overlaid on the active avatar replaces the inline
+             "Refreshing…" strip that used to live in MailList /
+             MailView.  Only renders for the active account so
+             it doesn't compete with the avatar's content. -->
+        <span
+          class="pointer-events-none absolute inset-0 rounded-full border-2 border-transparent border-t-white/80 animate-spin"
+          aria-hidden="true"
+          title="Refreshing"
+        ></span>
       {/if}
     </button>
   {/each}
