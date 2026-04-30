@@ -415,6 +415,19 @@
       imgUrl = null
       return
     }
+    // Fast path: if the cache already has a hit for this
+    // attachment, render straight from it and never run
+    // bytesProvider.  This is the difference between a cold
+    // open of a previously-seen email being IPC-bound vs.
+    // instant — the seeded data URL on the cacheKey IS the
+    // whole point of #157.
+    if (cacheKey) {
+      const cached = imageBlobGet(cacheKey) ?? cacheGet(cacheKey)
+      if (cached) {
+        imgUrl = cached
+        return
+      }
+    }
     let cancelled = false
     const apply = async (b: Uint8Array | number[] | null | undefined) => {
       if (!b || b.length === 0 || cancelled) return
