@@ -1603,11 +1603,11 @@
                     {/if}
                     {#if showRsvpBadge}
                       <span
-                        class="absolute bottom-0 -right-2 w-4 h-4 rounded-full bg-surface-50 dark:bg-surface-900 ring-1 ring-surface-200 dark:ring-surface-700 flex items-center justify-center {rsvpColor}"
+                        class="absolute bottom-0 -right-2 w-4 h-4 rounded-full bg-surface-50 dark:bg-surface-900 ring-1 ring-surface-200 dark:ring-surface-700 flex items-center justify-center leading-none {rsvpColor}"
                         title={`Response: ${partstat.toLowerCase()}`}
                         aria-label={`Response: ${partstat.toLowerCase()}`}
                       >
-                        <Icon name={rsvpName} size={10} />
+                        <Icon name={rsvpName} size={10} class="block" />
                       </span>
                     {/if}
                   </span>
