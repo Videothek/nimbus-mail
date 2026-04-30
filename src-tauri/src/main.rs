@@ -6824,6 +6824,68 @@ fn dismiss_talk_reminder(
     Ok(())
 }
 
+/// Launch-time message-body prerender (#178).
+///
+/// For every configured account, fetch the bodies of the newest INBOX
+/// envelopes that don't yet have a cached body.  The user clicking
+/// any of those messages then reads from disk instead of paying for
+/// an IMAP round-trip — eliminates the "open mail → blank pane →
+/// content appears" beat on a fresh launch.
+///
+/// Bounded to `PRERENDER_LIMIT` per account so a brand-new install
+/// (every envelope missing a body) doesn't drown the launch in
+/// FETCHes.  Accounts run concurrently; within an account we go
+/// sequentially because each `fetch_message_inner` opens its own
+/// IMAP connection and we don't want N parallel auths against the
+/// same server.
+async fn prerender_inboxes_on_launch(app: &AppHandle) {
+    /// Ten messages per account is a sweet spot — covers the
+    /// usually-visible top of the inbox without ballooning the
+    /// launch into a body-sync.  Tuning knob if real-world usage
+    /// suggests otherwise.
+    const PRERENDER_LIMIT: u32 = 10;
+
+    let cache = app.state::<Cache>();
+    let accounts = account_store::load_accounts(&cache).unwrap_or_default();
+
+    let mut handles = Vec::new();
+    for account in accounts {
+        let app = app.clone();
+        handles.push(tauri::async_runtime::spawn(async move {
+            let cache = app.state::<Cache>();
+            let uids = match cache.get_envelopes_missing_body(&account.id, "INBOX", PRERENDER_LIMIT) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        "prerender: failed to list missing bodies for '{}': {e}",
+                        account.id,
+                    );
+                    return;
+                }
+            };
+            if uids.is_empty() {
+                return;
+            }
+            tracing::info!(
+                "prerender: warming {} message body/bodies for '{}'",
+                uids.len(),
+                account.id,
+            );
+            for uid in uids {
+                if let Err(e) = fetch_message_inner(&account.id, "INBOX", uid, &cache).await {
+                    tracing::debug!(
+                        "prerender: fetch_message_inner({}, INBOX, {uid}) failed: {e}",
+                        account.id,
+                    );
+                }
+            }
+        }));
+    }
+    for h in handles {
+        let _ = h.await;
+    }
+}
+
 /// Periodic poll. Re-reads the settings snapshot each tick so the user
 /// can toggle sync on/off or change the interval and have it take
 /// effect on the next cycle without restarting the loop.
@@ -7991,6 +8053,27 @@ fn main() {
             let bg_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 background_sync_loop(bg_handle).await;
+            });
+
+            // ── Launch-time prerender (#178) ─────────────────────
+            //
+            // Warm the message cache for the newest INBOX envelopes
+            // whose body we haven't fetched yet.  When the user
+            // opens one of those mails the reading pane paints from
+            // cache instantly instead of waiting on an IMAP
+            // round-trip — the difference between a perceptibly
+            // snappy first-mail click and the previous "open …
+            // briefly blank … now it appears" UX.
+            //
+            // Spawned as a low-priority background task so it never
+            // gates the UI: each account is processed sequentially
+            // (one IMAP connection at a time per account, since the
+            // IMAP client is single-shot here), but accounts run in
+            // parallel.  Failures are logged and skipped — a
+            // half-warmed cache is strictly better than no warm-up.
+            let prerender_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                prerender_inboxes_on_launch(&prerender_handle).await;
             });
 
             Ok(())
