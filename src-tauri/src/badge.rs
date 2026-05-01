@@ -50,21 +50,17 @@ pub fn render_tray_icon(
     } else {
         let mut p = base_pixels.to_vec();
         let dim = width.min(height);
-        // Indicator-style: ~14% of the icon's short side and well
-        // inset from the corner. This is the proportion modern
-        // dock badges (Slack, Discord, Apple Mail without a count)
-        // actually use; the earlier 22-30% sizes read as a sticker.
-        // Floor of 4 px so a tiny tray icon still shows something
-        // visible.
-        let badge_size = ((dim * 14) / 100).max(4);
-        // Inset by ~10% of the icon side so the dot sits inside
-        // the visible mark, not in the canvas's transparent
-        // padding.
-        let inset = (dim / 10).max(2);
-        // 1 px halo — just enough separation against a busy mark
-        // at full size, vanishes acceptably when the OS downscales
-        // for a 16 / 32 px tray render.
-        let ring: u32 = 1;
+        // ~22% of the icon's short side, inset from the corner.
+        // Reads as an indicator at the system-tray render size
+        // without dominating the icon. Floor of 8 px so a tiny
+        // base icon still produces a visible disc.
+        let badge_size = ((dim * 22) / 100).max(8);
+        let inset = (dim / 16).max(2);
+        // 2 px (or 1.25%-of-icon, whichever is bigger) white ring
+        // around the disc — separates it from a busy underlying
+        // icon at any colour, the same trick macOS / iOS
+        // notification badges use.
+        let ring = (dim / 80).max(2);
         let halo_size = badge_size + 2 * ring;
 
         let bx = width.saturating_sub(badge_size + inset);
@@ -83,6 +79,14 @@ pub fn render_tray_icon(
 /// (16×16). Returns `None` when there's nothing to show so the
 /// caller can clear the overlay with `set_overlay_icon(None)`.
 ///
+/// Windows places the entire 16×16 overlay at the bottom-right of
+/// the taskbar entry, then scales it for the user's DPI. Drawing
+/// the disc at the full 16×16 produced a chunky red ball; instead
+/// we paint a smaller disc inside transparent padding so the
+/// visible badge in the taskbar reads as an indicator, not a
+/// sticker. Same halo trick the tray badge uses for separation
+/// against a busy underlying icon.
+///
 /// Called from the `#[cfg(windows)]` branch in `main.rs`; on other
 /// platforms the call site is compiled away.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -92,8 +96,19 @@ pub fn render_taskbar_overlay(unread: u32) -> Option<Image<'static>> {
     }
     const W: u32 = 16;
     const H: u32 = 16;
+    // 10×10 disc with a 1px white halo, centered in the 16×16
+    // canvas (3px transparent padding all around). Leaves the
+    // visible badge ~half the taskbar overlay slot — modern
+    // dock-indicator proportions.
+    const BADGE_SIZE: u32 = 10;
+    const RING: u32 = 1;
+    const HALO_SIZE: u32 = BADGE_SIZE + 2 * RING;
+    let badge_pos = (W - BADGE_SIZE) / 2;
+    let halo_pos = (W - HALO_SIZE) / 2;
+
     let mut pixels = vec![0u8; (W * H * 4) as usize];
-    draw_filled_circle(&mut pixels, W, H, 0, 0, W, BADGE_RGBA);
+    draw_filled_circle(&mut pixels, W, H, halo_pos, halo_pos, HALO_SIZE, HALO_RGBA);
+    draw_filled_circle(&mut pixels, W, H, badge_pos, badge_pos, BADGE_SIZE, BADGE_RGBA);
     Some(Image::new_owned(pixels, W, H))
 }
 
