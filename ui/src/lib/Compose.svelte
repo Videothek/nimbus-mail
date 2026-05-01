@@ -19,6 +19,7 @@
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { untrack } from 'svelte'
   import { formatError } from './errors'
+  import { meetingInviteHtml, talkInviteHtml, type MeetingInvite } from './inviteHtml'
   import RichTextEditor, {
     type EditorApi,
     type ContactSuggestion,
@@ -100,6 +101,11 @@
         action — the latter creates the room first and then opens
         Compose to invite the participants. */
     talkLink?: { name: string; url: string }
+    /** Calendar-meeting invitation block (#195).  Set by
+        App.svelte's "Respond with meeting" flow once the user
+        saves the event in EventEditor — Compose then opens with
+        a styled HTML invite card pre-filled in the body. */
+    meetingInvite?: MeetingInvite
     /** When Compose is opened by clicking "Edit" on an existing draft
         in the Drafts folder, this points at the server-side copy we
         opened from. Once the user sends or re-saves, that copy needs
@@ -345,12 +351,24 @@
       html += `<p><strong>Shared via Nextcloud:</strong></p>${items}`
     }
     if (initial?.talkLink) {
-      // Same block shape as the share-link block — keeps the rendered
-      // mail consistent across "Share file" and "Share Talk room"
-      // entry points.
-      html +=
-        `<p><strong>Join the Talk room:</strong></p>` +
-        `<p>💬 <a href="${initial.talkLink.url}">${esc(initial.talkLink.name)}</a></p>`
+      // Modern Talk-meeting invite card (#195) — replaces the
+      // previous one-line "💬 <link>" with a styled HTML block
+      // that carries the Nimbus brand header, the room details,
+      // a prominent Join CTA, and the "you'll be invited via
+      // Nextcloud" microcopy.  Inline styles only, banner image
+      // pulled from this project's GitHub raw URL so the
+      // recipient's mail client can render it once they permit
+      // remote content.
+      html += talkInviteHtml({
+        name: initial.talkLink.name,
+        url: initial.talkLink.url,
+      })
+    }
+    if (initial?.meetingInvite) {
+      // Calendar-meeting invite card (#195) — same chrome as the
+      // Talk card so a thread carrying both reads as one
+      // coherent invitation rather than two separate stickers.
+      html += meetingInviteHtml(initial.meetingInvite)
     }
     return html
   }

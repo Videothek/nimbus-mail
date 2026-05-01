@@ -36,6 +36,7 @@
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
   import EventEditor, { type SavedEvent } from './lib/EventEditor.svelte'
+  import type { MeetingInvite } from './lib/inviteHtml'
   import SearchBar, {
     type SearchScope,
     type SearchFilters,
@@ -1113,6 +1114,11 @@
       optionalAttendees: string[]
       createTalkRoom: boolean
     }
+    /** Original thread the user clicked "Respond with meeting"
+     *  on — held here so `onMeetingEditorSaved` can reopen
+     *  Compose pre-filled as a reply once the event lands
+     *  (#195). */
+    replyTo: OpenMail
   } | null>(null)
 
   /** Strip an `"Name" <addr>` wrapper down to the bare email. */
@@ -1219,14 +1225,54 @@
         optionalAttendees: optional,
         createTalkRoom: true,
       },
+      replyTo: mail,
     }
   }
 
   function onMeetingEditorClose() {
     meetingDraft = null
   }
-  function onMeetingEditorSaved(_saved?: SavedEvent) {
+  function onMeetingEditorSaved(saved?: SavedEvent) {
+    // Keep a local snapshot before clearing — the editor is
+    // dismissed first so its surface unmounts before Compose
+    // mounts on top, avoiding a brief two-modal frame.
+    const ctx = meetingDraft
     meetingDraft = null
+    if (!saved || !ctx) return
+
+    // The Talk URL gets written into LOCATION when "Make it a
+    // Talk conversation" is checked (mirrors what NC's Calendar
+    // app does — keeps an iCalendar-canonical place for the
+    // join link).  We split the field heuristically: if the
+    // location starts with http(s)://, treat it as the Talk URL
+    // and leave the physical-location row empty; otherwise it's
+    // a real address / room name and there's no Talk URL.
+    const loc = (saved.location ?? '').trim()
+    const isUrl = /^https?:\/\//i.test(loc)
+    const meetingInvite: MeetingInvite = {
+      summary: saved.summary,
+      start: saved.start,
+      end: saved.end,
+      location: isUrl ? null : loc || null,
+      description: saved.description ?? null,
+      talkUrl: isUrl ? loc : null,
+    }
+
+    // Open Compose as a reply to the original thread, with the
+    // styled meeting card pre-filled into the body.  Existing
+    // reply ergonomics (To from From, Re: subject prefix, quoted
+    // body) match what `onReply` already produces.
+    const original = ctx.replyTo
+    const others = [...original.to, ...original.cc].filter(
+      (a) => a && a.toLowerCase() !== activeAccountEmail.toLowerCase(),
+    )
+    openCompose({
+      to: original.from,
+      cc: others.length > 0 ? others.join(', ') : undefined,
+      subject: replySubject(original.subject),
+      body: quoteBody(original.from, original.date, original.body_text),
+      meetingInvite,
+    })
   }
 
   /** "Save as note" handler — issue #67's email→note bridge. Builds

@@ -95,6 +95,13 @@
     /** Bare-address list of everyone invited.  Kept on the payload
         so callers can refresh related UI (badges, lists). */
     attendees: string[]
+    /** Free-form location text. May hold a Talk room URL when the
+     *  user opted into "Make it a Talk conversation" — callers
+     *  that render a meeting invite to email (#195) inspect this
+     *  to decide whether to surface a "Join Talk meeting" CTA. */
+    location?: string | null
+    /** Plain-text description / agenda. */
+    description?: string | null
   }
 
   interface Props {
@@ -1159,6 +1166,8 @@
           end: input.end,
           url: null,
           attendees: input.attendees.map((a) => a.email),
+          location: input.location,
+          description: input.description,
         })
       } else if (event) {
         // RSVP-only fast path: when the user is themselves an
