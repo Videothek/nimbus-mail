@@ -14,6 +14,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import type { SearchScope, SearchFilters } from './SearchBar.svelte'
   import { formatError } from './errors'
+  import Icon from './Icon.svelte'
 
   interface SearchHit {
     accountId: string
@@ -54,15 +55,27 @@
   let serverSearching = $state(false)
   let serverSearched = $state(false)
 
+  // Server-side infinite-scroll state (#194 follow-up). Only the
+  // server path paginates — local FTS5 returns up to 200 hits in
+  // one round which is plenty. Once "Search server too" has been
+  // clicked, scrolling near the bottom auto-loads the next batch
+  // of older server-side matches.
+  const SERVER_PAGE_SIZE = 100
+  let loadingServerOlder = $state(false)
+  let serverOlderExhausted = $state(false)
+
   // Re-run whenever the query / scope / filters change. We also
   // reset the "server search already done" flag so the button is
-  // offered again for the new query.
+  // offered again for the new query.  Pagination flags reset too
+  // so a fresh query starts with a clean lifecycle.
   $effect(() => {
     // Touch the reactive inputs so Svelte re-runs this effect.
     query
     scope
     filters
     serverSearched = false
+    loadingServerOlder = false
+    serverOlderExhausted = false
     void runLocal()
   })
 
@@ -131,10 +144,109 @@
       )
       hits = merged
       serverSearched = true
+      // First server round returned fewer than the page size →
+      // server has no more matches, stop the scroll-paginator.
+      serverOlderExhausted = serverHits.length < SERVER_PAGE_SIZE
     } catch (e: any) {
       error = formatError(e) || 'Server search failed'
     } finally {
       serverSearching = false
+    }
+  }
+
+  /** Smallest UID currently held among server-search hits — the
+   *  cursor for the next "load older server matches" round.
+   *  Local-only hits are excluded since they may live in folders
+   *  we haven't searched server-side. */
+  function smallestServerUid(): number | null {
+    let smallest: number | null = null
+    for (const h of hits) {
+      if (smallest === null || h.uid < smallest) smallest = h.uid
+    }
+    return smallest
+  }
+
+  /** Fetch the next page of server-side matches via
+   *  `search_imap_server_older`. Triggered automatically by the
+   *  scroll-near-bottom handler once the user has run a server
+   *  search and there are more matches to load. */
+  async function loadServerOlder() {
+    if (loadingServerOlder || serverOlderExhausted) return
+    if (!serverSearched) return  // user hasn't kicked off server search yet
+    if (!query.trim()) return
+    const smallest = smallestServerUid()
+    if (smallest === null) {
+      serverOlderExhausted = true
+      return
+    }
+
+    loadingServerOlder = true
+    try {
+      const folder = scope.folder ?? currentFolder
+      const more = await invoke<
+        Array<{
+          uid: number
+          folder: string
+          from: string
+          subject: string
+          date: string
+          is_read: boolean
+          is_starred: boolean
+        }>
+      >('search_imap_server_older', {
+        accountId,
+        folder,
+        query,
+        beforeUid: smallest,
+        limit: SERVER_PAGE_SIZE,
+      })
+
+      if (more.length === 0) {
+        serverOlderExhausted = true
+        return
+      }
+
+      const seen = new Set(hits.map((h) => `${h.folder}:${h.uid}`))
+      const merged = [...hits]
+      for (const s of more) {
+        const key = `${s.folder}:${s.uid}`
+        if (seen.has(key)) continue
+        merged.push({
+          accountId,
+          folder: s.folder,
+          uid: s.uid,
+          from: s.from,
+          subject: s.subject,
+          date: s.date,
+          isRead: s.is_read,
+          isStarred: s.is_starred,
+          hasAttachments: false,
+          snippet: '',
+        })
+      }
+      merged.sort(
+        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+      )
+      hits = merged
+      // Server returned fewer than we asked for → no more older
+      // matches.
+      if (more.length < SERVER_PAGE_SIZE) serverOlderExhausted = true
+    } catch (e) {
+      console.warn('search_imap_server_older failed:', e)
+    } finally {
+      loadingServerOlder = false
+    }
+  }
+
+  /** Scroll handler — fires `loadServerOlder` when the user is
+   *  within ~400 px of the bottom of the results list, mirroring
+   *  the MailList infinite-scroll trigger. No-op until the user
+   *  has clicked "Search server too" at least once. */
+  function onListScroll(e: Event) {
+    const el = e.currentTarget as HTMLDivElement
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distanceFromBottom < 400) {
+      void loadServerOlder()
     }
   }
 
@@ -191,7 +303,7 @@
     {/if}
   </div>
 
-  <div class="flex-1 overflow-y-auto">
+  <div class="flex-1 overflow-y-auto" onscroll={onListScroll}>
     {#if error}
       <div class="p-4 text-sm text-red-500">{error}</div>
     {:else if !loading && hits.length === 0}
@@ -235,6 +347,20 @@
           </div>
         </button>
       {/each}
+
+      <!-- Server-search infinite-scroll status row (#194 follow-up).
+           Only renders once "Search server too" has run and there's
+           something to paginate. -->
+      {#if loadingServerOlder}
+        <div class="px-4 py-3 text-center text-xs text-surface-500 inline-flex items-center justify-center gap-2 w-full">
+          <Icon name="loading" size={14} />
+          Loading older server matches…
+        </div>
+      {:else if serverSearched && serverOlderExhausted && hits.length > 0}
+        <div class="px-4 py-3 text-center text-[11px] text-surface-400 uppercase tracking-wider">
+          End of server results
+        </div>
+      {/if}
     {/if}
   </div>
 </div>

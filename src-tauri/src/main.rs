@@ -6489,6 +6489,47 @@ async fn search_imap_server(
     Ok(hits)
 }
 
+/// "Load older server-search results" — same shape as
+/// `search_imap_server` but takes a `before_uid` cursor so
+/// SearchResults can paginate the IMAP search hits past the
+/// initial round (#194 follow-up). The frontend tracks the
+/// smallest UID it currently has from a previous server-search
+/// call and passes it here; we return up to `limit` envelopes
+/// matching the same criterion with UID < before_uid.
+///
+/// JMAP returns empty (same posture as `search_imap_server`,
+/// since the JMAP cache-first path covers the user's needs
+/// without server pagination).
+#[tauri::command]
+async fn search_imap_server_older(
+    account_id: String,
+    folder: String,
+    query: String,
+    before_uid: u32,
+    limit: u32,
+    cache: State<'_, Cache>,
+) -> Result<Vec<EmailEnvelope>, NimbusError> {
+    let account = load_account(&cache, &account_id)?;
+    if uses_jmap(&account) {
+        return Ok(Vec::new());
+    }
+    let criterion = imap_search_criterion(&query);
+    if criterion.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut client = connect_imap(&account).await?;
+    let hits = client
+        .search_envelopes_older(&folder, &criterion, before_uid, limit)
+        .await?;
+    let _ = client.logout().await;
+
+    if !hits.is_empty() {
+        cache.upsert_envelopes_for_account(&account_id, &hits)?;
+    }
+    Ok(hits)
+}
+
 /// Translate a user query into an IMAP SEARCH criterion string.
 ///
 /// We keep this much simpler than the FTS parser — IMAP SEARCH
@@ -8445,6 +8486,7 @@ fn main() {
             detect_jmap,
             search_emails,
             search_imap_server,
+            search_imap_server_older,
             start_nextcloud_login,
             poll_nextcloud_login,
             get_nextcloud_accounts,

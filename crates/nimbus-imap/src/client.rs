@@ -1323,6 +1323,116 @@ impl ImapClient {
         Ok(envelopes)
     }
 
+    /// Server-side search variant of `search_envelopes` that returns
+    /// only matches with UIDs strictly less than `before_uid`. Used
+    /// by SearchResults' infinite-scroll path (#194 follow-up): when
+    /// the user has clicked "Search server too" and wants to keep
+    /// loading deeper into the server's results.
+    ///
+    /// Same SEARCH-then-FETCH shape as `search_envelopes`: the UID
+    /// criterion is AND'd into the query so the server-side filter
+    /// runs as part of one SEARCH instead of two; we then sort the
+    /// returned UIDs descending and FETCH just the top `limit`.
+    pub async fn search_envelopes_older(
+        &mut self,
+        folder: &str,
+        criterion: &str,
+        before_uid: u32,
+        limit: u32,
+    ) -> Result<Vec<EmailEnvelope>, NimbusError> {
+        if before_uid <= 1 {
+            return Ok(Vec::new());
+        }
+        let _ = self.select_folder(folder).await?;
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        // AND the user's query with `UID 1:<before_uid-1>` so the
+        // server returns only matches strictly older than the
+        // anchor — saves us a client-side filter pass.
+        let combined = format!("UID 1:{} {}", before_uid - 1, criterion);
+        debug!("UID SEARCH (older) in '{folder}': {combined}");
+        let mut uids: Vec<u32> = session
+            .uid_search(&combined)
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID SEARCH (older) failed: {e}")))?
+            .into_iter()
+            .collect();
+
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        uids.sort_unstable_by(|a, b| b.cmp(a));
+        uids.truncate(limit as usize);
+
+        let set = uids
+            .iter()
+            .map(|u| u.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let fetches: Vec<_> = session
+            .uid_fetch(set, "(UID FLAGS INTERNALDATE ENVELOPE)")
+            .await
+            .map_err(|e| {
+                NimbusError::Protocol(format!("UID FETCH (older search) failed: {e}"))
+            })?
+            .try_collect()
+            .await
+            .map_err(|e| {
+                NimbusError::Protocol(format!("Failed to read older SEARCH FETCH: {e}"))
+            })?;
+
+        let mut envelopes: Vec<EmailEnvelope> = fetches
+            .iter()
+            .filter_map(|fetch| {
+                let uid = fetch.uid?;
+                let envelope = fetch.envelope()?;
+                let subject = envelope
+                    .subject
+                    .as_ref()
+                    .map(|s| decode_header(s))
+                    .unwrap_or_default();
+                let from = envelope
+                    .from
+                    .as_ref()
+                    .and_then(|addrs| addrs.first())
+                    .map(format_address)
+                    .unwrap_or_default();
+                let date = envelope
+                    .date
+                    .as_ref()
+                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                    .and_then(parse_rfc2822)
+                    .or_else(|| fetch.internal_date().map(|dt| dt.with_timezone(&Utc)))
+                    .unwrap_or_else(Utc::now);
+                let mut is_read = false;
+                let mut is_starred = false;
+                for flag in fetch.flags() {
+                    match flag {
+                        async_imap::types::Flag::Seen => is_read = true,
+                        async_imap::types::Flag::Flagged => is_starred = true,
+                        _ => {}
+                    }
+                }
+                Some(EmailEnvelope {
+                    uid,
+                    folder: folder.to_string(),
+                    from,
+                    subject,
+                    date,
+                    is_read,
+                    is_starred,
+                    account_id: String::new(),
+                })
+            })
+            .collect();
+        envelopes.sort_unstable_by_key(|e| std::cmp::Reverse(e.date));
+        Ok(envelopes)
+    }
+
     /// Fetch up to `limit` envelopes whose UIDs are strictly less than
     /// `before_uid`, sorted newest-first.  Used by MailList's
     /// infinite-scroll "load older" path (#194): the cold-cache
