@@ -1450,6 +1450,7 @@
   ></button>
   <div
     role="menu"
+    tabindex="-1"
     class="fixed z-50 min-w-44 rounded-md shadow-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 py-1 text-sm"
     style="left: {appContextMenu.x}px; top: {appContextMenu.y}px"
     onmousedown={(e) => e.stopPropagation()}

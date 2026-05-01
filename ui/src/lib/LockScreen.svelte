@@ -49,12 +49,23 @@
   let error = $state('')
   let passphraseValue = $state('')
   let activeMethod = $state<Method | null>(null)
+  let passphraseInput = $state<HTMLInputElement | null>(null)
 
   // Default focus: prefer a hardware key (one tap, no typing) if
   // any are registered; otherwise show the passphrase prompt.
   $effect(() => {
     if (activeMethod) return
     activeMethod = methods.find((m) => m.kind === 'fido_prf') ?? methods[0] ?? null
+  })
+
+  // Focus the passphrase input when it mounts (replaces the
+  // `autofocus` attribute, which the linter flags as bad
+  // practice — global autofocus can fight a screen reader's
+  // own focus management).  The effect runs once the input
+  // ref is bound and re-runs if the user switches away to a
+  // FIDO method and back.
+  $effect(() => {
+    if (passphraseInput) passphraseInput.focus()
   })
 
   async function unlockWithPassphrase() {
@@ -182,9 +193,9 @@
             class="input w-full text-sm px-3 py-2 rounded-md"
             placeholder="Passphrase"
             bind:value={passphraseValue}
+            bind:this={passphraseInput}
             onkeydown={handleEnter}
             disabled={busy}
-            autofocus
             autocomplete="current-password"
           />
           <button
