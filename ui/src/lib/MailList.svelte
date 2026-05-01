@@ -463,19 +463,42 @@
     }
   }
 
-  /** Scroll handler — fires whenever the list scrolls.  When the
-   *  user is within ~400 px of the bottom we kick off the next
-   *  "load older" round.  The 400 px threshold gives the network
-   *  fetch time to land before the user actually hits the bottom,
-   *  so the list keeps growing smoothly instead of pausing on each
-   *  page boundary. */
+  /** How far above the bottom we trigger the next "load older"
+   *  round.  Generous (~2 viewports' worth of buffer) so the
+   *  network round-trip lands well before the user actually
+   *  scrolls into the unloaded region — they never see the
+   *  spinner unless they're scrolling at hard-flick speed. */
+  const PAGER_PREFETCH_PX = 1500
+
+  /** Scroll handler — fires the next "load older" round as soon
+   *  as the user is within `PAGER_PREFETCH_PX` of the bottom. */
   function onListScroll(e: Event) {
     const el = e.currentTarget as HTMLDivElement
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (distanceFromBottom < 400) {
+    if (distanceFromBottom < PAGER_PREFETCH_PX) {
       void loadOlder()
     }
   }
+
+  /** Eager prefetch (#194 follow-up): as soon as the initial
+   *  load lands, kick off the next page in the background so
+   *  the user can scroll past the first 50 rows without ever
+   *  hitting a "Loading older messages…" pause. Re-fires when
+   *  the folder / account / unified flag changes — each fresh
+   *  open prefetches its own next page. The flag below stops
+   *  it from looping past the first prefetch on any given
+   *  folder; subsequent pages still come via the scroll-based
+   *  trigger. */
+  let prefetchedFor = $state<string | null>(null)
+  $effect(() => {
+    const key = `${unified ? '__all__' : accountId}::${folder}`
+    if (prefetchedFor === key) return
+    if (loading || loadingOlder) return
+    if (envelopes.length === 0) return
+    if (olderExhausted) return
+    prefetchedFor = key
+    void loadOlder()
+  })
 
   // Render dates compactly: today → time, otherwise short date.
   function formatDate(iso: string): string {
