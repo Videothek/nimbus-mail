@@ -120,6 +120,7 @@
     theme_name: string
     theme_mode: ThemeMode
     mail_html_white_background: boolean
+    auto_load_remote_images: boolean
     auto_advance_after_remove: boolean
     default_calendar_id: string | null
     talk_reminder_enabled: boolean
@@ -146,6 +147,7 @@
     theme_name: 'cerberus',
     theme_mode: 'system',
     mail_html_white_background: true,
+    auto_load_remote_images: false,
     auto_advance_after_remove: true,
     default_calendar_id: null,
     talk_reminder_enabled: true,
@@ -1109,6 +1111,43 @@
             against the app's background, which respects dark-mode-aware emails
             but can wash out the rest. Each open mail also has its own toggle
             to override this default.
+          </p>
+        </div>
+
+        <!-- Auto-load remote images (#197).  Off by default because
+             every loaded remote image is a tracking signal back to
+             the sender ("Yes, this address is alive and the user
+             read it at $time").  On: bypass the per-message banner
+             entirely. -->
+        <div>
+          <p class="font-medium mb-2">Remote images in HTML mail</p>
+          <div class="flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="btn btn-sm {!appSettings.auto_load_remote_images
+                ? 'preset-filled-primary-500'
+                : 'preset-outlined-surface-500'}"
+              onclick={() => {
+                appSettings.auto_load_remote_images = false
+                scheduleSave()
+              }}
+            >Ask per message</button>
+            <button
+              type="button"
+              class="btn btn-sm {appSettings.auto_load_remote_images
+                ? 'preset-filled-primary-500'
+                : 'preset-outlined-surface-500'}"
+              onclick={() => {
+                appSettings.auto_load_remote_images = true
+                scheduleSave()
+              }}
+            >Always load</button>
+          </div>
+          <p class="text-xs text-surface-400 mt-1">
+            "Ask per message" blocks remote images by default and shows a
+            "Show images" / "Always show from this sender" banner — protects
+            against tracking pixels that confirm you opened the mail.
+            "Always load" hides the banner and pulls every image automatically.
           </p>
         </div>
 

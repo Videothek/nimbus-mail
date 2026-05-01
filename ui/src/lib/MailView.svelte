@@ -97,6 +97,12 @@
         dark mode. The user can override per message via a toolbar
         toggle. */
     forceWhiteBackground?: boolean
+    /** App-wide opt-in (#197) for "always load remote images".
+        When true, the per-message blocking pipeline is bypassed —
+        every HTML mail renders with its remote images loaded and
+        the "Remote images are blocked" banner doesn't appear.
+        Trades the privacy default for convenience. */
+    autoLoadRemoteImages?: boolean
     /** True when this `MailView` is the root of a popped-out
         standalone window (#104).  Hides the "Open in window"
         button (no point inside the window it would open) and
@@ -129,6 +135,7 @@
     onmessageremoved,
     inStandaloneWindow = false,
     forceWhiteBackground = true,
+    autoLoadRemoteImages = false,
     onmailto,
     refreshing = $bindable(false),
   }: Props = $props()
@@ -529,7 +536,10 @@
   // Recompute whenever the email body, per-message toggle, or trust state changes.
   let processedHtml = $derived.by(() => {
     if (!email?.body_html) return { html: '', hadBlocked: false }
-    return processEmailHtml(email.body_html, showImagesForMessage || trustedSender)
+    return processEmailHtml(
+      email.body_html,
+      showImagesForMessage || trustedSender || autoLoadRemoteImages,
+    )
   })
 
   // ── Click handling for the inline HTML body div ───────────────────────
@@ -1438,7 +1448,7 @@
                   {#if isOffice}
                     <button
                       role="menuitem"
-                      class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 inline-flex items-center gap-1.5"
+                      class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 inline-flex items-center gap-1.5"
                       onclick={runAndClose(() => openInOfficeViewer(att))}
                     ><Icon name="open-in-browser" size={14} /> Open in Office</button>
                   {:else if isPdf}
