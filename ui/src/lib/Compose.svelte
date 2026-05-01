@@ -19,7 +19,12 @@
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { untrack } from 'svelte'
   import { formatError } from './errors'
-  import { meetingInviteHtml, talkInviteHtml, type MeetingInvite } from './inviteHtml'
+  import {
+    meetingInviteHtml,
+    talkInviteHtml,
+    QUOTED_HISTORY_MARKER,
+    type MeetingInvite,
+  } from './inviteHtml'
   import RichTextEditor, {
     type EditorApi,
     type ContactSuggestion,
@@ -350,22 +355,34 @@
     untrack(() => initial?.meetingInvite ?? null),
   )
 
-  /** Pre-rendered HTML for whichever invite cards are pending —
-   *  recomputed automatically when the user adds a Talk room mid-
-   *  compose or dismisses an existing card.  Drives both the
-   *  editor-below preview iframe AND the submit pipeline. */
-  const pendingInvitesHtml = $derived.by(() => {
+  /** Local Tauri-served URL for the Nimbus logo, used by the
+   *  in-app preview. Tauri's webview reliably renders custom-
+   *  scheme assets; arbitrary HTTPS images can be slow / blocked
+   *  in dev. The `nimbus-logo://localhost/storm` scheme is the
+   *  same one the Settings → Design picker uses for its preview
+   *  tiles, so the resolved bytes are guaranteed to be live. */
+  const previewLogoUrl = convertFileSrc('storm', 'nimbus-logo')
+
+  /** Submission render — uses the default GitHub-hosted public
+   *  PNG so the recipient's mail client can fetch it. */
+  function submissionInvitesHtml(): string {
     let h = ''
     if (pendingTalkInvite) h += talkInviteHtml(pendingTalkInvite)
     if (pendingMeetingInvite) h += meetingInviteHtml(pendingMeetingInvite)
     return h
-  })
+  }
 
-  /** Final HTML body to ship — editor content + any pending
-   *  invite cards.  Called from `send()` and `saveDraft()` so
-   *  both paths agree on what the recipient receives. */
+  /** Final HTML body to ship — editor content with the invite
+   *  cards spliced in *above* the quoted-history wrapper (so the
+   *  recipient reads card → reply text → previous conversation,
+   *  in that order). When there's no quoted block (a fresh
+   *  compose, not a reply) we just append the cards at the end. */
   function bodyHtmlForSubmission(): string {
-    return pendingInvitesHtml ? bodyHtml + pendingInvitesHtml : bodyHtml
+    const cards = submissionInvitesHtml()
+    if (!cards) return bodyHtml
+    const idx = bodyHtml.indexOf(`<div ${QUOTED_HISTORY_MARKER}=`)
+    if (idx === -1) return bodyHtml + cards
+    return bodyHtml.slice(0, idx) + cards + bodyHtml.slice(idx)
   }
 
   /** Build the editor's starting HTML — the body (plain text or
@@ -1442,7 +1459,7 @@
                   onclick={() => (pendingTalkInvite = null)}
                 >✕</button>
                 <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                {@html talkInviteHtml(pendingTalkInvite)}
+                {@html talkInviteHtml(pendingTalkInvite, { logoUrl: previewLogoUrl })}
               </div>
             {/if}
             {#if pendingMeetingInvite}
@@ -1455,7 +1472,7 @@
                   onclick={() => (pendingMeetingInvite = null)}
                 >✕</button>
                 <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                {@html meetingInviteHtml(pendingMeetingInvite)}
+                {@html meetingInviteHtml(pendingMeetingInvite, { logoUrl: previewLogoUrl })}
               </div>
             {/if}
           </div>
