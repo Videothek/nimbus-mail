@@ -77,21 +77,16 @@ When in doubt, look at how `ContactsView` (mailing-list rows) and `Sidebar` (mai
 
 ## Email-rendering conventions
 
-The Talk + meeting invite cards we drop into outgoing mail (`ui/src/lib/inviteHtml.ts`, used by Compose for the "Insert Talk link" and "Respond with meeting" flows) have a few non-obvious rules that go beyond normal HTML. Before changing the cards or the brand logo they carry, read this:
+The Talk + meeting invite cards we drop into outgoing mail (`ui/src/lib/inviteHtml.ts`, used by Compose for the "Insert Talk link" and "Respond with meeting" flows) have a few non-obvious rules that go beyond normal HTML:
 
 - **Inline styles only.** Gmail, Outlook, Yahoo, etc. all strip `<style>` blocks from received mail; class names carry no meaning across clients. Every visual property has to live on the element via `style="..."`. No external CSS, no `@import`, no `@font-face`.
 - **System font stack.** `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`. Crisp on every OS without a font fetch.
 - **Detail-row glyphs are emoji** (📅 🕐 📍 📝 💬 🔗). Universal client support. SVG / icon fonts inside email are unreliable across Outlook desktop and conservative Gmail setups.
-- **The Nimbus brand logo is embedded as a `data:image/png;base64,…` URI**, *not* as a remote URL. The constant is `PUBLIC_NIMBUS_LOGO_URL` in `ui/src/lib/inviteHtml.ts`. **Do not switch back to a remote URL** (`raw.githubusercontent.com/...`, a CDN, anything HTTPS) without understanding that:
-  - Most mail clients (Gmail, Apple Mail, Outlook, Nextcloud Mail) block remote images on first read until the user explicitly permits them. The recipient sees a broken image until they click "Show images" or trust the sender — undermining the brand-signal the header is meant to provide.
-  - The previous remote URL also pointed at a path that didn't exist on the v2 logo set, so it 404'd. (v2 ships `copper / forest / midnight / ocean / rose / slate / sunset` — *not* storm. Storm is a v1 style and lives at `logos/nimbus-logo/png/storm/...`.)
-- **To refresh the embedded logo**, re-encode whichever PNG is the new brand mark (typically 128 px) as base64 and replace the data URI literal:
-  ```bash
-  python -c "import base64; print('data:image/png;base64,' + base64.b64encode(open('logos/<chosen>.png','rb').read()).decode())"
-  ```
-  Splice that string into the `PUBLIC_NIMBUS_LOGO_URL` literal. Don't paste long base64 through tools that might truncate (the literal is ~5 KB) — write to a temp file or use a Python `re.sub` to splice in place. Verify by re-reading the file and base64-decoding back to bytes that match the source PNG.
+- **No images in the chrome.** The brand header is a typography-only wordmark in a soft pill — no `<img>`. We tried both:
+  - **Remote URL** (`raw.githubusercontent.com/...`): hit "block remote images by default" in Gmail / Apple Mail / Outlook and the recipient saw a broken-icon until they trusted the sender. (Also: the original path I picked pointed at the v2 set, but storm is a v1 style — easy mistake to repeat. v2 ships `copper / forest / midnight / ocean / rose / slate / sunset`; storm lives at `logos/nimbus-logo/png/storm/...`.)
+  - **Inline `data:image/png;base64,…` URI**: many corporate / hardened mail filters (Outlook in particular) strip `<img src="data:…">` for security, again leaving a broken-icon.
+  Both paths ate the logo. Don't reintroduce an `<img>` in the chrome unless you've solved this for the worst client your users will receive mail in. The `PUBLIC_NIMBUS_LOGO_URL` export is now an empty-string compatibility stub for any leftover importers.
 - **The editor's `NimbusBlock` extension** (`ui/src/lib/RichTextEditor.svelte`) recognises `<div data-nimbus-block="…">` wrappers as atom nodes so the styled cards survive Tiptap's schema. If you add a new card kind, stamp the wrapper with that data attribute and the editor will render it via the existing NodeView path — no new extension needed.
-- **Banner image swap-on-display only.** The NodeView used to swap the public logo URL for a local Tauri-served URL while the card was inside the editor (so the dev webview always rendered the brand header). With the data URI now baked in, that swap is a no-op for fresh content; the regex stays in place defensively. If you re-introduce a remote URL, the swap matters again — the local URL must NOT leak into the outbound HTML, so `Compose.bodyHtmlForSubmission()` runs a regex that rewrites Tauri-scheme URLs back to the public value.
 
 When in doubt, render the card to a local HTML file and open it in `outlook.com`, `mail.google.com`, and Apple Mail — those three are the dominant surfaces and have the strictest sanitisers.
 
