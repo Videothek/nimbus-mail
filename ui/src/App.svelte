@@ -658,6 +658,17 @@
     const wasOnMail = currentView === 'inbox'
     if (currentView !== 'inbox') currentView = 'inbox'
 
+    // Refresh on every IconRail click (#196): the user clicking
+    // an account avatar is an explicit "check this now" gesture,
+    // even when that avatar is already selected (early-return
+    // paths below skip the state reset, but the poll still
+    // fires). New envelopes flow in via the existing `new-mail`
+    // / `unread-count-updated` events the MailList already
+    // subscribes to — no extra wiring needed.
+    void invoke('check_mail_now').catch((e) => {
+      console.warn('check_mail_now from IconRail click failed', e)
+    })
+
     if (id === '__all__') {
       if (unifiedMode && wasOnMail) return
       unifiedMode = true
