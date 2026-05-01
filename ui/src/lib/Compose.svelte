@@ -17,6 +17,7 @@
    */
 
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+  import { untrack } from 'svelte'
   import { formatError } from './errors'
   import RichTextEditor, {
     type EditorApi,
@@ -472,8 +473,12 @@
   // `initialError` seeds the banner when Compose is re-opened
   // after a background send failure (#156).  Cleared by the next
   // `send()` validation pass — the user retrying is the implicit
-  // dismissal.
-  let error = $state(initialError)
+  // dismissal.  `untrack` so we read the prop's value once at
+  // mount without making `error` reactively follow the prop
+  // (the parent doesn't update it after open, and Svelte 5's
+  // `state_referenced_locally` warns when you naively pipe a
+  // prop into a $state initialiser).
+  let error = $state(untrack(() => initialError))
 
   // ── Talk room creation from Compose ────────────────────────
   // The "Add Event" flow used to live here too — it's been removed

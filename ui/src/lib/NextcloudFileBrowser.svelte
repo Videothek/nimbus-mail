@@ -393,9 +393,23 @@
           {#each entries as entry (entry.path)}
             {@const iconName = iconNameFor(entry)}
             <li>
-              <button
-                class="w-full flex items-center gap-3 px-5 py-2 text-left hover:bg-surface-100 dark:hover:bg-surface-800"
+              <!-- Outer row uses role="button" instead of an actual
+                   `<button>` because it nests an inner role="checkbox"
+                   button — buttons can't nest in HTML, and the linter
+                   warns about the resulting invalid SSR markup
+                   (svelte/e/node_invalid_placement_ssr).  Same click +
+                   keyboard semantics, valid markup. -->
+              <div
+                role="button"
+                tabindex="0"
+                class="w-full flex items-center gap-3 px-5 py-2 text-left cursor-pointer hover:bg-surface-100 dark:hover:bg-surface-800"
                 onclick={() => onEntryClick(entry)}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onEntryClick(entry)
+                  }
+                }}
               >
                 <!--
                   Folders also get a checkbox so the user can select a
@@ -450,7 +464,7 @@
                 {/if}
                 <span class="flex-1 truncate text-sm">{entry.name}</span>
                 <span class="text-xs text-surface-500">{formatSize(entry.size)}</span>
-              </button>
+              </div>
             </li>
           {/each}
         </ul>
