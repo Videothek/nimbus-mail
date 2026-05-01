@@ -81,6 +81,21 @@ pub struct AppSettings {
     /// with the stock catalogue.
     #[serde(default)]
     pub custom_themes: Vec<CustomTheme>,
+    /// User-selected app-icon style (taskbar / tray / window).  One
+    /// of the slugs known to the runtime (`storm`, `dawn`, `mint`,
+    /// `sky`, `twilight`, `monochrome-black`, `monochrome-white`).
+    /// `set_logo_style` swaps the running tray and main-window icon
+    /// to this style and persists it; on next boot the chosen icon
+    /// is reapplied before the window is shown.  Note: the .exe icon
+    /// shown in Windows Explorer / macOS Finder *before launch* is
+    /// baked into the binary at build time and is not affected by
+    /// this setting — only what the user sees while the app runs.
+    #[serde(default = "default_logo_style")]
+    pub logo_style: String,
+}
+
+fn default_logo_style() -> String {
+    "storm".to_string()
 }
 
 /// One user-imported Skeleton theme — the metadata the picker
@@ -144,6 +159,7 @@ impl Default for AppSettings {
             talk_reminder_enabled: true,
             autostart_enabled: false,
             custom_themes: Vec::new(),
+            logo_style: default_logo_style(),
         }
     }
 }

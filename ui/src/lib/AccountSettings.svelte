@@ -126,6 +126,9 @@
     autostart_enabled: boolean
     /** User-imported Skeleton themes (#132 tier 2). */
     custom_themes?: CustomThemeRow[]
+    /** App-icon style slug — drives the tray, window titlebar and
+     *  taskbar icon. Picker lives in Settings → Design. */
+    logo_style?: string
   }
   interface CustomThemeRow {
     id: string
@@ -148,7 +151,45 @@
     talk_reminder_enabled: true,
     autostart_enabled: false,
     custom_themes: [],
+    logo_style: 'storm',
   })
+
+  // ── Logo / app-icon picker (Issue #X) ───────────────────────
+  // Each entry is one slug the Rust side knows: the image source
+  // is the `nimbus-logo://localhost/<id>` URI scheme (registered
+  // in main.rs) which streams the embedded PNG bytes back as a
+  // plain image response. Click → invoke `set_logo_style`, which
+  // hot-swaps the running tray + window icon and persists the
+  // pick to `app_settings.json`.
+  interface LogoStyle {
+    id: string
+    label: string
+    swatchTone: string  // bg-tailwind class for the underline accent
+  }
+  const LOGO_STYLES: LogoStyle[] = [
+    { id: 'storm',             label: 'Storm',            swatchTone: 'bg-blue-500' },
+    { id: 'dawn',              label: 'Dawn',             swatchTone: 'bg-orange-400' },
+    { id: 'mint',              label: 'Mint',             swatchTone: 'bg-emerald-400' },
+    { id: 'sky',               label: 'Sky',              swatchTone: 'bg-sky-400' },
+    { id: 'twilight',          label: 'Twilight',         swatchTone: 'bg-violet-500' },
+    { id: 'monochrome-black',  label: 'Mono — Black',     swatchTone: 'bg-slate-900' },
+    { id: 'monochrome-white',  label: 'Mono — White',     swatchTone: 'bg-slate-200' },
+  ]
+  let logoSaving = $state(false)
+
+  async function pickLogoStyle(id: string) {
+    if (logoSaving || appSettings.logo_style === id) return
+    logoSaving = true
+    try {
+      await invoke('set_logo_style', { style: id })
+      appSettings.logo_style = id
+      onappprefschanged?.({ ...appSettings })
+    } catch (e) {
+      console.warn('set_logo_style failed', e)
+    } finally {
+      logoSaving = false
+    }
+  }
 
   /** Picker rows — stock themes plus the user's imports.  Driven
    *  by `appSettings.custom_themes` so a fresh import / remove
@@ -1068,6 +1109,45 @@
             against the app's background, which respects dark-mode-aware emails
             but can wash out the rest. Each open mail also has its own toggle
             to override this default.
+          </p>
+        </div>
+
+        <!-- App icon picker — swaps the running tray + window
+             icon (and Windows taskbar entry, which mirrors the
+             window icon) to one of the bundled styles.  The
+             `nimbus-logo://localhost/<id>` URI scheme serves the
+             embedded PNG bytes so each tile previews the actual
+             icon, not just a colour swatch. -->
+        <div>
+          <p class="font-medium mb-2">App icon</p>
+          <div class="grid grid-cols-3 sm:grid-cols-4 gap-2">
+            {#each LOGO_STYLES as style (style.id)}
+              {@const active = (appSettings.logo_style ?? 'storm') === style.id}
+              <button
+                type="button"
+                class="flex flex-col items-center gap-1 p-2 rounded-md border transition-colors {active
+                  ? 'border-primary-500 bg-primary-500/10'
+                  : 'border-surface-300 dark:border-surface-700 hover:bg-surface-200 dark:hover:bg-surface-700'}"
+                disabled={logoSaving}
+                aria-pressed={active}
+                onclick={() => void pickLogoStyle(style.id)}
+                title="Use the {style.label} icon for the tray, window and taskbar"
+              >
+                <img
+                  src={`nimbus-logo://localhost/${style.id}`}
+                  alt={`${style.label} icon preview`}
+                  class="w-12 h-12 object-contain"
+                  loading="lazy"
+                />
+                <span class="text-xs">{style.label}</span>
+                <span class="block w-8 h-1 rounded-full {style.swatchTone}"></span>
+              </button>
+            {/each}
+          </div>
+          <p class="text-xs text-surface-400 mt-2">
+            Affects the tray icon, the window titlebar, and (on Windows) the
+            taskbar entry. The .exe icon shown in Explorer / Finder before
+            launch is fixed at build time and isn't changed by this picker.
           </p>
         </div>
       </div>
