@@ -18,6 +18,7 @@
     requestPermission,
     sendNotification,
   } from '@tauri-apps/plugin-notification'
+  import Icon from './lib/Icon.svelte'
   import IconRail, { type RailView } from './lib/IconRail.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import MailList from './lib/MailList.svelte'
@@ -1458,8 +1459,11 @@
     <button
       type="button"
       role="menuitem"
-      class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
       onclick={() => void refreshMailFromContextMenu()}
-    >🔄 Check mail now</button>
+    >
+      <Icon name="sync" size={16} />
+      <span>Check mail now</span>
+    </button>
   </div>
 {/if}
