@@ -210,15 +210,21 @@
     appContextMenu = null
   }
 
-  /** Reload the webview entirely. The Tauri-hosted Vite frontend
-   *  reboots — every Svelte component re-mounts, every module
-   *  re-runs its initialiser, the cache-warm + sync-state loads
-   *  re-fire — same effect as Ctrl/Cmd-R in a browser. We do this
-   *  through the right-click menu because there's no other
-   *  user-facing way to force a full UI reset short of restarting
-   *  the whole app. */
+  /** Right-click → Refresh: kicks off a server poll on the
+   *  Rust side (so new mail lands in the SQLite cache) and then
+   *  reboots the Vite-hosted Svelte UI (so every component
+   *  re-mounts and the freshly-cached envelopes paint). The
+   *  `check_mail_now` invoke is fire-and-forget on purpose — its
+   *  Promise dies with the page reload, but the *backend* command
+   *  it triggered keeps running on Tauri's async runtime,
+   *  unaffected by the frontend lifecycle. The reloaded UI's
+   *  event listeners pick up the resulting `new-mail` /
+   *  `unread-count-updated` emissions when the poll finishes. */
   function reloadFrontendFromContextMenu() {
     closeAppContextMenu()
+    void invoke('check_mail_now').catch((e) => {
+      console.warn('check_mail_now during refresh failed', e)
+    })
     window.location.reload()
   }
 
