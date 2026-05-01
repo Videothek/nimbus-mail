@@ -178,6 +178,46 @@
   let mailViewRefreshing = $state(false)
   const mailRefreshing = $derived(mailListRefreshing || mailViewRefreshing)
 
+  // ── Global right-click menu (#198) ───────────────────────────
+  // The webview's default right-click menu (Reload / Inspect /
+  // View source) shows on every surface that doesn't bind its
+  // own `oncontextmenu` — confusing in a desktop app where the
+  // user expects native-feeling actions.  Suppress that menu
+  // app-wide and offer a small "Check mail now" fallback so a
+  // right-click on inert space (toolbar, header, empty mail
+  // list area) still has *some* utility.
+  //
+  // Custom row-level menus (mails, folders, calendars,
+  // contacts) call e.preventDefault() inside their own handlers
+  // before the event bubbles up here, so we read
+  // `defaultPrevented` to detect "a row already claimed this"
+  // and skip showing the fallback in that case.
+  let appContextMenu = $state<{ x: number; y: number } | null>(null)
+
+  $effect(() => {
+    function onCtx(e: MouseEvent) {
+      const customHandled = e.defaultPrevented
+      e.preventDefault()
+      if (customHandled) return
+      appContextMenu = { x: e.clientX, y: e.clientY }
+    }
+    document.addEventListener('contextmenu', onCtx)
+    return () => document.removeEventListener('contextmenu', onCtx)
+  })
+
+  function closeAppContextMenu() {
+    appContextMenu = null
+  }
+
+  async function refreshMailFromContextMenu() {
+    closeAppContextMenu()
+    try {
+      await invoke('check_mail_now')
+    } catch (e) {
+      console.warn('check_mail_now from context menu failed', e)
+    }
+  }
+
   // ── Search state ────────────────────────────────────────────
   // `searchQuery` drives the mail-list column: non-empty query OR
   // any active filter swaps MailList out for SearchResults.
@@ -1395,4 +1435,30 @@
     onclose={onMeetingEditorClose}
     onsaved={onMeetingEditorSaved}
   />
+{/if}
+
+<!-- App-level right-click fallback menu (#198).  Mounted at the
+     root so it floats over every view; only opens when no
+     row-level oncontextmenu handler claimed the click. -->
+{#if appContextMenu}
+  <button
+    type="button"
+    class="fixed inset-0 z-40 cursor-default"
+    aria-label="Close menu"
+    onclick={closeAppContextMenu}
+    onkeydown={(e) => e.key === 'Escape' && closeAppContextMenu()}
+  ></button>
+  <div
+    role="menu"
+    class="fixed z-50 min-w-44 rounded-md shadow-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 py-1 text-sm"
+    style="left: {appContextMenu.x}px; top: {appContextMenu.y}px"
+    onmousedown={(e) => e.stopPropagation()}
+  >
+    <button
+      type="button"
+      role="menuitem"
+      class="block w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+      onclick={() => void refreshMailFromContextMenu()}
+    >🔄 Check mail now</button>
+  </div>
 {/if}
