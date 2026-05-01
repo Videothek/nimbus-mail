@@ -255,18 +255,21 @@
              fonts. -->
         <span class="absolute inset-0 flex items-center justify-center"><Icon name="global-inbox" size={20} /></span>
       </span>
-      {#if totalUnread > 0}
-        <span
-          class="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 text-[10px] rounded-full bg-red-500 text-white flex items-center justify-center font-semibold ring-2 ring-surface-100 dark:ring-surface-800"
-          title={`${totalUnread} unread across all inboxes`}
-        >{totalUnread > 99 ? '99+' : totalUnread}</span>
-      {/if}
       {#if unified && mailRefreshing}
+        <!-- Spinner first so the unread badge below paints on
+             top of it — the badge is the higher-priority signal
+             and the ring shouldn't ever obscure the count. -->
         <span
           class="pointer-events-none absolute inset-0 rounded-full border-2 border-transparent border-t-white/80 animate-spin"
           aria-hidden="true"
           title="Refreshing"
         ></span>
+      {/if}
+      {#if totalUnread > 0}
+        <span
+          class="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 text-[10px] rounded-full bg-red-500 text-white flex items-center justify-center font-semibold ring-2 ring-surface-100 dark:ring-surface-800"
+          title={`${totalUnread} unread across all inboxes`}
+        >{totalUnread > 99 ? '99+' : totalUnread}</span>
       {/if}
     </button>
     <!-- Sub-divider between the All-inboxes bubble and the
@@ -298,6 +301,20 @@
       {:else}
         {initials(a)}
       {/if}
+      {#if active && mailRefreshing}
+        <!-- Calm refresh hint (#161): a thin spinner ring
+             overlaid on the active avatar replaces the inline
+             "Refreshing…" strip that used to live in MailList /
+             MailView.  Only renders for the active account so
+             it doesn't compete with the avatar's content.
+             Painted *before* the unread badge so the badge sits
+             on top — the count is the higher-priority signal. -->
+        <span
+          class="pointer-events-none absolute inset-0 rounded-full border-2 border-transparent border-t-white/80 animate-spin"
+          aria-hidden="true"
+          title="Refreshing"
+        ></span>
+      {/if}
       {#if unread > 0}
         <!-- Red unread badge (#115).  Pinned top-right and
              ringed in the rail's surface colour so the badge
@@ -307,18 +324,6 @@
         <span
           class="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 text-[10px] rounded-full bg-red-500 text-white flex items-center justify-center font-semibold ring-2 ring-surface-100 dark:ring-surface-800"
         >{unread > 99 ? '99+' : unread}</span>
-      {/if}
-      {#if active && mailRefreshing}
-        <!-- Calm refresh hint (#161): a thin spinner ring
-             overlaid on the active avatar replaces the inline
-             "Refreshing…" strip that used to live in MailList /
-             MailView.  Only renders for the active account so
-             it doesn't compete with the avatar's content. -->
-        <span
-          class="pointer-events-none absolute inset-0 rounded-full border-2 border-transparent border-t-white/80 animate-spin"
-          aria-hidden="true"
-          title="Refreshing"
-        ></span>
       {/if}
     </button>
   {/each}
