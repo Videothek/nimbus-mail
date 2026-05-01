@@ -316,6 +316,38 @@
     void load(accountId, folder, unified)
   })
 
+  /** Merge a fresh batch of envelopes (newest N from the cache or
+   *  the server) into the current rendered list.  Crucial for
+   *  preserving infinite-scroll state (#194 follow-up): the old
+   *  "envelopes = fresh" pattern wiped out any older pages the
+   *  user had scrolled to whenever `refreshToken` bumped (clicking
+   *  the IconRail avatar, marking read, etc.), which collapsed the
+   *  list back to 50 rows and reset scroll position to wherever
+   *  it could no longer reach.
+   *
+   *  Strategy: dedupe by `(account_id, uid)`. Fresh entries win on
+   *  collision so flag changes (read/starred/etc.) from the
+   *  refresh propagate. Older paginated entries the fresh batch
+   *  doesn't touch stay in place. Result is sorted newest-first by
+   *  date so a freshly-arrived envelope appears at the top.
+   *
+   *  Trade-off: if a message was expunged server-side between
+   *  paginated load and refresh, it stays stale in the UI until
+   *  the user switches folders. Acceptable — far better than the
+   *  alternative of losing pagination on every keystroke. */
+  function mergeEnvelopes(
+    existing: EmailEnvelope[],
+    fresh: EmailEnvelope[],
+  ): EmailEnvelope[] {
+    if (existing.length === 0) return fresh
+    const byKey = new Map<string, EmailEnvelope>()
+    for (const e of existing) byKey.set(`${e.account_id}:${e.uid}`, e)
+    for (const e of fresh) byKey.set(`${e.account_id}:${e.uid}`, e) // fresh wins
+    const merged = Array.from(byKey.values())
+    merged.sort((a, b) => b.date.localeCompare(a.date))
+    return merged
+  }
+
   async function load(id: string, f: string, isUnified: boolean) {
     loading = true
     refreshing = false
@@ -336,8 +368,8 @@
           : { accountId: id, folder: f, limit: PAGE_SIZE },
       )
       if (stillCurrent()) {
-        envelopes = cached
-        if (cached.length > 0) loading = false
+        envelopes = mergeEnvelopes(envelopes, cached)
+        if (envelopes.length > 0) loading = false
       }
     } catch (e: any) {
       // Cache miss is not an error — just ignore and wait for network.
@@ -355,7 +387,7 @@
           : { accountId: id, folder: f, limit: PAGE_SIZE },
       )
       if (stillCurrent()) {
-        envelopes = fresh
+        envelopes = mergeEnvelopes(envelopes, fresh)
       }
     } catch (e: any) {
       if (envelopes.length === 0) {
