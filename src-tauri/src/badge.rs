@@ -6,17 +6,10 @@
 //! "you have something to read" at a glance, and reaches for the
 //! actual count from inside the app where typography is legible.
 //!
-//! The disc has two visual tricks:
-//!
-//! 1. **Alpha-blended red.** Tailwind red-500 at ~90% alpha
-//!    (`230/255`), composited via proper src-over-dst blending so
-//!    the underlying tray icon shows faintly through the disc.
-//!    Reads as a translucent overlay, not a flat sticker.
-//!
-//! 2. **2×2 supersampled circle edge.** Each pixel along the
-//!    circumference samples 4 sub-pixel positions; the fraction
-//!    inside the circle becomes the pixel's coverage. Smooth
-//!    boundary with no FFT-grade AA stack.
+//! The disc uses a 2×2 supersampled edge: each pixel along the
+//! circumference samples 4 sub-pixel positions; the fraction
+//! inside the circle becomes the pixel's coverage. Smooth
+//! boundary with no FFT-grade AA stack.
 //!
 //! The tray icon is the base PNG composited with the dot in the
 //! bottom-right corner. The Windows taskbar overlay is the dot
@@ -24,16 +17,8 @@
 
 use tauri::image::Image;
 
-/// Tailwind red-500, fully opaque. The thin halo around it (drawn
-/// first, see below) gives the disc its breathing room so we don't
-/// need translucency to keep it from looking like a sticker.
+/// Tailwind red-500, fully opaque.
 const BADGE_RGBA: [u8; 4] = [239, 68, 68, 255];
-
-/// Soft white ring drawn underneath the red disc. Same trick
-/// macOS/iOS notification badges use: separates the badge from a
-/// busy underlying icon at any background colour. Slightly
-/// translucent so it doesn't read as a hard cutout.
-const HALO_RGBA: [u8; 4] = [255, 255, 255, 220];
 
 /// Composite the unread dot onto a copy of `base_pixels` and
 /// return it as an owned Tauri image. When `unread == 0` the
@@ -56,19 +41,10 @@ pub fn render_tray_icon(
         // base icon still produces a visible disc.
         let badge_size = ((dim * 22) / 100).max(8);
         let inset = (dim / 16).max(2);
-        // 2 px (or 1.25%-of-icon, whichever is bigger) white ring
-        // around the disc — separates it from a busy underlying
-        // icon at any colour, the same trick macOS / iOS
-        // notification badges use.
-        let ring = (dim / 80).max(2);
-        let halo_size = badge_size + 2 * ring;
 
         let bx = width.saturating_sub(badge_size + inset);
         let by = inset;
-        let hx = bx.saturating_sub(ring);
-        let hy = by.saturating_sub(ring);
 
-        draw_filled_circle(&mut p, width, height, hx, hy, halo_size, HALO_RGBA);
         draw_filled_circle(&mut p, width, height, bx, by, badge_size, BADGE_RGBA);
         p
     };
@@ -96,18 +72,13 @@ pub fn render_taskbar_overlay(unread: u32) -> Option<Image<'static>> {
     }
     const W: u32 = 16;
     const H: u32 = 16;
-    // 10×10 disc with a 1px white halo, centered in the 16×16
-    // canvas (3px transparent padding all around). Leaves the
-    // visible badge ~half the taskbar overlay slot — modern
-    // dock-indicator proportions.
+    // 10×10 disc centered in the 16×16 canvas (3 px transparent
+    // padding all around). Leaves the visible badge ~half the
+    // taskbar overlay slot — modern dock-indicator proportions.
     const BADGE_SIZE: u32 = 10;
-    const RING: u32 = 1;
-    const HALO_SIZE: u32 = BADGE_SIZE + 2 * RING;
     let badge_pos = (W - BADGE_SIZE) / 2;
-    let halo_pos = (W - HALO_SIZE) / 2;
 
     let mut pixels = vec![0u8; (W * H * 4) as usize];
-    draw_filled_circle(&mut pixels, W, H, halo_pos, halo_pos, HALO_SIZE, HALO_RGBA);
     draw_filled_circle(&mut pixels, W, H, badge_pos, badge_pos, BADGE_SIZE, BADGE_RGBA);
     Some(Image::new_owned(pixels, W, H))
 }
