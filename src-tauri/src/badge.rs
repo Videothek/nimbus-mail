@@ -50,16 +50,21 @@ pub fn render_tray_icon(
     } else {
         let mut p = base_pixels.to_vec();
         let dim = width.min(height);
-        // Modern dock-badge sizing: ~22% of the icon's short side,
-        // not flush against the edge. The previous 30%/0-inset
-        // combo read as a sticker pasted on the corner; this
-        // matches the size + insetting macOS / iOS use.
-        let badge_size = ((dim * 22) / 100).max(8);
-        let inset = (dim / 16).max(2);
-        // Halo is the badge plus a 2px (or 1.25%-of-icon, whichever
-        // is bigger) ring on every side so it pops without looking
-        // dipped in white-out.
-        let ring = (dim / 80).max(2);
+        // Indicator-style: ~14% of the icon's short side and well
+        // inset from the corner. This is the proportion modern
+        // dock badges (Slack, Discord, Apple Mail without a count)
+        // actually use; the earlier 22-30% sizes read as a sticker.
+        // Floor of 4 px so a tiny tray icon still shows something
+        // visible.
+        let badge_size = ((dim * 14) / 100).max(4);
+        // Inset by ~10% of the icon side so the dot sits inside
+        // the visible mark, not in the canvas's transparent
+        // padding.
+        let inset = (dim / 10).max(2);
+        // 1 px halo — just enough separation against a busy mark
+        // at full size, vanishes acceptably when the OS downscales
+        // for a 16 / 32 px tray render.
+        let ring: u32 = 1;
         let halo_size = badge_size + 2 * ring;
 
         let bx = width.saturating_sub(badge_size + inset);
