@@ -95,6 +95,32 @@ mod logo_assets {
     pub const MONO_WHITE: &[u8] = include_bytes!(
         "../../logos/nimbus-logo/png/monochrome/nimbus-mono-white.png"
     );
+
+    // ── v2 logo set (added in #197 follow-up) ────────────────────
+    // Same 256 px naming convention as v1; lives under the
+    // separate `nimbus-logo-v2` folder so the original art and
+    // the new pack stay independently swappable.
+    pub const COPPER: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo-v2/png/copper/nimbus-256.png"
+    );
+    pub const FOREST: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo-v2/png/forest/nimbus-256.png"
+    );
+    pub const MIDNIGHT: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo-v2/png/midnight/nimbus-256.png"
+    );
+    pub const OCEAN: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo-v2/png/ocean/nimbus-256.png"
+    );
+    pub const ROSE: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo-v2/png/rose/nimbus-256.png"
+    );
+    pub const SLATE: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo-v2/png/slate/nimbus-256.png"
+    );
+    pub const SUNSET: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo-v2/png/sunset/nimbus-256.png"
+    );
 }
 
 /// Map a style slug to the embedded PNG bytes.  Unknown slug →
@@ -102,12 +128,21 @@ mod logo_assets {
 /// future-renamed style) can never leave the tray with no icon.
 fn logo_bytes_for(style: &str) -> &'static [u8] {
     match style {
+        // v1 styles (atmospheric set)
         "dawn" => logo_assets::DAWN,
         "mint" => logo_assets::MINT,
         "sky" => logo_assets::SKY,
         "twilight" => logo_assets::TWILIGHT,
         "monochrome-black" => logo_assets::MONO_BLACK,
         "monochrome-white" => logo_assets::MONO_WHITE,
+        // v2 styles (elemental set)
+        "copper" => logo_assets::COPPER,
+        "forest" => logo_assets::FOREST,
+        "midnight" => logo_assets::MIDNIGHT,
+        "ocean" => logo_assets::OCEAN,
+        "rose" => logo_assets::ROSE,
+        "slate" => logo_assets::SLATE,
+        "sunset" => logo_assets::SUNSET,
         _ => logo_assets::STORM,
     }
 }

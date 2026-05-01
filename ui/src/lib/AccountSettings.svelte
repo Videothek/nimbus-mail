@@ -169,6 +169,7 @@
     swatchTone: string  // bg-tailwind class for the underline accent
   }
   const LOGO_STYLES: LogoStyle[] = [
+    // v1 — atmospheric set
     { id: 'storm',             label: 'Storm',            swatchTone: 'bg-blue-500' },
     { id: 'dawn',              label: 'Dawn',             swatchTone: 'bg-orange-400' },
     { id: 'mint',              label: 'Mint',             swatchTone: 'bg-emerald-400' },
@@ -176,6 +177,14 @@
     { id: 'twilight',          label: 'Twilight',         swatchTone: 'bg-violet-500' },
     { id: 'monochrome-black',  label: 'Mono — Black',     swatchTone: 'bg-slate-900' },
     { id: 'monochrome-white',  label: 'Mono — White',     swatchTone: 'bg-slate-200' },
+    // v2 — elemental set
+    { id: 'copper',            label: 'Copper',           swatchTone: 'bg-orange-700' },
+    { id: 'forest',            label: 'Forest',           swatchTone: 'bg-green-700' },
+    { id: 'midnight',          label: 'Midnight',         swatchTone: 'bg-indigo-900' },
+    { id: 'ocean',             label: 'Ocean',            swatchTone: 'bg-cyan-600' },
+    { id: 'rose',              label: 'Rose',             swatchTone: 'bg-rose-500' },
+    { id: 'slate',             label: 'Slate',            swatchTone: 'bg-slate-500' },
+    { id: 'sunset',            label: 'Sunset',           swatchTone: 'bg-orange-500' },
   ]
   let logoSaving = $state(false)
 
