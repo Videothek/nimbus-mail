@@ -332,6 +332,42 @@
   // svelte-ignore state_referenced_locally
   let bodyHtml = $state(initialBodyHtml())
 
+  // ── Pending invite cards (#195 follow-up) ──────────────────────
+  //
+  // Talk + meeting invitation blocks are kept here, *outside* the
+  // editor's HTML body, so the user can see the rendered card in
+  // a live preview below the editor without the editor's own
+  // schema mangling the inline styles.  Both cards are appended
+  // to the editor's HTML at send / save-draft time via
+  // `bodyHtmlForSubmission()`.  A small × button on each preview
+  // lets the user drop the card before sending.
+  // svelte-ignore state_referenced_locally
+  let pendingTalkInvite = $state<{ name: string; url: string } | null>(
+    untrack(() => initial?.talkLink ?? null),
+  )
+  // svelte-ignore state_referenced_locally
+  let pendingMeetingInvite = $state<MeetingInvite | null>(
+    untrack(() => initial?.meetingInvite ?? null),
+  )
+
+  /** Pre-rendered HTML for whichever invite cards are pending —
+   *  recomputed automatically when the user adds a Talk room mid-
+   *  compose or dismisses an existing card.  Drives both the
+   *  editor-below preview iframe AND the submit pipeline. */
+  const pendingInvitesHtml = $derived.by(() => {
+    let h = ''
+    if (pendingTalkInvite) h += talkInviteHtml(pendingTalkInvite)
+    if (pendingMeetingInvite) h += meetingInviteHtml(pendingMeetingInvite)
+    return h
+  })
+
+  /** Final HTML body to ship — editor content + any pending
+   *  invite cards.  Called from `send()` and `saveDraft()` so
+   *  both paths agree on what the recipient receives. */
+  function bodyHtmlForSubmission(): string {
+    return pendingInvitesHtml ? bodyHtml + pendingInvitesHtml : bodyHtml
+  }
+
   /** Build the editor's starting HTML — the body (plain text or
       already-HTML draft) with any pre-rendered Nextcloud share-link
       block appended. Same shape as the in-Compose picker emits when
@@ -350,26 +386,14 @@
         .join('')
       html += `<p><strong>Shared via Nextcloud:</strong></p>${items}`
     }
-    if (initial?.talkLink) {
-      // Modern Talk-meeting invite card (#195) — replaces the
-      // previous one-line "💬 <link>" with a styled HTML block
-      // that carries the Nimbus brand header, the room details,
-      // a prominent Join CTA, and the "you'll be invited via
-      // Nextcloud" microcopy.  Inline styles only, banner image
-      // pulled from this project's GitHub raw URL so the
-      // recipient's mail client can render it once they permit
-      // remote content.
-      html += talkInviteHtml({
-        name: initial.talkLink.name,
-        url: initial.talkLink.url,
-      })
-    }
-    if (initial?.meetingInvite) {
-      // Calendar-meeting invite card (#195) — same chrome as the
-      // Talk card so a thread carrying both reads as one
-      // coherent invitation rather than two separate stickers.
-      html += meetingInviteHtml(initial.meetingInvite)
-    }
+    // Talk + meeting invite cards aren't injected into the
+    // editor's body any more (#195 follow-up).  They live as
+    // Compose-level state and render in a separate read-only
+    // preview block below the editor so the user sees what the
+    // recipient will get without putting fragile inline-styled
+    // markup into the editable area.  At send / save-draft
+    // time, the rendered cards get appended to the editor's
+    // current HTML — see `bodyHtmlForSubmission()`.
     return html
   }
 
@@ -556,9 +580,11 @@
       once the mail actually sends.  `cancel()` ignores them — the
       room itself gets DELETEd so any pending invites are moot. */
   let pendingTalkParticipants = $state<string[]>([])
-  /** Whether the "Join the Talk room" body block has been appended
-      yet. The Talk button injects immediately. */
-  let talkLinkInjected = false
+  // (Removed `talkLinkInjected` flag — the previous editor-
+  // injection path needed dedupe to avoid duplicate <p>💬 …</p>
+  // blocks. With Talk invites now held as `pendingTalkInvite`
+  // state and rendered in the preview, re-setting is idempotent,
+  // so the flag is dead weight.)
 
   /** Resolve a Nextcloud account id (cached for the rest of the
       session). Sets `error` and returns null if none configured. */
@@ -590,40 +616,13 @@
     return [...splitAddrs(to), ...splitAddrs(cc)]
   }
 
-  /** Append the "Join the Talk room" body block once. Used by both
-      the immediate-injection path (Talk button) and the deferred path
-      (Add-Event auto-create → injected on event save).  The flag
-      keeps callers from accidentally duplicating the block.
-
-      When the active account has a signature appended, the block goes
-      *above* the signature so the join URL reads as part of the
-      message rather than as a postscript after the "-- " delimiter
-      (which most clients render as quote-y / hide on reply). */
+  /** Stage a Talk invite card for the outgoing mail (#195
+      follow-up).  No longer writes into the editor body; instead
+      we set `pendingTalkInvite`, which drives the live preview
+      card below the editor and gets appended to the body at
+      send / save-draft time. */
   function injectTalkBlock(link: { name: string; url: string }) {
-    if (talkLinkInjected) return
-    const esc = (s: string) =>
-      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    const block =
-      `<p><strong>Join the Talk room:</strong></p>` +
-      `<p>💬 <a href="${link.url}">${esc(link.name)}</a></p>`
-
-    // Splice above the signature when one's been auto-inserted and
-    // the user hasn't typed past it.  We re-set the editor HTML
-    // because the underlying editor doesn't expose an "insert
-    // before substring" primitive.
-    if (
-      insertedSignatureHtml
-      && bodyHtml.endsWith(insertedSignatureHtml)
-      && editorApi
-    ) {
-      const without = bodyHtml.slice(0, bodyHtml.length - insertedSignatureHtml.length)
-      const replaced = without + block + insertedSignatureHtml
-      editorApi.setHtml(replaced)
-      bodyHtml = replaced
-    } else {
-      editorApi?.appendHtml(block)
-    }
-    talkLinkInjected = true
+    pendingTalkInvite = { name: link.name, url: link.url }
   }
 
   function onTalkRoomCreated(room: TalkRoom, participants: string[]) {
@@ -742,8 +741,8 @@
           bcc: splitAddrs(bcc),
           reply_to: null,
           subject,
-          body_text: htmlToText(bodyHtml),
-          body_html: bodyHtml || null,
+          body_text: htmlToText(bodyHtmlForSubmission()),
+          body_html: bodyHtmlForSubmission() || null,
           attachments,
         },
         replaceSource: src ? { folder: src.folder, uid: src.uid } : null,
@@ -1015,7 +1014,7 @@
       bcc,
       subject,
       body,
-      bodyHtml,
+      bodyHtml: bodyHtmlForSubmission(),
       toList,
       ccList: splitAddrs(cc),
       bccList: splitAddrs(bcc),
@@ -1418,6 +1417,50 @@
           extraTabs={composeExtraTabs}
         />
       </div>
+
+      <!-- Pending invite cards (#195 follow-up): live preview of
+           what the recipient will actually see, rendered from the
+           same `inviteHtml` helper that builds the outbound HTML.
+           Held out of the editor's body so the editor can't mangle
+           inline styles, dismissable via the × on each card. -->
+      {#if pendingTalkInvite || pendingMeetingInvite}
+        <div class="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/40">
+          <div class="flex items-center justify-between px-3 py-2 border-b border-surface-200 dark:border-surface-700">
+            <span class="text-xs font-semibold uppercase tracking-wider text-surface-500">
+              Recipient will see
+            </span>
+            <span class="text-[11px] text-surface-400">Live preview</span>
+          </div>
+          <div class="p-2 space-y-2">
+            {#if pendingTalkInvite}
+              <div class="relative">
+                <button
+                  type="button"
+                  class="absolute top-3 right-3 z-10 w-6 h-6 rounded-full bg-surface-100 dark:bg-surface-800 text-surface-500 hover:bg-red-500/20 hover:text-red-500 text-xs flex items-center justify-center shadow-sm border border-surface-200 dark:border-surface-700"
+                  title="Remove Talk invite from message"
+                  aria-label="Remove Talk invite"
+                  onclick={() => (pendingTalkInvite = null)}
+                >✕</button>
+                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                {@html talkInviteHtml(pendingTalkInvite)}
+              </div>
+            {/if}
+            {#if pendingMeetingInvite}
+              <div class="relative">
+                <button
+                  type="button"
+                  class="absolute top-3 right-3 z-10 w-6 h-6 rounded-full bg-surface-100 dark:bg-surface-800 text-surface-500 hover:bg-red-500/20 hover:text-red-500 text-xs flex items-center justify-center shadow-sm border border-surface-200 dark:border-surface-700"
+                  title="Remove meeting invite from message"
+                  aria-label="Remove meeting invite"
+                  onclick={() => (pendingMeetingInvite = null)}
+                >✕</button>
+                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                {@html meetingInviteHtml(pendingMeetingInvite)}
+              </div>
+            {/if}
+          </div>
+        </div>
+      {/if}
 
       {#if attachments.length > 0}
         <div class="flex flex-wrap gap-2">
