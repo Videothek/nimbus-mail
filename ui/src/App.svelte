@@ -210,13 +210,16 @@
     appContextMenu = null
   }
 
-  async function refreshMailFromContextMenu() {
+  /** Reload the webview entirely. The Tauri-hosted Vite frontend
+   *  reboots — every Svelte component re-mounts, every module
+   *  re-runs its initialiser, the cache-warm + sync-state loads
+   *  re-fire — same effect as Ctrl/Cmd-R in a browser. We do this
+   *  through the right-click menu because there's no other
+   *  user-facing way to force a full UI reset short of restarting
+   *  the whole app. */
+  function reloadFrontendFromContextMenu() {
     closeAppContextMenu()
-    try {
-      await invoke('check_mail_now')
-    } catch (e) {
-      console.warn('check_mail_now from context menu failed', e)
-    }
+    window.location.reload()
   }
 
   // ── Search state ────────────────────────────────────────────
@@ -1460,10 +1463,10 @@
       type="button"
       role="menuitem"
       class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
-      onclick={() => void refreshMailFromContextMenu()}
+      onclick={reloadFrontendFromContextMenu}
     >
       <Icon name="sync" size={16} />
-      <span>Check mail now</span>
+      <span>Refresh</span>
     </button>
   </div>
 {/if}
