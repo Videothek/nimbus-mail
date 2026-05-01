@@ -1,0 +1,1 @@
+Original logos designed for Nimbus Mail, 2026
