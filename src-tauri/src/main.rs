@@ -8194,15 +8194,22 @@ fn main() {
                     }
                 });
 
-                // Honour `start_minimized`: hide the window right away
-                // so the app boots straight into the tray.
+                // The main window starts hidden (`visible: false` in
+                // tauri.conf.json) so we don't paint it with the
+                // bundled storm icon for a frame before the user's
+                // chosen logo style is applied above.  Now that the
+                // icon is in place, decide whether to show it:
+                //   - `start_minimized` true → leave it hidden, app
+                //     boots straight into the tray.
+                //   - otherwise → show the window with the correct
+                //     icon already painted in the titlebar / taskbar.
                 let should_hide_on_start = app
                     .state::<SharedSettings>()
                     .inner()
                     .blocking_read()
                     .start_minimized;
-                if should_hide_on_start {
-                    let _ = main_window.hide();
+                if !should_hide_on_start {
+                    let _ = main_window.show();
                 }
             } else {
                 tracing::warn!("main window not found at setup time");
