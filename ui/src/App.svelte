@@ -309,6 +309,7 @@
     theme_name: string
     theme_mode: ThemeMode
     mail_html_white_background: boolean
+    auto_load_remote_images: boolean
     auto_advance_after_remove: boolean
     talk_reminder_enabled: boolean
     autostart_enabled: boolean
@@ -1401,6 +1402,7 @@
         folder={selectedFolder}
         uid={selectedUid}
         forceWhiteBackground={appPrefs?.mail_html_white_background ?? true}
+        autoLoadRemoteImages={appPrefs?.auto_load_remote_images ?? false}
         onread={onMessageRead}
         onreply={onReply}
         onreplyall={onReplyAll}

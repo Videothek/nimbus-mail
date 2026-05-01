@@ -44,6 +44,18 @@ pub struct AppSettings {
     /// dark-themed emails or when a sender provides a proper
     /// dark-mode design.
     pub mail_html_white_background: bool,
+    /// Automatically load remote images embedded in HTML mail
+    /// without showing the "Remote images are blocked" banner.
+    ///
+    /// Default `false` (privacy-first): remote images are blocked
+    /// per-message until the user clicks "Show images" or
+    /// "Always show from <sender>". Tracking pixels are the
+    /// canonical reason for the default — every load tells the
+    /// sender the user opened the message. Turning this on
+    /// trades that signal for the convenience of every sender's
+    /// art rendering on first view.
+    #[serde(default)]
+    pub auto_load_remote_images: bool,
     /// After delete / archive, automatically open the row directly
     /// below the removed message (or above, if it was the last one).
     /// Default `true` — matches Gmail / Outlook / Thunderbird /
@@ -154,6 +166,7 @@ impl Default for AppSettings {
             theme_name: "cerberus".to_string(),
             theme_mode: ThemeMode::System,
             mail_html_white_background: true,
+            auto_load_remote_images: false,
             auto_advance_after_remove: true,
             default_calendar_id: None,
             talk_reminder_enabled: true,
