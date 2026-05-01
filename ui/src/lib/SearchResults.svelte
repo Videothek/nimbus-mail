@@ -238,17 +238,46 @@
     }
   }
 
-  /** Scroll handler — fires `loadServerOlder` when the user is
-   *  within ~400 px of the bottom of the results list, mirroring
-   *  the MailList infinite-scroll trigger. No-op until the user
-   *  has clicked "Search server too" at least once. */
+  /** How far above the bottom we trigger the next "load older
+   *  server matches" round. Generous (~2 viewports' worth) so
+   *  the network round-trip lands before the user actually
+   *  scrolls into the unloaded region. Mirrors MailList's
+   *  PAGER_PREFETCH_PX. */
+  const PAGER_PREFETCH_PX = 1500
+
+  /** Scroll handler — fires `loadServerOlder` as soon as the
+   *  user is within `PAGER_PREFETCH_PX` of the bottom of the
+   *  results list. No-op until the user has clicked "Search
+   *  server too" at least once. */
   function onListScroll(e: Event) {
     const el = e.currentTarget as HTMLDivElement
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (distanceFromBottom < 400) {
+    if (distanceFromBottom < PAGER_PREFETCH_PX) {
       void loadServerOlder()
     }
   }
+
+  /** Eager prefetch after the user kicks off "Search server
+   *  too" (#194 follow-up): as soon as that first server round
+   *  lands, fire one more `loadServerOlder` in the background
+   *  so the user can scroll past the first 100 results without
+   *  ever hitting a "Loading older server matches…" pause.
+   *  Subsequent pages keep coming via the scroll-based trigger.
+   *  Reset on every fresh query so each search has its own
+   *  prefetch lifecycle. */
+  let serverPrefetchedFor = $state<string | null>(null)
+  $effect(() => {
+    // Re-key on the user's query + folder so each fresh search
+    // gets its own prefetch round.
+    const key = `${query}::${scope.folder ?? currentFolder}`
+    if (!serverSearched) return
+    if (loadingServerOlder) return
+    if (serverOlderExhausted) return
+    if (hits.length === 0) return
+    if (serverPrefetchedFor === key) return
+    serverPrefetchedFor = key
+    void loadServerOlder()
+  })
 
   function formatDate(iso: string): string {
     const d = new Date(iso)
