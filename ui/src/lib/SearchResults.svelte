@@ -307,8 +307,35 @@
     {#if error}
       <div class="p-4 text-sm text-red-500">{error}</div>
     {:else if !loading && hits.length === 0}
-      <div class="p-6 text-center text-sm text-surface-500">
-        No messages match.
+      <!-- Empty-state.  When local FTS5 returned no hits and the
+           user hasn't yet asked the server, we explain *why*
+           (only cached messages were searched) and surface the
+           server-search button prominently — without that nudge
+           a "no results" outcome can be misleading: the server
+           may have matches the cache hasn't seen yet (#194). -->
+      <div class="p-8 text-center max-w-md mx-auto">
+        {#if !query.trim()}
+          <p class="text-sm text-surface-500">No messages match.</p>
+        {:else if serverSearched}
+          <p class="text-sm text-surface-500">No messages match on this device or on the server.</p>
+        {:else}
+          <div class="inline-flex items-center justify-center w-12 h-12 mb-3 rounded-full bg-surface-200 dark:bg-surface-800 text-surface-500">
+            <Icon name="search" size={22} />
+          </div>
+          <p class="text-base font-medium mb-1">No cached messages match</p>
+          <p class="text-sm text-surface-500 mb-4">
+            Only messages already on this device were searched. Older mail you haven't opened or scrolled to yet may live on the server.
+          </p>
+          <button
+            type="button"
+            class="btn preset-filled-primary-500 inline-flex items-center gap-2"
+            disabled={serverSearching}
+            onclick={runServer}
+          >
+            <Icon name={serverSearching ? 'loading' : 'sync'} size={14} />
+            {serverSearching ? 'Searching server…' : 'Search server too'}
+          </button>
+        {/if}
       </div>
     {:else}
       {#each hits as hit (`${hit.folder}:${hit.uid}`)}
