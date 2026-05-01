@@ -294,10 +294,25 @@
     e.dataTransfer.effectAllowed = 'move'
   }
 
+  // Infinite-scroll pagination state (#194). Each (account, folder)
+  // pair has its own "older fetch" lifecycle: a flag to prevent
+  // double-loads while a request is in flight, and an "exhausted"
+  // flag set once the IMAP server returns nothing older — that's
+  // the signal to stop trying.
+  const PAGE_SIZE = 50
+  let loadingOlder = $state(false)
+  let olderExhausted = $state(false)
+  let scrollContainer = $state<HTMLDivElement | null>(null)
+
   // Re-fetch whenever the account, folder, unified flag, or
-  // refreshToken changes.
+  // refreshToken changes.  Also resets the pagination flags so a
+  // freshly-opened folder starts with a clean "load older"
+  // affordance — the previous folder's exhausted flag must not
+  // leak into the new one.
   $effect(() => {
     refreshToken
+    loadingOlder = false
+    olderExhausted = false
     void load(accountId, folder, unified)
   })
 
@@ -317,8 +332,8 @@
       const cached = await invoke<EmailEnvelope[]>(
         isUnified ? 'get_unified_cached_envelopes' : 'get_cached_envelopes',
         isUnified
-          ? { folder: f, limit: 50 }
-          : { accountId: id, folder: f, limit: 50 },
+          ? { folder: f, limit: PAGE_SIZE }
+          : { accountId: id, folder: f, limit: PAGE_SIZE },
       )
       if (stillCurrent()) {
         envelopes = cached
@@ -336,8 +351,8 @@
       const fresh = await invoke<EmailEnvelope[]>(
         isUnified ? 'fetch_unified_envelopes' : 'fetch_envelopes',
         isUnified
-          ? { folder: f, limit: 50 }
-          : { accountId: id, folder: f, limit: 50 },
+          ? { folder: f, limit: PAGE_SIZE }
+          : { accountId: id, folder: f, limit: PAGE_SIZE },
       )
       if (stillCurrent()) {
         envelopes = fresh
@@ -351,6 +366,114 @@
     } finally {
       loading = false
       refreshing = false
+    }
+  }
+
+  /** Compute the smallest UID per account in the currently-rendered
+   *  envelope list — the anchor for the next "load older" round.
+   *  Returned as a Map<accountId, smallestUid> for the unified mode,
+   *  or as a single number for single-account mode. */
+  function smallestUidPerAccount(): Map<string, number> {
+    const out = new Map<string, number>()
+    for (const e of envelopes) {
+      const prev = out.get(e.account_id)
+      if (prev === undefined || e.uid < prev) {
+        out.set(e.account_id, e.uid)
+      }
+    }
+    return out
+  }
+
+  /** Fetch the next page of older envelopes via the
+   *  `fetch_older_envelopes` Tauri command (#194). Appends to
+   *  `envelopes` and persists in cache server-side. Triggered by
+   *  the scroll-near-bottom handler below; also safe to call
+   *  manually from a "Load older" button if we ever add one. */
+  async function loadOlder() {
+    if (loadingOlder || olderExhausted || envelopes.length === 0) return
+    if (loading) return  // initial paint still in flight
+
+    const idAtCall = accountId
+    const folderAtCall = folder
+    const unifiedAtCall = unified
+    loadingOlder = true
+    try {
+      let older: EmailEnvelope[]
+      if (unifiedAtCall) {
+        const map = smallestUidPerAccount()
+        if (map.size === 0) {
+          olderExhausted = true
+          return
+        }
+        // Tauri serialises Map → JSON object via Object.fromEntries.
+        const beforeUidPerAccount: Record<string, number> = {}
+        for (const [k, v] of map) beforeUidPerAccount[k] = v
+        older = await invoke<EmailEnvelope[]>('fetch_older_unified_envelopes', {
+          folder: folderAtCall,
+          beforeUidPerAccount,
+          limit: PAGE_SIZE,
+        })
+      } else {
+        const smallest = envelopes.reduce<number | null>(
+          (acc, e) => (acc === null || e.uid < acc ? e.uid : acc),
+          null,
+        )
+        if (smallest === null) {
+          olderExhausted = true
+          return
+        }
+        older = await invoke<EmailEnvelope[]>('fetch_older_envelopes', {
+          accountId: idAtCall,
+          folder: folderAtCall,
+          beforeUid: smallest,
+          limit: PAGE_SIZE,
+        })
+      }
+
+      // Stale-response guard — same shape as `load`.
+      const stillCurrent =
+        unifiedAtCall === unified
+        && (unifiedAtCall || (idAtCall === accountId && folderAtCall === folder))
+      if (!stillCurrent) return
+
+      if (older.length === 0) {
+        olderExhausted = true
+        return
+      }
+
+      // De-dupe in case the server includes a UID we already have
+      // (UID-search overlaps are rare but possible if a poll arrives
+      // mid-pagination). Newest-first ordering preserved by sorting
+      // the merged list by date descending.
+      const seen = new Set(envelopes.map((e) => `${e.account_id}:${e.uid}`))
+      const fresh = older.filter((e) => !seen.has(`${e.account_id}:${e.uid}`))
+      const merged = [...envelopes, ...fresh]
+      merged.sort((a, b) => b.date.localeCompare(a.date))
+      envelopes = merged
+
+      // If the server returned fewer than we asked for, there's
+      // probably nothing left — stop asking. (A folder with
+      // exactly PAGE_SIZE older messages will trigger one extra
+      // empty round, which is fine.)
+      if (older.length < PAGE_SIZE) olderExhausted = true
+    } catch (e) {
+      console.warn('fetch_older_envelopes failed:', e)
+    } finally {
+      loadingOlder = false
+    }
+  }
+
+  /** Scroll handler — fires whenever the list scrolls.  When the
+   *  user is within ~400 px of the bottom we kick off the next
+   *  "load older" round.  The 400 px threshold gives the network
+   *  fetch time to land before the user actually hits the bottom,
+   *  so the list keeps growing smoothly instead of pausing on each
+   *  page boundary. */
+  function onListScroll(e: Event) {
+    const el = e.currentTarget as HTMLDivElement
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distanceFromBottom < 400) {
+      void loadOlder()
     }
   }
 
@@ -483,7 +606,11 @@
 <div class="flex-1 flex flex-col min-w-0">
 
   <!-- Email list -->
-  <div class="flex-1 overflow-y-auto">
+  <div
+    class="flex-1 overflow-y-auto"
+    bind:this={scrollContainer}
+    onscroll={onListScroll}
+  >
     {#if loading}
       <div class="p-6 text-center text-sm text-surface-500">Loading…</div>
     {:else if error}
@@ -584,6 +711,23 @@
           </div>
         </div>
       {/each}
+
+      <!-- Infinite-scroll status row (#194). Sits at the bottom of
+           the list to give the user a calm signal of the
+           pagination state — a thin loading hint while the next
+           page is in flight, a quiet "end of folder" line once
+           the IMAP server has told us there's nothing older. The
+           scroll handler keeps fetching automatically. -->
+      {#if loadingOlder}
+        <div class="px-4 py-3 text-center text-xs text-surface-500 inline-flex items-center justify-center gap-2 w-full">
+          <Icon name="loading" size={14} />
+          Loading older messages…
+        </div>
+      {:else if olderExhausted && envelopes.length > 0}
+        <div class="px-4 py-3 text-center text-[11px] text-surface-400 uppercase tracking-wider">
+          End of folder
+        </div>
+      {/if}
     {/if}
   </div>
 </div>

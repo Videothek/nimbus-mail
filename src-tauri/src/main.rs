@@ -4840,6 +4840,121 @@ async fn fetch_envelopes_inner(
         .map_err(Into::into)
 }
 
+/// "Load older messages" — fetch up to `limit` envelopes whose UIDs
+/// are strictly less than `before_uid`, used by MailList's
+/// infinite-scroll path (#194). The cold-cache `fetch_envelopes`
+/// path only walks the tail of a folder, so this is the surface
+/// the UI calls when the user scrolls past the loaded set and
+/// wants to keep going.
+///
+/// IMAP path runs `UID SEARCH UID 1:<before_uid-1>`, slices the
+/// top `limit` UIDs (newest among the older), then fetches just
+/// those envelopes. The result is written through to the SQLite
+/// cache so subsequent loads are instant. Empty return = nothing
+/// older exists; the frontend stops asking.
+///
+/// JMAP isn't wired here yet — we tracing-warn and return an
+/// empty batch so the frontend simply stops paginating.
+#[tauri::command]
+async fn fetch_older_envelopes(
+    account_id: String,
+    folder: String,
+    before_uid: u32,
+    limit: u32,
+    cache: State<'_, Cache>,
+) -> Result<Vec<EmailEnvelope>, NimbusError> {
+    let account = load_account(&cache, &account_id)?;
+    if uses_jmap(&account) {
+        tracing::warn!(
+            "fetch_older_envelopes: JMAP older-pagination not implemented for '{account_id}'/'{folder}'"
+        );
+        return Ok(Vec::new());
+    }
+
+    let mut client = connect_imap(&account).await?;
+    let batch = client
+        .fetch_older_envelopes(&folder, before_uid, limit)
+        .await?;
+    let _ = client.logout().await;
+
+    if !batch.envelopes.is_empty() {
+        if let Err(e) = cache.upsert_envelopes_for_account(&account_id, &batch.envelopes) {
+            tracing::warn!("cache.upsert_envelopes (older) failed: {e}");
+        }
+    }
+
+    // Stamp the account_id into the returned envelopes so the
+    // frontend's grouping logic (unified inbox uses
+    // `account_id` to route per-row clicks) keeps working —
+    // the IMAP method leaves it empty since it doesn't know
+    // which account it's serving.
+    let mut envelopes = batch.envelopes;
+    for env in &mut envelopes {
+        env.account_id = account_id.clone();
+    }
+    Ok(envelopes)
+}
+
+/// Unified-inbox version of `fetch_older_envelopes`. Each account
+/// has its own UID space, so the frontend passes a per-account
+/// `before_uid` map. We poll each account's folder with its own
+/// anchor and merge the results. Same JMAP caveat as the
+/// per-account version.
+#[tauri::command]
+async fn fetch_older_unified_envelopes(
+    folder: String,
+    before_uid_per_account: std::collections::HashMap<String, u32>,
+    limit: u32,
+    cache: State<'_, Cache>,
+) -> Result<Vec<EmailEnvelope>, NimbusError> {
+    let accounts = account_store::load_accounts(&cache).unwrap_or_default();
+    let mut merged: Vec<EmailEnvelope> = Vec::new();
+    for account in &accounts {
+        let Some(&before_uid) = before_uid_per_account.get(&account.id) else {
+            continue;
+        };
+        if uses_jmap(account) {
+            tracing::warn!(
+                "fetch_older_unified_envelopes: JMAP not implemented for '{}'",
+                account.id
+            );
+            continue;
+        }
+        let mut client = match connect_imap(account).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("unified older: connect failed for '{}': {e}", account.id);
+                continue;
+            }
+        };
+        match client.fetch_older_envelopes(&folder, before_uid, limit).await {
+            Ok(batch) => {
+                if let Err(e) =
+                    cache.upsert_envelopes_for_account(&account.id, &batch.envelopes)
+                {
+                    tracing::warn!("cache.upsert_envelopes (unified older) failed: {e}");
+                }
+                for mut env in batch.envelopes {
+                    env.account_id = account.id.clone();
+                    merged.push(env);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "unified older fetch failed for '{}'/'{folder}': {e}",
+                    account.id
+                );
+            }
+        }
+        let _ = client.logout().await;
+    }
+    // Newest-first, capped at the unified `limit` so a single
+    // chatty account doesn't crowd the page.
+    merged.sort_unstable_by_key(|e| std::cmp::Reverse(e.date));
+    merged.truncate(limit as usize);
+    Ok(merged)
+}
+
 /// Unified-inbox version of `fetch_envelopes`: polls every configured
 /// account's `folder` (sequentially — keeps the SMTP/IMAP server load
 /// predictable) and then returns the merged newest-`limit` view from
@@ -8303,6 +8418,8 @@ fn main() {
             test_connection,
             fetch_envelopes,
             fetch_unified_envelopes,
+            fetch_older_envelopes,
+            fetch_older_unified_envelopes,
             fetch_message,
             download_email_attachment,
             put_attachment_preview,
