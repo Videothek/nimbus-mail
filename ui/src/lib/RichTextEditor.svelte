@@ -23,7 +23,6 @@
   import { onDestroy } from 'svelte'
   import { createEditor, EditorContent } from 'svelte-tiptap'
   import { Node, mergeAttributes } from '@tiptap/core'
-  import { convertFileSrc } from '@tauri-apps/api/core'
   import StarterKit from '@tiptap/starter-kit'
   import Underline from '@tiptap/extension-underline'
   import Link from '@tiptap/extension-link'
@@ -326,14 +325,11 @@
   // needed. Replaces the previous "out-of-editor preview"
   // approach with true in-editor WYSIWYG.
   //
-  // The NodeView swaps any embedded GitHub-raw logo URL for the
-  // local `nimbus-logo://localhost/storm` asset so the dev
-  // webview always renders the brand header (HTTPS to
-  // raw.githubusercontent.com is sometimes slow / blocked).
-  // Outbound HTML keeps the public URL intact.
-  const localLogoUrl = convertFileSrc('storm', 'nimbus-logo')
-  const PUBLIC_LOGO_HOST_RE =
-    /https:\/\/raw\.githubusercontent\.com\/Videothek\/nimbus-mail\/main\/logos\/[^"' )]+/g
+  // (No image-URL swap any more: the chrome doesn't carry an
+  // `<img>` because mail clients ate both the remote URL and
+  // the inline data URI versions, leaving recipients with a
+  // broken-icon. Brand header is typography-only now, so the
+  // editor and the recipient see exactly the same thing.)
   const NimbusBlock = Node.create({
     name: 'nimbusBlock',
     group: 'block',
@@ -381,12 +377,7 @@
         const dom = document.createElement('div')
         dom.setAttribute('contenteditable', 'false')
         dom.style.userSelect = 'none'
-        const stored = (node.attrs as { html: string }).html
-        // Local-logo swap: only the editor display uses the
-        // local Tauri scheme; the stored html attribute keeps
-        // the public URL so `getHTML()` for outbound mail
-        // emits the recipient-fetchable version.
-        dom.innerHTML = stored.replace(PUBLIC_LOGO_HOST_RE, localLogoUrl)
+        dom.innerHTML = (node.attrs as { html: string }).html
         return { dom }
       }
     },
