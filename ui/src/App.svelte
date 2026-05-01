@@ -177,7 +177,17 @@
   // the same indicator.
   let mailListRefreshing = $state(false)
   let mailViewRefreshing = $state(false)
-  const mailRefreshing = $derived(mailListRefreshing || mailViewRefreshing)
+  // Set true while an IconRail-click-driven `check_mail_now`
+  // poll is in flight (#196 follow-up). The MailList /
+  // MailView flags only flip when those panes do their own
+  // fetch; clicking the *already-active* account avatar
+  // doesn't re-mount them, so without this flag the spinner
+  // wouldn't show on a re-click. Cleared in selectAccount's
+  // `.finally`.
+  let accountClickRefreshing = $state(false)
+  const mailRefreshing = $derived(
+    mailListRefreshing || mailViewRefreshing || accountClickRefreshing,
+  )
 
   // ── Global right-click menu (#198) ───────────────────────────
   // The webview's default right-click menu (Reload / Inspect /
@@ -665,9 +675,20 @@
     // fires). New envelopes flow in via the existing `new-mail`
     // / `unread-count-updated` events the MailList already
     // subscribes to — no extra wiring needed.
-    void invoke('check_mail_now').catch((e) => {
-      console.warn('check_mail_now from IconRail click failed', e)
-    })
+    //
+    // Wrap the invoke in a refresh flag (#196 follow-up) so the
+    // active avatar's spinner ring shows for the duration of
+    // the poll, even when re-clicking the already-active avatar
+    // (which otherwise wouldn't trigger MailList's own
+    // refreshing flag).
+    accountClickRefreshing = true
+    void invoke('check_mail_now')
+      .catch((e) => {
+        console.warn('check_mail_now from IconRail click failed', e)
+      })
+      .finally(() => {
+        accountClickRefreshing = false
+      })
 
     if (id === '__all__') {
       if (unifiedMode && wasOnMail) return
