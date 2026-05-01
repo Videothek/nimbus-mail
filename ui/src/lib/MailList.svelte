@@ -304,13 +304,31 @@
   let olderExhausted = $state(false)
   let scrollContainer = $state<HTMLDivElement | null>(null)
 
+  /** Snapshot of the (account, folder, unified) tuple the last
+   *  time the load effect ran.  Used to distinguish "folder /
+   *  account changed" (envelopes from the previous view must be
+   *  cleared so they don't leak into the new folder) from
+   *  "refreshToken bumped while folder unchanged" (envelopes
+   *  must be PRESERVED so any older pages the user paginated to
+   *  via infinite scroll survive — the merge path in `load()`
+   *  handles that case). Without this distinction the previous
+   *  fix to the refresh-clobber bug also caused mails from one
+   *  folder to leak into the next on folder switch. */
+  let lastFolderKey = $state('')
+
   // Re-fetch whenever the account, folder, unified flag, or
-  // refreshToken changes.  Also resets the pagination flags so a
-  // freshly-opened folder starts with a clean "load older"
-  // affordance — the previous folder's exhausted flag must not
-  // leak into the new one.
+  // refreshToken changes.  Resets the pagination flags every
+  // round and clears the rendered envelope list IF the
+  // (account, folder, unified) tuple changed — the merge path
+  // in `load()` only does the right thing within a single
+  // folder.
   $effect(() => {
     refreshToken
+    const key = `${unified ? '__all__' : accountId}::${folder}`
+    if (key !== lastFolderKey) {
+      envelopes = []
+      lastFolderKey = key
+    }
     loadingOlder = false
     olderExhausted = false
     void load(accountId, folder, unified)
