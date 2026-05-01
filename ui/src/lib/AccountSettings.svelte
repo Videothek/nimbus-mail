@@ -1119,7 +1119,12 @@
              embedded PNG bytes so each tile previews the actual
              icon, not just a colour swatch. -->
         <div>
-          <p class="font-medium mb-2">App icon</p>
+          <p class="font-medium mb-1">App icon</p>
+          <p class="text-xs text-surface-400 mb-2">
+            Affects the tray icon, the window titlebar, and (on Windows) the
+            taskbar entry. The .exe icon shown in Explorer / Finder before
+            launch is fixed at build time and isn't changed by this picker.
+          </p>
           <div class="grid grid-cols-3 sm:grid-cols-4 gap-2">
             {#each LOGO_STYLES as style (style.id)}
               {@const active = (appSettings.logo_style ?? 'storm') === style.id}
@@ -1144,11 +1149,6 @@
               </button>
             {/each}
           </div>
-          <p class="text-xs text-surface-400 mt-2">
-            Affects the tray icon, the window titlebar, and (on Windows) the
-            taskbar entry. The .exe icon shown in Explorer / Finder before
-            launch is fixed at build time and isn't changed by this picker.
-          </p>
         </div>
       </div>
     </div>
