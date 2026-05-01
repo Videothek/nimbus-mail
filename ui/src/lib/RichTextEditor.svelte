@@ -1111,7 +1111,32 @@
   let showTablePicker = $state(false)
   let tableHoverRows = $state(0)
   let tableHoverCols = $state(0)
+  let tablePickerAnchor = $state<HTMLDivElement | null>(null)
   const TABLE_GRID = 8  // 8x8 picker like Outlook
+
+  /** Outside-click dismissal for the table picker (#199).  Mirrors
+   *  the project-wide idiom from CLAUDE.md: register the listener
+   *  inside an `$effect` keyed on the open state, defer one tick
+   *  so the click that opened the picker doesn't immediately
+   *  close it, tear down on close. */
+  $effect(() => {
+    if (!showTablePicker) return
+    const onMouseDown = (e: MouseEvent) => {
+      if (tablePickerAnchor && !tablePickerAnchor.contains(e.target as Node)) {
+        showTablePicker = false
+        tableHoverRows = 0
+        tableHoverCols = 0
+      }
+    }
+    const id = setTimeout(
+      () => document.addEventListener('mousedown', onMouseDown),
+      0,
+    )
+    return () => {
+      clearTimeout(id)
+      document.removeEventListener('mousedown', onMouseDown)
+    }
+  })
 
   /** Selection (cursor position) snapshotted when the user opens
    *  the table picker.  We restore it before inserting so the
@@ -1657,7 +1682,7 @@
         <span class="rt-divider"></span>
 
         <!-- Table picker -->
-        <div class="relative inline-block">
+        <div class="relative inline-block" bind:this={tablePickerAnchor}>
           <button class="rt-btn" title="Insert table at cursor" onclick={openTablePicker}>
             <span class="rt-btn-icon"><Icon name="table" size={16} /></span>
             <span class="rt-btn-label">Table</span>
@@ -1667,6 +1692,7 @@
             <div
               class="absolute left-0 top-full mt-1 z-50 p-2 bg-white dark:bg-surface-800 border border-surface-300 dark:border-surface-600 rounded-md shadow-lg"
               onmouseleave={() => { tableHoverRows = 0; tableHoverCols = 0 }}
+              onkeydown={(e) => e.key === 'Escape' && (showTablePicker = false)}
             >
               <div class="text-xs text-surface-500 mb-1 text-center">
                 {tableHoverRows > 0 ? `${tableHoverRows} × ${tableHoverCols}` : 'Pick size'}
