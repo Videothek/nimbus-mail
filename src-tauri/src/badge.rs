@@ -42,8 +42,11 @@ pub fn render_tray_icon(
         let badge_size = ((dim * 22) / 100).max(8);
         let inset = (dim / 16).max(2);
 
+        // Bottom-right corner — matches where Windows places the
+        // taskbar overlay, so the indicator sits at the same spot
+        // relative to the icon on both surfaces.
         let bx = width.saturating_sub(badge_size + inset);
-        let by = inset;
+        let by = height.saturating_sub(badge_size + inset);
 
         draw_filled_circle(&mut p, width, height, bx, by, badge_size, BADGE_RGBA);
         p
@@ -171,13 +174,12 @@ mod tests {
     fn nonzero_unread_paints_reddish() {
         let base = vec![0u8; 32 * 32 * 4];
         let img = render_tray_icon(&base, 32, 32, 5);
-        // Alpha-blending red onto transparent black scales each
-        // channel down by the source alpha (230). We just want to
-        // see "this pixel is dominated by red" somewhere in the
-        // top-right quadrant where the dot lives.
+        // We just want to see "this pixel is dominated by red"
+        // somewhere in the bottom-right quadrant where the dot
+        // lives.
         let pixels = img.rgba();
         let mut found_red = false;
-        for y in 0..16 {
+        for y in 16..32 {
             for x in 16..32 {
                 let idx = (y * 32 + x) * 4;
                 let (r, g, b, a) = (
