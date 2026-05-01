@@ -36,7 +36,7 @@
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
   import EventEditor, { type SavedEvent } from './lib/EventEditor.svelte'
-  import type { MeetingInvite } from './lib/inviteHtml'
+  import { quotedHistoryHtml, type MeetingInvite } from './lib/inviteHtml'
   import SearchBar, {
     type SearchScope,
     type SearchFilters,
@@ -920,14 +920,20 @@
    *  it the same way every other client does.
    */
   function quoteBody(from: string, date: string, body: string | null): string {
-    const esc = (s: string) =>
-      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     const bodyHtml = htmlOrEscape(body ?? '')
     const when = new Date(date).toLocaleString()
+    // Two empty paragraphs above so the editor opens with the
+    // user's cursor in fresh space, not flush against the quoted
+    // wrapper.  The wrapper itself carries the modern muted
+    // styling (#195) and the marker attribute the submit pipeline
+    // uses to splice invite cards in just above it.
     return (
       `<p></p><p></p>` +
-      `<p>On ${esc(when)}, ${esc(from)} wrote:</p>` +
-      `<blockquote>${bodyHtml}</blockquote>`
+      quotedHistoryHtml({
+        fromHeader: from,
+        whenText: when,
+        bodyHtml,
+      })
     )
   }
 

@@ -27,8 +27,11 @@
 /** Public PNG hosted on this project's GitHub repository. Email
  *  clients fetch it via plain HTTP(S) when the recipient lets
  *  remote images load — same trust gesture every modern email
- *  marketing system relies on. */
-const NIMBUS_LOGO_URL =
+ *  marketing system relies on.  Used for outbound mail.  Compose's
+ *  in-app preview overrides this with a local `nimbus-logo://`
+ *  asset URL via the `logoUrl` option below, because the dev
+ *  webview may rate-limit or sandbox external HTTPS fetches. */
+export const PUBLIC_NIMBUS_LOGO_URL =
   'https://raw.githubusercontent.com/Videothek/nimbus-mail/main/logos/nimbus-logo-v2/png/storm/nimbus-128.png'
 
 /** Minimal HTML escape for the few values we splice into the
@@ -104,15 +107,15 @@ const T = {
 } as const
 
 /** Wrap the card body inside the shared chrome (outer wrapper +
- *  branded header).  The header carries the GitHub-hosted logo
- *  and the "Nimbus" wordmark so the recipient instantly
- *  recognises the source even before reading the title. */
-function chrome(bodyHtml: string): string {
+ *  branded header).  The header carries a logo and the "Nimbus"
+ *  wordmark so the recipient instantly recognises the source
+ *  even before reading the title. */
+function chrome(bodyHtml: string, logoUrl: string): string {
   return `
 <div style="max-width:560px;margin:16px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <div style="${T.card}">
     <div style="${T.headerBg}">
-      <img src="${NIMBUS_LOGO_URL}" alt="" width="36" height="36" style="${T.headerLogo}" />
+      <img src="${logoUrl}" alt="" width="36" height="36" style="${T.headerLogo}" />
       <span style="${T.headerWordmark}">Nimbus Mail</span>
     </div>
     <div style="${T.body}">
@@ -159,10 +162,18 @@ export interface TalkInvite {
   url: string
 }
 
+/** Optional render-time options.  Compose passes a local
+ *  `nimbus-logo://` URL for the in-app preview (dev webviews can
+ *  be flaky with arbitrary HTTPS); the outbound submit path uses
+ *  the default GitHub-hosted public PNG. */
+export interface InviteRenderOptions {
+  logoUrl?: string
+}
+
 /** Render a Talk-meeting invitation card.  Used by Compose's
  *  "Insert Talk link" flow when the user attaches a freshly-
  *  created Talk room to an outgoing message. */
-export function talkInviteHtml(invite: TalkInvite): string {
+export function talkInviteHtml(invite: TalkInvite, opts: InviteRenderOptions = {}): string {
   const inner = `
 <h1 style="${T.title}">You're invited to a Talk meeting</h1>
 <p style="${T.subtitle}">Click the button below to join the conversation in Nextcloud Talk — works in any modern browser, no install.</p>
@@ -186,7 +197,7 @@ ${detailRow(
 
 ${nextcloudFooter("You'll also be added as a participant in Nextcloud Talk.")}
 `.trim()
-  return chrome(inner)
+  return chrome(inner, opts.logoUrl ?? PUBLIC_NIMBUS_LOGO_URL)
 }
 
 export interface MeetingInvite {
@@ -211,7 +222,7 @@ export interface MeetingInvite {
 /** Render a calendar-meeting invitation card.  Used after the
  *  user saves an event from the "Respond with meeting" flow —
  *  Compose opens with this block pre-filled in the body. */
-export function meetingInviteHtml(invite: MeetingInvite): string {
+export function meetingInviteHtml(invite: MeetingInvite, opts: InviteRenderOptions = {}): string {
   const start = invite.start instanceof Date ? invite.start : new Date(invite.start)
   const end = invite.end instanceof Date ? invite.end : new Date(invite.end)
 
@@ -264,5 +275,43 @@ ${ctaBlock}
 
 ${nextcloudFooter("You'll be invited via Nextcloud — accepting in your mail client adds the event to your calendar.")}
 `.trim()
-  return chrome(inner)
+  return chrome(inner, opts.logoUrl ?? PUBLIC_NIMBUS_LOGO_URL)
+}
+
+// ── Quoted-history wrapper (#195 follow-up) ─────────────────────
+
+/** Marker `data-` attribute on the wrapper around a reply's
+ *  quoted-history block.  Compose's submission pipeline scans for
+ *  this so it can splice the invite cards in *above* the quoted
+ *  block — the recipient gets "card → reply text → previous
+ *  conversation" reading order. */
+export const QUOTED_HISTORY_MARKER = 'data-nimbus-quoted'
+
+/** Wrap a reply's quoted history in a styled container.  Visually
+ *  pushes the previous thread back so the user's fresh reply
+ *  reads first: muted background, smaller type, soft left border,
+ *  generous padding.  Same subdued grey palette across light and
+ *  dark themes — designed to read as "old context" rather than
+ *  competing with the new content. */
+export function quotedHistoryHtml(args: {
+  fromHeader: string
+  whenText: string
+  bodyHtml: string
+}): string {
+  const { fromHeader, whenText, bodyHtml } = args
+  const escAttr = (s: string) =>
+    s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+  const meta = `On ${escAttr(whenText)}, ${escAttr(fromHeader)} wrote:`
+  return `
+<div ${QUOTED_HISTORY_MARKER}="1" style="margin:24px 0 0 0;padding:14px 18px;background:#f1f5f9;border-left:3px solid #cbd5e1;border-radius:8px;color:#64748b;font-size:13px;line-height:1.55;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:8px;">Previous conversation</div>
+  <div style="font-size:12px;color:#475569;margin-bottom:10px;">${meta}</div>
+  <div style="color:#64748b;">${bodyHtml}</div>
+</div>
+`.trim()
 }
