@@ -22,6 +22,7 @@
   import {
     meetingInviteHtml,
     talkInviteHtml,
+    PUBLIC_NIMBUS_LOGO_URL,
     type MeetingInvite,
   } from './inviteHtml'
   import RichTextEditor, {
@@ -353,14 +354,27 @@
   // editor's HTML body (#195 follow-up²). The RichTextEditor's
   // `NimbusBlock` Tiptap extension recognises every
   // `<div data-nimbus-block="…">` wrapper and renders it via a
-  // NodeView so the styled markup survives schema parsing. The
-  // user sees the live card in the editor and can select-and-
-  // delete the whole thing with one Backspace — same gesture
-  // they'd use to remove any other element. No separate preview
-  // pane, no pending-state to keep in sync, no out-of-band
-  // assembly at submit time.
+  // NodeView so the styled markup survives schema parsing.
+
+  /** Match both shapes a Tauri custom URI scheme can take when
+   *  rendered into HTML — `https://<scheme>.localhost/<path>`
+   *  on Windows / WebView2, `<scheme>://localhost/<path>` on
+   *  the macOS / Linux webview backends. The NodeView swaps the
+   *  Nimbus brand logo to one of these for display, but the
+   *  outbound mail must use the public GitHub raw URL so the
+   *  recipient's mail client can actually fetch the image. */
+  const LOCAL_LOGO_URL_RE =
+    /(?:https:\/\/nimbus-logo\.localhost\/[A-Za-z0-9_-]+)|(?:nimbus-logo:\/\/localhost\/[A-Za-z0-9_-]+)/g
+
+  /** Final HTML body to ship.  Run a defensive replace over
+   *  the editor's serialised content so any local-scheme logo
+   *  URL the NodeView's display swap may have leaked into the
+   *  output gets restored to the public GitHub raw URL.
+   *  Without this the recipient's mail client renders a broken
+   *  image because `nimbus-logo://localhost/...` is meaningless
+   *  outside our Tauri webview. */
   function bodyHtmlForSubmission(): string {
-    return bodyHtml
+    return bodyHtml.replace(LOCAL_LOGO_URL_RE, PUBLIC_NIMBUS_LOGO_URL)
   }
 
   /** Build the editor's starting HTML.  Layout for replies and
