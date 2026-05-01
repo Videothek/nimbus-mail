@@ -54,14 +54,76 @@ type SharedSettings = Arc<RwLock<AppSettings>>;
 /// `app_settings.json` DOSing the user's mail server.
 const MIN_SYNC_INTERVAL_SECS: u64 = 30;
 
-/// Captured-once raw RGBA of the base tray icon. We hold this so the
-/// badge renderer can re-composite a fresh badge on every unread-count
-/// change without re-reading the on-disk PNG. The window's default
-/// icon is the source of truth at startup.
-struct TrayBaseIcon {
+/// Raw RGBA of the *current* tray base icon — i.e. the icon the
+/// badge renderer overlays the unread count onto.  Wrapped in a
+/// `Mutex` so `set_logo_style` can hot-swap the bitmap when the
+/// user picks a different style without restarting the app.
+struct TrayBaseIcon(std::sync::Mutex<TrayBaseIconBitmap>);
+
+#[derive(Clone)]
+struct TrayBaseIconBitmap {
     rgba: Vec<u8>,
     width: u32,
     height: u32,
+}
+
+/// Bytes of every per-style logo PNG, baked into the binary at
+/// compile time so the picker doesn't depend on runtime resources.
+/// 256 px is the right pick: large enough that downscales for the
+/// 32 px tray and the 16/32 px Windows window icon stay sharp,
+/// small enough that all 7 styles together add < 100 KB to the
+/// binary.
+mod logo_assets {
+    pub const STORM: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo/png/storm/nimbus-256.png"
+    );
+    pub const DAWN: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo/png/dawn/nimbus-256.png"
+    );
+    pub const MINT: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo/png/mint/nimbus-256.png"
+    );
+    pub const SKY: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo/png/sky/nimbus-256.png"
+    );
+    pub const TWILIGHT: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo/png/twilight/nimbus-256.png"
+    );
+    pub const MONO_BLACK: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo/png/monochrome/nimbus-mono-black.png"
+    );
+    pub const MONO_WHITE: &[u8] = include_bytes!(
+        "../../logos/nimbus-logo/png/monochrome/nimbus-mono-white.png"
+    );
+}
+
+/// Map a style slug to the embedded PNG bytes.  Unknown slug →
+/// fall back to storm so a stray value (mistyped settings file,
+/// future-renamed style) can never leave the tray with no icon.
+fn logo_bytes_for(style: &str) -> &'static [u8] {
+    match style {
+        "dawn" => logo_assets::DAWN,
+        "mint" => logo_assets::MINT,
+        "sky" => logo_assets::SKY,
+        "twilight" => logo_assets::TWILIGHT,
+        "monochrome-black" => logo_assets::MONO_BLACK,
+        "monochrome-white" => logo_assets::MONO_WHITE,
+        _ => logo_assets::STORM,
+    }
+}
+
+/// Decode a PNG into the raw RGBA + dims that Tauri's
+/// `tauri::image::Image::new` and our badge compositor both want.
+/// Reuses Tauri's bundled PNG decoder so we don't pull a separate
+/// `image` crate just for this.
+fn decode_logo_png(bytes: &[u8]) -> Result<TrayBaseIconBitmap, NimbusError> {
+    let img = tauri::image::Image::from_bytes(bytes)
+        .map_err(|e| NimbusError::Other(format!("failed to decode logo PNG: {e}")))?;
+    Ok(TrayBaseIconBitmap {
+        rgba: img.rgba().to_vec(),
+        width: img.width(),
+        height: img.height(),
+    })
 }
 
 /// Absolute filesystem path to a PNG of our app icon, written at
@@ -6382,14 +6444,6 @@ struct NewMailPayload {
     subject: String,
 }
 
-/// Load the tray icon. Reuses the window icon when present (same PNG
-/// we ship with the app) so dev and prod builds paint the same bitmap.
-fn load_tray_icon(app: &AppHandle) -> Result<tauri::image::Image<'_>, NimbusError> {
-    app.default_window_icon()
-        .cloned()
-        .ok_or_else(|| NimbusError::Other("no default window icon available for tray".into()))
-}
-
 /// Bring the main window to the front. Called from the tray's
 /// left-click handler, the tray menu's "Open Nimbus" item, and the
 /// `show_main_window` command.
@@ -6472,7 +6526,14 @@ fn refresh_unread_badge(app: &AppHandle) {
 
     if let Some(tray) = app.tray_by_id("nimbus-main") {
         let base = app.state::<TrayBaseIcon>();
-        let badged = badge::render_tray_icon(&base.rgba, base.width, base.height, total);
+        let bitmap = match base.0.lock() {
+            Ok(g) => g.clone(),
+            Err(e) => {
+                tracing::warn!("refresh_unread_badge: tray base lock poisoned: {e}");
+                return;
+            }
+        };
+        let badged = badge::render_tray_icon(&bitmap.rgba, bitmap.width, bitmap.height, total);
         if let Err(e) = tray.set_icon(Some(badged)) {
             tracing::warn!("failed to update tray icon: {e}");
         }
@@ -7626,6 +7687,78 @@ async fn check_mail_now(app: AppHandle) -> Result<(), NimbusError> {
     check_mail_now_inner(&app).await
 }
 
+/// Switch the running app's icon (tray, window titlebar, taskbar)
+/// to the user's picked logo style and persist the choice in
+/// `AppSettings.logo_style`.  The next boot reapplies it.
+///
+/// Note this only swaps icons that exist *while the app runs*; the
+/// `.exe` thumbnail Windows Explorer / macOS Finder shows for the
+/// installed binary is baked in at `cargo tauri build` time and
+/// can't change at runtime.
+#[tauri::command]
+async fn set_logo_style(
+    app: AppHandle,
+    style: String,
+    settings: State<'_, SharedSettings>,
+) -> Result<(), NimbusError> {
+    let bytes = logo_bytes_for(&style);
+
+    // Decode once up front so a bad slug fails before we touch any
+    // running state.  `decode_logo_png` falls back to storm
+    // internally if the slug is unknown, so this should always
+    // succeed for reasonable inputs.
+    let bitmap = decode_logo_png(bytes)?;
+
+    // Swap the tray base bitmap so the next badge re-render uses
+    // the new style.  Then trigger an immediate re-render so the
+    // tray reflects the change without waiting for the next
+    // unread-count tick.
+    if let Some(tray_state) = app.try_state::<TrayBaseIcon>() {
+        if let Ok(mut guard) = tray_state.0.lock() {
+            *guard = bitmap;
+        }
+    }
+    refresh_unread_badge(&app);
+
+    // Update the main window's icon — Windows mirrors this into
+    // the taskbar entry, macOS into the title bar, X11 into the
+    // `_NET_WM_ICON` atom.
+    if let Some(win) = app.get_webview_window("main") {
+        if let Ok(img) = tauri::image::Image::from_bytes(bytes) {
+            if let Err(e) = win.set_icon(img) {
+                tracing::warn!("set_logo_style: window set_icon failed: {e}");
+            }
+        }
+    }
+
+    // Persist last so a transient apply failure can't permanently
+    // wedge the user on a style they didn't pick.
+    let mut s = settings.write().await;
+    s.logo_style = style;
+    app_settings::save_settings(&s)?;
+    Ok(())
+}
+
+/// Custom URI scheme handler for `nimbus-logo://localhost/<style>`.
+/// Used by the Settings picker to render preview tiles via plain
+/// `<img src="nimbus-logo://localhost/storm">` — same trick the
+/// `contact-photo` scheme uses for avatars.  Unknown style →
+/// storm fallback (matches the runtime behaviour, so the preview
+/// can't deceive the user).
+fn logo_protocol(
+    _ctx: UriSchemeContext<'_, tauri::Wry>,
+    request: tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<std::borrow::Cow<'static, [u8]>> {
+    let style = request.uri().path().trim_start_matches('/').to_string();
+    let bytes = logo_bytes_for(&style);
+    tauri::http::Response::builder()
+        .status(200)
+        .header("Content-Type", "image/png")
+        .header("Cache-Control", "private, max-age=300")
+        .body(std::borrow::Cow::Borrowed(bytes))
+        .expect("build logo response")
+}
+
 // ── Custom themes (#132 tier 2) ────────────────────────────────
 //
 // User picks a Skeleton-shape CSS file in the Settings → Design
@@ -7855,6 +7988,7 @@ fn main() {
         .manage(shared_settings)
         .manage::<SystemFontsCache>(Arc::new(RwLock::new(Vec::new())))
         .register_uri_scheme_protocol("contact-photo", contact_photo_protocol)
+        .register_uri_scheme_protocol("nimbus-logo", logo_protocol)
         .setup(|app| {
             // Windows toast attribution.  Without an explicit
             // AppUserModelID the OS falls back to the launching
@@ -7945,17 +8079,52 @@ fn main() {
                 ],
             )?;
 
-            let tray_icon = load_tray_icon(&handle)?;
-
-            // Snapshot the base icon's raw RGBA so the badge renderer
-            // can re-composite without re-reading the on-disk PNG on
-            // every unread-count change. Stored in managed state.
-            let base = TrayBaseIcon {
-                rgba: tray_icon.rgba().to_vec(),
-                width: tray_icon.width(),
-                height: tray_icon.height(),
+            // Honour the user's saved logo style at boot.  Falls
+            // back to "storm" if decoding fails for any reason —
+            // keeps the tray from coming up blank on a malformed
+            // settings file.  Reads through the managed-state copy
+            // so we don't have to capture `shared_settings` into
+            // this closure (it was already moved into `.manage`).
+            let chosen_style = {
+                let st = app.state::<SharedSettings>();
+                let s = futures::executor::block_on(st.read());
+                s.logo_style.clone()
             };
-            app.manage(base);
+            let style_bytes = logo_bytes_for(&chosen_style);
+            let initial_bitmap = decode_logo_png(style_bytes).unwrap_or_else(|e| {
+                tracing::warn!(
+                    "logo style '{chosen_style}' failed to decode ({e}); \
+                     falling back to storm"
+                );
+                decode_logo_png(logo_assets::STORM)
+                    .expect("storm logo PNG must always decode")
+            });
+
+            // Reflect the chosen style on the main window — the
+            // titlebar icon and (on Windows) the taskbar entry both
+            // pick up `set_icon`.
+            if let Some(win) = app.get_webview_window("main") {
+                if let Ok(img) = tauri::image::Image::from_bytes(style_bytes) {
+                    if let Err(e) = win.set_icon(img) {
+                        tracing::warn!("failed to apply window icon at boot: {e}");
+                    }
+                }
+            }
+
+            // Tauri's `Image::from_bytes` decodes into owned RGBA
+            // (`Image<'static>`), which is what `TrayIconBuilder`
+            // wants.  Using `from_bytes` again here (instead of
+            // `Image::new(&initial_bitmap.rgba, ...)`) sidesteps a
+            // borrow-vs-move conflict where we want to *also*
+            // hand `initial_bitmap` to the managed-state stash.
+            let tray_icon = tauri::image::Image::from_bytes(style_bytes)
+                .map_err(|e| NimbusError::Other(format!("decode tray icon: {e}")))?;
+
+            // Stash the base RGBA in managed state so the badge
+            // renderer (and `set_logo_style`) can re-composite
+            // without re-reading the PNG on every unread-count
+            // change or style swap.
+            app.manage(TrayBaseIcon(std::sync::Mutex::new(initial_bitmap)));
 
             let _tray = TrayIconBuilder::with_id("nimbus-main")
                 .icon(tray_icon)
@@ -8217,6 +8386,7 @@ fn main() {
             get_wipe_policy,
             set_wipe_policy,
             update_app_settings,
+            set_logo_style,
             import_custom_theme,
             remove_custom_theme,
             check_mail_now,
