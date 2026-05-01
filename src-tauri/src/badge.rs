@@ -24,10 +24,16 @@
 
 use tauri::image::Image;
 
-/// Tailwind red-500 with ~90% alpha. Soft enough that the icon
-/// underneath reads through, saturated enough to register as a
-/// "new" indicator at a glance.
-const BADGE_RGBA: [u8; 4] = [239, 68, 68, 230];
+/// Tailwind red-500, fully opaque. The thin halo around it (drawn
+/// first, see below) gives the disc its breathing room so we don't
+/// need translucency to keep it from looking like a sticker.
+const BADGE_RGBA: [u8; 4] = [239, 68, 68, 255];
+
+/// Soft white ring drawn underneath the red disc. Same trick
+/// macOS/iOS notification badges use: separates the badge from a
+/// busy underlying icon at any background colour. Slightly
+/// translucent so it doesn't read as a hard cutout.
+const HALO_RGBA: [u8; 4] = [255, 255, 255, 220];
 
 /// Composite the unread dot onto a copy of `base_pixels` and
 /// return it as an owned Tauri image. When `unread == 0` the
@@ -44,14 +50,24 @@ pub fn render_tray_icon(
     } else {
         let mut p = base_pixels.to_vec();
         let dim = width.min(height);
-        // ~30% of the icon's short side, never below 8 px. Sized to
-        // read as an indicator rather than a sticker, and small
-        // enough that the whole disc fits inside the canvas without
-        // clipping at the right edge.
-        let badge_size = ((dim * 3) / 10).max(8).min(dim);
-        // Top-right corner, fully inside the canvas.
-        let bx = width - badge_size;
-        let by = 0;
+        // Modern dock-badge sizing: ~22% of the icon's short side,
+        // not flush against the edge. The previous 30%/0-inset
+        // combo read as a sticker pasted on the corner; this
+        // matches the size + insetting macOS / iOS use.
+        let badge_size = ((dim * 22) / 100).max(8);
+        let inset = (dim / 16).max(2);
+        // Halo is the badge plus a 2px (or 1.25%-of-icon, whichever
+        // is bigger) ring on every side so it pops without looking
+        // dipped in white-out.
+        let ring = (dim / 80).max(2);
+        let halo_size = badge_size + 2 * ring;
+
+        let bx = width.saturating_sub(badge_size + inset);
+        let by = inset;
+        let hx = bx.saturating_sub(ring);
+        let hy = by.saturating_sub(ring);
+
+        draw_filled_circle(&mut p, width, height, hx, hy, halo_size, HALO_RGBA);
         draw_filled_circle(&mut p, width, height, bx, by, badge_size, BADGE_RGBA);
         p
     };
