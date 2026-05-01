@@ -330,6 +330,19 @@
   // aren't tracked, it never re-runs when the handle is finally set.
   // Making it `$state` subscribes the effect to the assignment.
   let editorApi = $state<EditorApi | null>(null)
+
+  /** The exact signature HTML currently embedded in `bodyHtml`.
+      `null` means none has been inserted yet — either the user
+      has no signature configured, or `initialBodyHtml` ran before
+      the accounts list resolved (the signature `$effect` will
+      then stamp one in on first frame). Tracked so the From:
+      picker can find-and-replace the signature when the user
+      switches accounts mid-compose without clobbering content
+      they've typed around it. Declared above the `bodyHtml`
+      state so `initialBodyHtml` can write to it during its
+      synchronous `$state` init. */
+  let insertedSignatureHtml: string | null = null
+
   // The editor content as HTML — kept in sync via the RichTextEditor's
   // onchange callback. The initial body (from reply/forward/draft) is
   // plain text, so we convert newlines to <br> for the WYSIWYG view.
@@ -350,71 +363,95 @@
     return bodyHtml
   }
 
-  /** Build the editor's starting HTML — the body (plain text or
-      already-HTML draft) with any pre-rendered Nextcloud share-link
-      block appended. Same shape as the in-Compose picker emits when
-      its `onlinks` callback fires. The signature is *not* added here:
-      it's appended via the `$effect` below once both `editorApi` and
-      `fromAccount` are settled, because `fromAccount` is a `$derived`
-      that may not have a value yet at the time this `$state` initializer
-      runs. */
+  /** Build the editor's starting HTML.  Layout for replies and
+      composes that carry an invite card / quote:
+
+         1. two empty paragraphs — the user's cursor lands here,
+            so there's always room to type at the top
+         2. signature — sits above the cards so the user's name
+            attaches to the new content, not to the recipient's
+            quoted thread at the bottom
+         3. invite cards (meeting / Talk)
+         4. Nextcloud share-link block (when the user picked
+            files in the in-Compose picker, same shape the
+            `onlinks` callback emits)
+         5. body — plain-text reply or the styled
+            `<div data-nimbus-block="quoted-history">` for replies
+
+      Drafts re-opened from the Drafts folder skip steps 1+2 —
+      the saved HTML already contains whatever the user had at
+      the time, so we render that verbatim rather than
+      double-stamping breaklines or a signature. */
   function initialBodyHtml(): string {
+    if (initial?.draftSource) {
+      return textToHtml(body)
+    }
+
     let html = textToHtml(body)
     const esc = (s: string) =>
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+    let lead = '<p></p><p></p>'
+
+    // Signature: best-effort grab of the active account at init
+    // time so replies open with the user's name already attached.
+    // If the account list hasn't loaded yet, we skip and let the
+    // signature `$effect` append on first frame instead.
+    const initSig = signatureBlock(
+      (accounts.find((a) => a.id === accountId) ?? accounts[0])?.signature,
+    )
+    if (initSig) {
+      lead += initSig
+      insertedSignatureHtml = initSig
+    }
+
+    if (initial?.meetingInvite) lead += meetingInviteHtml(initial.meetingInvite)
+    if (initial?.talkLink) lead += talkInviteHtml(initial.talkLink)
     if (initial?.nextcloudLinks && initial.nextcloudLinks.length > 0) {
       const items = initial.nextcloudLinks
         .map((l) => `<p>🔗 <a href="${l.url}">${esc(l.filename)}</a></p>`)
         .join('')
-      html += `<p><strong>Shared via Nextcloud:</strong></p>${items}`
+      lead += `<p><strong>Shared via Nextcloud:</strong></p>${items}`
     }
-    // Cards live IN the editor body now (#195 follow-up²) — the
-    // RichTextEditor's `NimbusBlock` extension recognises any
-    // `<div data-nimbus-block="…">` wrapper as an atom node and
-    // renders it via a NodeView, so the styled markup survives
-    // the Tiptap schema and the user sees the live render
-    // straight inside the editor. Order matters: cards go
-    // ABOVE the quoted-history block so the recipient reads
-    // "card → reply text → previous conversation" — but the
-    // user's typed reply ALSO needs to land above the cards
-    // (so they type freely at the top of the editor, with the
-    // cards + quote scrolling below).  We append cards before
-    // the existing body content so they sit above the quoted
-    // history; the user's cursor lands at the top of the
-    // composed document.
-    let lead = ''
-    if (initial?.meetingInvite) lead += meetingInviteHtml(initial.meetingInvite)
-    if (initial?.talkLink) lead += talkInviteHtml(initial.talkLink)
+
     return lead + html
   }
 
-  /** The exact signature HTML we last inserted into the editor.
-      `null` means we haven't inserted anything yet (first run, or
-      reply/forward/draft branches that skip the insertion entirely).
-      Tracked so the From: picker can swap signatures *in place* when
-      the user changes account: if the body still ends with this
-      string we replace it with the new account's signature; if the
-      user has typed past it we leave it alone (no destructive edit). */
-  let insertedSignatureHtml: string | null = null
-
   /** Insert (or swap) the active account's signature when the editor
-      is live and `fromAccount` is settled. Done in an effect rather
-      than baked into `initialBodyHtml` because `fromAccount` is a
-      `$derived` that may evaluate to `undefined` during the
-      `$state(initialBodyHtml())` synchronous init — the effect runs
-      after that, by which time the props have flowed through.
-      Skipped for replies / forwards: those already carry their
-      intended body content. */
+      is live and `fromAccount` is settled. The signature for the
+      initial fromAccount is normally baked in at init time by
+      `initialBodyHtml` (see step 2 of its layout); this effect
+      handles the two cases that init can't:
+
+        1. The accounts list hadn't loaded when `initialBodyHtml`
+           ran, so no signature got stamped — first valid
+           `fromAccount` triggers an insert at the start of the
+           body so the layout still reads "breaklines → signature
+           → cards → quote".
+        2. The user picks a different From: account after the
+           editor's already up — we find the previously-inserted
+           signature anywhere in the body and splice in the new
+           one (the original tail-only check broke once signature
+           moved out of the trailing position into the middle of
+           the document). */
   $effect(() => {
-    if (isReplyOrForward(initial)) return
     if (!editorApi || !fromAccount) return
     const nextSig = signatureBlock(fromAccount.signature)
 
     if (insertedSignatureHtml === null) {
-      // First insertion — append at the end. No-op for accounts
-      // without a signature configured.
       if (!nextSig) return
-      editorApi.appendHtml(nextSig)
+      // Splice the signature right after the leading two empty
+      // paragraphs that initialBodyHtml stamps in.  Falls back to
+      // appendHtml when the body shape is unfamiliar (drafts).
+      const leadIdx = bodyHtml.indexOf('<p></p><p></p>')
+      if (leadIdx !== -1) {
+        const after = leadIdx + '<p></p><p></p>'.length
+        const replaced = bodyHtml.slice(0, after) + nextSig + bodyHtml.slice(after)
+        editorApi.setHtml(replaced)
+        bodyHtml = replaced
+      } else {
+        editorApi.appendHtml(nextSig)
+      }
       insertedSignatureHtml = nextSig
       return
     }
@@ -422,19 +459,20 @@
     if (nextSig === insertedSignatureHtml) return
 
     // Account changed (or the user edited their signature in
-    // settings while compose was open). Try a tail-replace: only
-    // proceed if the current body still ends with the previously
-    // inserted signature exactly. If the user has typed past it,
-    // we'd rather leave their content untouched than risk a
-    // destructive rewrite.
-    if (bodyHtml.endsWith(insertedSignatureHtml)) {
-      const replaced =
-        bodyHtml.slice(0, bodyHtml.length - insertedSignatureHtml.length) +
-        nextSig
-      editorApi.setHtml(replaced)
-      bodyHtml = replaced
-      insertedSignatureHtml = nextSig || null
-    }
+    // settings while compose was open).  Find the previously-
+    // inserted signature anywhere in the body and replace it.
+    // Falling back to no-op when the user has clearly edited
+    // around it (the substring is gone) is safer than trying to
+    // guess a new insertion point.
+    const idx = bodyHtml.indexOf(insertedSignatureHtml)
+    if (idx === -1) return
+    const replaced =
+      bodyHtml.slice(0, idx) +
+      nextSig +
+      bodyHtml.slice(idx + insertedSignatureHtml.length)
+    editorApi.setHtml(replaced)
+    bodyHtml = replaced
+    insertedSignatureHtml = nextSig || null
   })
 
   /** Render a per-account signature as the standard `-- ` separator
