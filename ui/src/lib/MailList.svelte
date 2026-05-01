@@ -606,7 +606,7 @@
   >
     <button
       type="button"
-      class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
       onclick={() => {
         if (!contextMenu) return
         // For a single-row context menu just flip the row's read
@@ -626,31 +626,37 @@
         }
       }}
     >
-      {#if groupSize > 1}
-        Mark {groupSize} as {contextMenu.env.is_read ? 'unread' : 'read'}
-      {:else}
-        {contextMenu.env.is_read ? 'Mark as unread' : 'Mark as read'}
-      {/if}
+      <Icon name={contextMenu.env.is_read ? 'unread' : 'read'} size={16} />
+      <span>
+        {#if groupSize > 1}
+          Mark {groupSize} as {contextMenu.env.is_read ? 'unread' : 'read'}
+        {:else}
+          {contextMenu.env.is_read ? 'Mark as unread' : 'Mark as read'}
+        {/if}
+      </span>
     </button>
     <button
       type="button"
-      class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
       onclick={() => {
         if (!contextMenu) return
         movingGroup = ctxGroup
         closeContextMenu()
       }}
     >
-      {#if groupSize > 1}
-        Move {groupSize} messages to folder…
-      {:else}
-        Move to folder…
-      {/if}
+      <Icon name="move-to-folder" size={16} />
+      <span>
+        {#if groupSize > 1}
+          Move {groupSize} messages to folder…
+        {:else}
+          Move to folder…
+        {/if}
+      </span>
     </button>
     <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
     <button
       type="button"
-      class="w-full text-left px-3 py-1.5 hover:bg-red-500/10 hover:text-red-500"
+      class="flex w-full items-center gap-2 text-left px-3 py-1.5 hover:bg-red-500/10 hover:text-red-500"
       onclick={() => {
         if (!contextMenu) return
         // Single-row delete reuses the row-level `quickDelete` (which
@@ -669,11 +675,14 @@
         closeContextMenu()
       }}
     >
-      {#if groupSize > 1}
-        Delete {groupSize} messages
-      {:else}
-        Delete
-      {/if}
+      <Icon name="delete" size={16} />
+      <span>
+        {#if groupSize > 1}
+          Delete {groupSize} messages
+        {:else}
+          Delete
+        {/if}
+      </span>
     </button>
   </div>
 {/if}
