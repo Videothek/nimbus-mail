@@ -7,7 +7,7 @@
    * area and lets users manage their accounts after initial setup.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
   import { enable as autostartEnable, disable as autostartDisable, isEnabled as autostartIsEnabled } from '@tauri-apps/plugin-autostart'
   import NextcloudSettings from './NextcloudSettings.svelte'
@@ -1134,7 +1134,7 @@
                 title="Use the {style.label} icon for the tray, window and taskbar"
               >
                 <img
-                  src={`nimbus-logo://localhost/${style.id}`}
+                  src={convertFileSrc(style.id, 'nimbus-logo')}
                   alt={`${style.label} icon preview`}
                   class="w-12 h-12 object-contain"
                   loading="lazy"
