@@ -22,7 +22,6 @@
   import {
     meetingInviteHtml,
     talkInviteHtml,
-    QUOTED_HISTORY_MARKER,
     type MeetingInvite,
   } from './inviteHtml'
   import RichTextEditor, {
@@ -111,14 +110,6 @@
         saves the event in EventEditor — Compose then opens with
         a styled HTML invite card pre-filled in the body. */
     meetingInvite?: MeetingInvite
-    /** Pre-rendered quoted-history HTML for replies (#195
-        follow-up).  Held outside the editor's body because
-        Tiptap's schema unwraps generic <div> wrappers and strips
-        inline styles, which would dissolve the modern muted
-        styling we apply.  Compose renders this as its own
-        read-only preview block below the editor and splices it
-        in (with any invite cards above it) at send time. */
-    quotedHtml?: string
     /** When Compose is opened by clicking "Edit" on an existing draft
         in the Drafts folder, this points at the server-side copy we
         opened from. Once the user sends or re-saves, that copy needs
@@ -345,71 +336,19 @@
   // svelte-ignore state_referenced_locally
   let bodyHtml = $state(initialBodyHtml())
 
-  // ── Pending invite cards (#195 follow-up) ──────────────────────
-  //
-  // Talk + meeting invitation blocks are kept here, *outside* the
-  // editor's HTML body, so the user can see the rendered card in
-  // a live preview below the editor without the editor's own
-  // schema mangling the inline styles.  Both cards are appended
-  // to the editor's HTML at send / save-draft time via
-  // `bodyHtmlForSubmission()`.  A small × button on each preview
-  // lets the user drop the card before sending.
-  // svelte-ignore state_referenced_locally
-  let pendingTalkInvite = $state<{ name: string; url: string } | null>(
-    untrack(() => initial?.talkLink ?? null),
-  )
-  // svelte-ignore state_referenced_locally
-  let pendingMeetingInvite = $state<MeetingInvite | null>(
-    untrack(() => initial?.meetingInvite ?? null),
-  )
-  /** Quoted previous-conversation HTML for replies — held out
-   *  of the editor (Tiptap eats the styled wrapper) so it can
-   *  render as its own modern muted preview block below the
-   *  invite cards. Spliced into the outbound HTML at send time
-   *  after the cards. */
-  // svelte-ignore state_referenced_locally
-  let pendingQuotedHtml = $state<string | null>(
-    untrack(() => initial?.quotedHtml ?? null),
-  )
-
-  /** Local Tauri-served URL for the Nimbus logo, used by the
-   *  in-app preview. Tauri's webview reliably renders custom-
-   *  scheme assets; arbitrary HTTPS images can be slow / blocked
-   *  in dev. The `nimbus-logo://localhost/storm` scheme is the
-   *  same one the Settings → Design picker uses for its preview
-   *  tiles, so the resolved bytes are guaranteed to be live. */
-  const previewLogoUrl = convertFileSrc('storm', 'nimbus-logo')
-
-  /** Submission render — uses the default GitHub-hosted public
-   *  PNG so the recipient's mail client can fetch it. */
-  function submissionInvitesHtml(): string {
-    let h = ''
-    if (pendingTalkInvite) h += talkInviteHtml(pendingTalkInvite)
-    if (pendingMeetingInvite) h += meetingInviteHtml(pendingMeetingInvite)
-    return h
-  }
-
-  /** Final HTML body to ship.  Reading order in the recipient's
-   *  inbox:
-   *
-   *    1. user's reply text (editor content)
-   *    2. invite cards (Talk + meeting, if any)
-   *    3. quoted previous conversation (styled muted block)
-   *
-   *  Both the cards and the quoted-history block live outside
-   *  the editor — Tiptap's schema unwraps custom <div>s and
-   *  strips inline styles, so we keep them as Compose-level
-   *  state and assemble the final HTML here at submit time. */
+  // Cards (Talk + meeting + quoted-history) all live IN the
+  // editor's HTML body (#195 follow-up²). The RichTextEditor's
+  // `NimbusBlock` Tiptap extension recognises every
+  // `<div data-nimbus-block="…">` wrapper and renders it via a
+  // NodeView so the styled markup survives schema parsing. The
+  // user sees the live card in the editor and can select-and-
+  // delete the whole thing with one Backspace — same gesture
+  // they'd use to remove any other element. No separate preview
+  // pane, no pending-state to keep in sync, no out-of-band
+  // assembly at submit time.
   function bodyHtmlForSubmission(): string {
-    const cards = submissionInvitesHtml()
-    const quoted = pendingQuotedHtml ?? ''
-    return bodyHtml + cards + quoted
+    return bodyHtml
   }
-  // QUOTED_HISTORY_MARKER stays imported so the helper module can
-  // be inspected from devtools, but the splice-by-marker path
-  // isn't needed any more — quoted history lives outside the
-  // editor and is appended explicitly above.
-  void QUOTED_HISTORY_MARKER
 
   /** Build the editor's starting HTML — the body (plain text or
       already-HTML draft) with any pre-rendered Nextcloud share-link
@@ -429,15 +368,24 @@
         .join('')
       html += `<p><strong>Shared via Nextcloud:</strong></p>${items}`
     }
-    // Talk + meeting invite cards aren't injected into the
-    // editor's body any more (#195 follow-up).  They live as
-    // Compose-level state and render in a separate read-only
-    // preview block below the editor so the user sees what the
-    // recipient will get without putting fragile inline-styled
-    // markup into the editable area.  At send / save-draft
-    // time, the rendered cards get appended to the editor's
-    // current HTML — see `bodyHtmlForSubmission()`.
-    return html
+    // Cards live IN the editor body now (#195 follow-up²) — the
+    // RichTextEditor's `NimbusBlock` extension recognises any
+    // `<div data-nimbus-block="…">` wrapper as an atom node and
+    // renders it via a NodeView, so the styled markup survives
+    // the Tiptap schema and the user sees the live render
+    // straight inside the editor. Order matters: cards go
+    // ABOVE the quoted-history block so the recipient reads
+    // "card → reply text → previous conversation" — but the
+    // user's typed reply ALSO needs to land above the cards
+    // (so they type freely at the top of the editor, with the
+    // cards + quote scrolling below).  We append cards before
+    // the existing body content so they sit above the quoted
+    // history; the user's cursor lands at the top of the
+    // composed document.
+    let lead = ''
+    if (initial?.meetingInvite) lead += meetingInviteHtml(initial.meetingInvite)
+    if (initial?.talkLink) lead += talkInviteHtml(initial.talkLink)
+    return lead + html
   }
 
   /** The exact signature HTML we last inserted into the editor.
@@ -659,13 +607,20 @@
     return [...splitAddrs(to), ...splitAddrs(cc)]
   }
 
-  /** Stage a Talk invite card for the outgoing mail (#195
-      follow-up).  No longer writes into the editor body; instead
-      we set `pendingTalkInvite`, which drives the live preview
-      card below the editor and gets appended to the body at
-      send / save-draft time. */
+  /** Insert a Talk invite card into the editor body when the
+      user creates a Talk room mid-compose.  The new
+      `insertBeforeNimbusBlock` editor API drops the card just
+      above any existing quoted-history block (so reading order
+      is card → reply text → previous conversation); on a fresh
+      compose with no quote it appends at the end. The card is
+      parsed by the editor's `NimbusBlock` extension into an
+      atom node, so a single Backspace deletes the whole thing
+      if the user changes their mind. */
   function injectTalkBlock(link: { name: string; url: string }) {
-    pendingTalkInvite = { name: link.name, url: link.url }
+    const html = talkInviteHtml(link)
+    if (editorApi) {
+      editorApi.insertBeforeNimbusBlock(html, 'quoted-history')
+    }
   }
 
   function onTalkRoomCreated(room: TalkRoom, participants: string[]) {
@@ -1460,64 +1415,6 @@
           extraTabs={composeExtraTabs}
         />
       </div>
-
-      <!-- Pending invite cards + quoted history (#195 follow-up):
-           live preview of what the recipient will actually see,
-           rendered from the same helpers that build the outbound
-           HTML. Held out of the editor's body so Tiptap can't
-           mangle inline styles. Each block has its own × dismiss
-           where it makes sense. -->
-      {#if pendingTalkInvite || pendingMeetingInvite || pendingQuotedHtml}
-        <div class="rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/40">
-          <div class="flex items-center justify-between px-3 py-2 border-b border-surface-200 dark:border-surface-700">
-            <span class="text-xs font-semibold uppercase tracking-wider text-surface-500">
-              Recipient will see
-            </span>
-            <span class="text-[11px] text-surface-400">Live preview</span>
-          </div>
-          <div class="p-2 space-y-2">
-            {#if pendingTalkInvite}
-              <div class="relative">
-                <button
-                  type="button"
-                  class="absolute top-3 right-3 z-10 w-6 h-6 rounded-full bg-surface-100 dark:bg-surface-800 text-surface-500 hover:bg-red-500/20 hover:text-red-500 text-xs flex items-center justify-center shadow-sm border border-surface-200 dark:border-surface-700"
-                  title="Remove Talk invite from message"
-                  aria-label="Remove Talk invite"
-                  onclick={() => (pendingTalkInvite = null)}
-                >✕</button>
-                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                {@html talkInviteHtml(pendingTalkInvite, { logoUrl: previewLogoUrl })}
-              </div>
-            {/if}
-            {#if pendingMeetingInvite}
-              <div class="relative">
-                <button
-                  type="button"
-                  class="absolute top-3 right-3 z-10 w-6 h-6 rounded-full bg-surface-100 dark:bg-surface-800 text-surface-500 hover:bg-red-500/20 hover:text-red-500 text-xs flex items-center justify-center shadow-sm border border-surface-200 dark:border-surface-700"
-                  title="Remove meeting invite from message"
-                  aria-label="Remove meeting invite"
-                  onclick={() => (pendingMeetingInvite = null)}
-                >✕</button>
-                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                {@html meetingInviteHtml(pendingMeetingInvite, { logoUrl: previewLogoUrl })}
-              </div>
-            {/if}
-            {#if pendingQuotedHtml}
-              <div class="relative">
-                <button
-                  type="button"
-                  class="absolute top-3 right-3 z-10 w-6 h-6 rounded-full bg-surface-100 dark:bg-surface-800 text-surface-500 hover:bg-red-500/20 hover:text-red-500 text-xs flex items-center justify-center shadow-sm border border-surface-200 dark:border-surface-700"
-                  title="Remove quoted previous conversation"
-                  aria-label="Remove quoted previous conversation"
-                  onclick={() => (pendingQuotedHtml = null)}
-                >✕</button>
-                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                {@html pendingQuotedHtml}
-              </div>
-            {/if}
-          </div>
-        </div>
-      {/if}
 
       {#if attachments.length > 0}
         <div class="flex flex-wrap gap-2">
