@@ -1323,6 +1323,142 @@ impl ImapClient {
         Ok(envelopes)
     }
 
+    /// Fetch up to `limit` envelopes whose UIDs are strictly less than
+    /// `before_uid`, sorted newest-first.  Used by MailList's
+    /// infinite-scroll "load older" path (#194): the cold-cache
+    /// `fetch_envelopes("newest N")` only walks the tail of the
+    /// folder, so anything older than the Nth-newest message never
+    /// reaches the local cache. This method runs `UID SEARCH UID
+    /// 1:<before_uid-1>` to get every older UID, sorts descending,
+    /// truncates to `limit`, and fetches just those envelopes.
+    ///
+    /// Returns the freshly-fetched envelopes; the caller is
+    /// responsible for writing them through to the cache. An empty
+    /// return means there's nothing older — frontend can stop
+    /// asking.
+    ///
+    /// Two round trips (SEARCH then FETCH) on purpose: a single
+    /// `UID FETCH 1:<before_uid-1>` would parse envelope metadata
+    /// for every older message in the folder, even though we only
+    /// want the newest `limit` of them. SEARCH returns just UIDs
+    /// (small payload), FETCH then asks for the slice we keep.
+    pub async fn fetch_older_envelopes(
+        &mut self,
+        folder: &str,
+        before_uid: u32,
+        limit: u32,
+    ) -> Result<EnvelopeBatch, NimbusError> {
+        let (_total, uidvalidity) = self.select_folder(folder).await?;
+        if before_uid == 0 || before_uid == 1 {
+            // Nothing can be older than UID 1.  (Some servers don't
+            // assign UID 0 at all, others reserve it; either way an
+            // empty response here is correct.)
+            return Ok(EnvelopeBatch {
+                uidvalidity,
+                envelopes: Vec::new(),
+            });
+        }
+
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| NimbusError::Protocol("Session is closed".into()))?;
+
+        let criterion = format!("UID 1:{}", before_uid - 1);
+        debug!("UID SEARCH for older in '{folder}': {criterion}");
+        let mut uids: Vec<u32> = session
+            .uid_search(&criterion)
+            .await
+            .map_err(|e| NimbusError::Protocol(format!("UID SEARCH (older) failed: {e}")))?
+            .into_iter()
+            .collect();
+
+        if uids.is_empty() {
+            return Ok(EnvelopeBatch {
+                uidvalidity,
+                envelopes: Vec::new(),
+            });
+        }
+
+        // Top `limit` by descending UID — those are the newest
+        // among "older than before_uid".
+        uids.sort_unstable_by(|a, b| b.cmp(a));
+        uids.truncate(limit as usize);
+
+        let set = uids
+            .iter()
+            .map(|u| u.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let fetches: Vec<_> = session
+            .uid_fetch(set, "(UID FLAGS INTERNALDATE ENVELOPE)")
+            .await
+            .map_err(|e| {
+                NimbusError::Protocol(format!("UID FETCH (older) failed: {e}"))
+            })?
+            .try_collect()
+            .await
+            .map_err(|e| {
+                NimbusError::Protocol(format!("Failed to read older FETCH: {e}"))
+            })?;
+
+        let mut envelopes: Vec<EmailEnvelope> = fetches
+            .iter()
+            .filter_map(|fetch| {
+                let uid = fetch.uid?;
+                let envelope = fetch.envelope()?;
+
+                let subject = envelope
+                    .subject
+                    .as_ref()
+                    .map(|s| decode_header(s))
+                    .unwrap_or_default();
+                let from = envelope
+                    .from
+                    .as_ref()
+                    .and_then(|addrs| addrs.first())
+                    .map(format_address)
+                    .unwrap_or_default();
+                let date = envelope
+                    .date
+                    .as_ref()
+                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                    .and_then(parse_rfc2822)
+                    .or_else(|| fetch.internal_date().map(|dt| dt.with_timezone(&Utc)))
+                    .unwrap_or_else(Utc::now);
+
+                let mut is_read = false;
+                let mut is_starred = false;
+                for flag in fetch.flags() {
+                    match flag {
+                        async_imap::types::Flag::Seen => is_read = true,
+                        async_imap::types::Flag::Flagged => is_starred = true,
+                        _ => {}
+                    }
+                }
+
+                Some(EmailEnvelope {
+                    uid,
+                    folder: folder.to_string(),
+                    from,
+                    subject,
+                    date,
+                    is_read,
+                    is_starred,
+                    account_id: String::new(),
+                })
+            })
+            .collect();
+        envelopes.sort_unstable_by_key(|e| std::cmp::Reverse(e.date));
+
+        info!(
+            "Fetched {} older envelopes in '{folder}' before UID {before_uid}",
+            envelopes.len()
+        );
+        Ok(EnvelopeBatch { uidvalidity, envelopes })
+    }
+
     /// Log out from the IMAP server and close the connection cleanly.
     ///
     /// Always call this when you're done — it sends the LOGOUT command
