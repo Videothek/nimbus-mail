@@ -919,22 +919,20 @@
    *  straight through to the wire so the recipient's client renders
    *  it the same way every other client does.
    */
+  /** Build a styled quoted-history HTML block for the previous
+   *  thread.  Returned as a standalone block, NOT spliced into
+   *  the editor body — Tiptap's schema unwraps generic <div>
+   *  wrappers and strips inline styles, so we keep this out of
+   *  the editor and let Compose render it as its own read-only
+   *  preview block + splice it in at send time. */
   function quoteBody(from: string, date: string, body: string | null): string {
     const bodyHtml = htmlOrEscape(body ?? '')
     const when = new Date(date).toLocaleString()
-    // Two empty paragraphs above so the editor opens with the
-    // user's cursor in fresh space, not flush against the quoted
-    // wrapper.  The wrapper itself carries the modern muted
-    // styling (#195) and the marker attribute the submit pipeline
-    // uses to splice invite cards in just above it.
-    return (
-      `<p></p><p></p>` +
-      quotedHistoryHtml({
-        fromHeader: from,
-        whenText: when,
-        bodyHtml,
-      })
-    )
+    return quotedHistoryHtml({
+      fromHeader: from,
+      whenText: when,
+      bodyHtml,
+    })
   }
 
   /** If the input already looks like HTML, pass it through. Otherwise
@@ -970,7 +968,7 @@
     openCompose({
       to: mail.from,
       subject: replySubject(mail.subject),
-      body: quoteBody(mail.from, mail.date, mail.body_text),
+      quotedHtml: quoteBody(mail.from, mail.date, mail.body_text),
     })
   }
 
@@ -982,7 +980,7 @@
       to: mail.from,
       cc: others.join(', '),
       subject: replySubject(mail.subject),
-      body: quoteBody(mail.from, mail.date, mail.body_text),
+      quotedHtml: quoteBody(mail.from, mail.date, mail.body_text),
     })
   }
 
@@ -1276,7 +1274,7 @@
       to: original.from,
       cc: others.length > 0 ? others.join(', ') : undefined,
       subject: replySubject(original.subject),
-      body: quoteBody(original.from, original.date, original.body_text),
+      quotedHtml: quoteBody(original.from, original.date, original.body_text),
       meetingInvite,
     })
   }
