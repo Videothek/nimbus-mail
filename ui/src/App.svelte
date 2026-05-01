@@ -968,7 +968,7 @@
     openCompose({
       to: mail.from,
       subject: replySubject(mail.subject),
-      quotedHtml: quoteBody(mail.from, mail.date, mail.body_text),
+      body: quoteBody(mail.from, mail.date, mail.body_text),
     })
   }
 
@@ -980,7 +980,7 @@
       to: mail.from,
       cc: others.join(', '),
       subject: replySubject(mail.subject),
-      quotedHtml: quoteBody(mail.from, mail.date, mail.body_text),
+      body: quoteBody(mail.from, mail.date, mail.body_text),
     })
   }
 
@@ -1274,7 +1274,10 @@
       to: original.from,
       cc: others.length > 0 ? others.join(', ') : undefined,
       subject: replySubject(original.subject),
-      quotedHtml: quoteBody(original.from, original.date, original.body_text),
+      // Body holds the styled quoted-history block; the meeting
+      // card lands above it via `initialBodyHtml` in Compose,
+      // which prepends `meetingInvite`-rendered HTML.
+      body: quoteBody(original.from, original.date, original.body_text),
       meetingInvite,
     })
   }

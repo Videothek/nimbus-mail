@@ -109,10 +109,15 @@ const T = {
 /** Wrap the card body inside the shared chrome (outer wrapper +
  *  branded header).  The header carries a logo and the "Nimbus"
  *  wordmark so the recipient instantly recognises the source
- *  even before reading the title. */
-function chrome(bodyHtml: string, logoUrl: string): string {
+ *  even before reading the title.
+ *
+ *  The outer `data-nimbus-block` attribute is the marker the
+ *  RichTextEditor's `NimbusBlock` extension parses into an atom
+ *  node — that's how the styled card survives Tiptap's schema
+ *  unwrapping when the HTML is loaded into the editor. */
+function chrome(bodyHtml: string, logoUrl: string, kind: string): string {
   return `
-<div style="max-width:560px;margin:16px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<div data-nimbus-block="${kind}" style="max-width:560px;margin:16px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <div style="${T.card}">
     <div style="${T.headerBg}">
       <img src="${logoUrl}" alt="" width="36" height="36" style="${T.headerLogo}" />
@@ -197,7 +202,7 @@ ${detailRow(
 
 ${nextcloudFooter("You'll also be added as a participant in Nextcloud Talk.")}
 `.trim()
-  return chrome(inner, opts.logoUrl ?? PUBLIC_NIMBUS_LOGO_URL)
+  return chrome(inner, opts.logoUrl ?? PUBLIC_NIMBUS_LOGO_URL, 'talk-invite')
 }
 
 export interface MeetingInvite {
@@ -275,24 +280,22 @@ ${ctaBlock}
 
 ${nextcloudFooter("You'll be invited via Nextcloud — accepting in your mail client adds the event to your calendar.")}
 `.trim()
-  return chrome(inner, opts.logoUrl ?? PUBLIC_NIMBUS_LOGO_URL)
+  return chrome(inner, opts.logoUrl ?? PUBLIC_NIMBUS_LOGO_URL, 'meeting-invite')
 }
 
 // ── Quoted-history wrapper (#195 follow-up) ─────────────────────
-
-/** Marker `data-` attribute on the wrapper around a reply's
- *  quoted-history block.  Compose's submission pipeline scans for
- *  this so it can splice the invite cards in *above* the quoted
- *  block — the recipient gets "card → reply text → previous
- *  conversation" reading order. */
-export const QUOTED_HISTORY_MARKER = 'data-nimbus-quoted'
 
 /** Wrap a reply's quoted history in a styled container.  Visually
  *  pushes the previous thread back so the user's fresh reply
  *  reads first: muted background, smaller type, soft left border,
  *  generous padding.  Same subdued grey palette across light and
  *  dark themes — designed to read as "old context" rather than
- *  competing with the new content. */
+ *  competing with the new content.
+ *
+ *  The outer `data-nimbus-block` attribute lets the editor's
+ *  `NimbusBlock` extension capture this as an atom node so the
+ *  styled wrapper survives Tiptap's schema (which would otherwise
+ *  unwrap the `<div>` and strip the inline styles). */
 export function quotedHistoryHtml(args: {
   fromHeader: string
   whenText: string
@@ -308,7 +311,7 @@ export function quotedHistoryHtml(args: {
       .replace(/'/g, '&#39;')
   const meta = `On ${escAttr(whenText)}, ${escAttr(fromHeader)} wrote:`
   return `
-<div ${QUOTED_HISTORY_MARKER}="1" style="margin:24px 0 0 0;padding:14px 18px;background:#f1f5f9;border-left:3px solid #cbd5e1;border-radius:8px;color:#64748b;font-size:13px;line-height:1.55;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<div data-nimbus-block="quoted-history" style="margin:24px 0 0 0;padding:14px 18px;background:#f1f5f9;border-left:3px solid #cbd5e1;border-radius:8px;color:#64748b;font-size:13px;line-height:1.55;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:8px;">Previous conversation</div>
   <div style="font-size:12px;color:#475569;margin-bottom:10px;">${meta}</div>
   <div style="color:#64748b;">${bodyHtml}</div>

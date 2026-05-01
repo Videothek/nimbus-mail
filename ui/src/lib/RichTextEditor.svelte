@@ -22,7 +22,8 @@
 
   import { onDestroy } from 'svelte'
   import { createEditor, EditorContent } from 'svelte-tiptap'
-  import { mergeAttributes } from '@tiptap/core'
+  import { Node, mergeAttributes } from '@tiptap/core'
+  import { convertFileSrc } from '@tauri-apps/api/core'
   import StarterKit from '@tiptap/starter-kit'
   import Underline from '@tiptap/extension-underline'
   import Link from '@tiptap/extension-link'
@@ -65,6 +66,13 @@
      *  from Nextcloud" flow: the parent opens the file picker,
      *  downloads bytes, converts to a data URL, and calls this. */
     insertImage: (src: string) => void
+    /** Insert HTML at the position just before the first
+     *  `nimbusBlock` atom node carrying the given `kind` attr.
+     *  Used by Compose's mid-compose Talk-room creation so the
+     *  new invite card lands *above* the quoted-history block on
+     *  a reply. Falls back to appending at the end when no
+     *  matching block exists (fresh compose). */
+    insertBeforeNimbusBlock: (html: string, kind: string) => void
   }
 
   interface Props {
@@ -301,9 +309,93 @@
     return event.key === 'Escape'
   }
 
+  // ── NimbusBlock — atom node for embedded styled HTML blocks ─
+  //
+  // Tiptap's StarterKit schema unwraps generic <div> wrappers and
+  // strips inline styles, so the modern invite cards + the muted
+  // "previous conversation" block (#195) couldn't survive a round
+  // trip through the editor. NimbusBlock recognises any element
+  // carrying `data-nimbus-block="<kind>"`, captures its full
+  // outerHTML into the node attribute, and renders it as a
+  // contentEditable=false NodeView. The editor displays the
+  // styled card verbatim; `editor.getHTML()` re-emits the
+  // original markup for sending.
+  //
+  // The atom flag means the user can select-and-delete the
+  // entire block with one Backspace — no separate × button
+  // needed. Replaces the previous "out-of-editor preview"
+  // approach with true in-editor WYSIWYG.
+  //
+  // The NodeView swaps any embedded GitHub-raw logo URL for the
+  // local `nimbus-logo://localhost/storm` asset so the dev
+  // webview always renders the brand header (HTTPS to
+  // raw.githubusercontent.com is sometimes slow / blocked).
+  // Outbound HTML keeps the public URL intact.
+  const localLogoUrl = convertFileSrc('storm', 'nimbus-logo')
+  const PUBLIC_LOGO_HOST_RE =
+    /https:\/\/raw\.githubusercontent\.com\/Videothek\/nimbus-mail\/main\/logos\/[^"' )]+/g
+  const NimbusBlock = Node.create({
+    name: 'nimbusBlock',
+    group: 'block',
+    atom: true,
+    selectable: true,
+    draggable: false,
+    parseHTML() {
+      return [
+        {
+          tag: 'div[data-nimbus-block]',
+          getAttrs: (el) => {
+            const dom = el as HTMLElement
+            return { html: dom.outerHTML, kind: dom.getAttribute('data-nimbus-block') }
+          },
+        },
+      ]
+    },
+    addAttributes() {
+      return {
+        html: { default: '' },
+        kind: { default: '' },
+      }
+    },
+    renderHTML({ node }) {
+      // Rehydrate the original element from the stored HTML so
+      // `getHTML()` round-trips the full styled markup back out
+      // for the recipient. Falls back to a bare wrapper if the
+      // attribute somehow got cleared (defensive).
+      const html = (node.attrs as { html: string }).html
+      if (html) {
+        const tmpl = document.createElement('template')
+        tmpl.innerHTML = html
+        const root = tmpl.content.firstElementChild
+        if (root instanceof HTMLElement) return root
+      }
+      return [
+        'div',
+        mergeAttributes({
+          'data-nimbus-block': (node.attrs as { kind: string }).kind || '',
+        }),
+      ]
+    },
+    addNodeView() {
+      return ({ node }) => {
+        const dom = document.createElement('div')
+        dom.setAttribute('contenteditable', 'false')
+        dom.style.userSelect = 'none'
+        const stored = (node.attrs as { html: string }).html
+        // Local-logo swap: only the editor display uses the
+        // local Tauri scheme; the stored html attribute keeps
+        // the public URL so `getHTML()` for outbound mail
+        // emits the recipient-fetchable version.
+        dom.innerHTML = stored.replace(PUBLIC_LOGO_HOST_RE, localLogoUrl)
+        return { dom }
+      }
+    },
+  })
+
   // svelte-ignore state_referenced_locally
   const editor = createEditor({
     extensions: [
+      NimbusBlock,
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
         // Tiptap 3 renamed `History` to `UndoRedo`. `newGroupDelay`
@@ -871,6 +963,25 @@
           // parent — otherwise Tiptap's selection can sit outside
           // the document and the image lands in the wrong place.
           ed.chain().focus().setImage({ src }).run()
+        },
+        insertBeforeNimbusBlock: (html: string, kind: string) => {
+          let pos: number | null = null
+          ed.state.doc.descendants((node, p) => {
+            if (pos !== null) return false
+            if (
+              node.type.name === 'nimbusBlock'
+              && (node.attrs as { kind?: string }).kind === kind
+            ) {
+              pos = p
+              return false
+            }
+            return true
+          })
+          if (pos !== null) {
+            ed.chain().insertContentAt(pos, html).run()
+          } else {
+            ed.chain().insertContentAt(ed.state.doc.content.size, html).run()
+          }
         },
       })
     }
