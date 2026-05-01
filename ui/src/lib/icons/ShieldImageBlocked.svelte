@@ -1,0 +1,25 @@
+<script lang="ts">
+  export let size: number | string = 20;
+  let className = '';
+  export { className as class };
+</script>
+
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width={size}
+  height={size}
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="1.6"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  class={className}
+  aria-hidden="true"
+>
+  <path d="M12 3l8 3v5c0 5-3.5 9-8 10-4.5-1-8-5-8-10V6l8-3z"/>
+  <rect x="7" y="9" width="10" height="7" rx="1"/>
+  <circle cx="10" cy="11.5" r="0.9"/>
+  <path d="M7 14.5l3-3 3 3 4-2.5"/>
+  <path d="M5 7l14 11"/>
+</svg>

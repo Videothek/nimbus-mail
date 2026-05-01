@@ -1501,7 +1501,10 @@
              in for this message or trusted this sender. -->
         {#if processedHtml.hadBlocked && !showImagesForMessage && !trustedSender}
           <div class="flex flex-wrap items-center gap-3 px-6 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-700 text-sm text-amber-800 dark:text-amber-300">
-            <span class="shrink-0">🛡️ Remote images are blocked.</span>
+            <span class="shrink-0 inline-flex items-center gap-1.5">
+              <Icon name="shield-image-blocked" size={16} />
+              Remote images are blocked.
+            </span>
             <button
               class="btn btn-sm preset-outlined-surface-500"
               onclick={() => (showImagesForMessage = true)}

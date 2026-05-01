@@ -50,6 +50,7 @@
     // v5 — people categories + map + time + folder ops
     | 'group' | 'address-book' | 'team' | 'location' | 'time' | 'sun'
     | 'add-folder' | 'delete-folder' | 'respond-with-meeting'
+    | 'shield-image-blocked'
 </script>
 
 <script lang="ts">
@@ -164,6 +165,7 @@
   import AddFolder from './icons/AddFolder.svelte'
   import DeleteFolder from './icons/DeleteFolder.svelte'
   import RespondWithMeeting from './icons/RespondWithMeeting.svelte'
+  import ShieldImageBlocked from './icons/ShieldImageBlocked.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -284,6 +286,7 @@
     'add-folder': AddFolder,
     'delete-folder': DeleteFolder,
     'respond-with-meeting': RespondWithMeeting,
+    'shield-image-blocked': ShieldImageBlocked,
   }
   const Cmp = $derived(map[name])
 </script>
