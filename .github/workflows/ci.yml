@@ -74,6 +74,20 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # `cargo-deny` complements `cargo audit`: in addition to advisory
+  # scanning it enforces our licence allow-list and — most
+  # importantly for supply-chain hygiene — bans crates from
+  # unknown registries or git URLs.  See `deny.toml` at the
+  # workspace root for the policy.
+  rust-deny:
+    name: Supply-chain policy (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources advisories
+
   # ── Frontend checks ─────────────────────────────────────────
   frontend-lint:
     name: Frontend lint & type check
@@ -89,5 +103,19 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: npm ci
+      # Belt-and-suspenders supply-chain check on the lockfile:
+      # `lockfile-lint` rejects any dep whose resolved URL points
+      # somewhere other than the official npm registry, catching a
+      # whole class of attacks where a poisoned tarball is wedged
+      # into `package-lock.json` directly.
+      - name: Validate npm lockfile sources
+        run: npx --yes lockfile-lint --path package-lock.json
+          --validate-https
+          --allowed-hosts npm
+      # `npm audit` is the npm-side counterpart of `cargo audit`.
+      # We only fail on `high` or `critical` so noisy `low`/`moderate`
+      # advisories on dev-only deps don't block merges.
+      - name: npm audit (high+ severity)
+        run: npm audit --audit-level=high
       - run: npm run check
       - run: npm run build
