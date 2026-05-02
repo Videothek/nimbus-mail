@@ -1,0 +1,112 @@
+# Configuration for `cargo-deny` — our supply-chain firewall on top
+# of `cargo audit`.  Whereas `cargo audit` only checks for known
+# CVEs in published crates, `cargo-deny` also enforces:
+#
+#   * which licences are allowed
+#   * which crate sources are allowed (only crates.io by default —
+#     no rogue git URLs, no alternative registries)
+#   * banned crates / version pins
+#   * detection of yanked or duplicate-version crates
+#
+# Run locally with `cargo deny check`; CI runs the same.
+
+[graph]
+all-features = true
+
+# ── Advisories ─────────────────────────────────────────────────
+# `cargo audit` already runs as its own CI job, but cargo-deny
+# checks the same RustSec DB so a single workflow can gate both.
+# We keep the existing audit.toml ignore list authoritative and
+# just refer to the same RUSTSEC IDs here.
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+  # GTK3 chain via font-kit (transitive, upstream-blocked)
+  "RUSTSEC-2024-0413",
+  "RUSTSEC-2024-0416",
+  "RUSTSEC-2025-0057",
+  "RUSTSEC-2024-0412",
+  "RUSTSEC-2024-0418",
+  "RUSTSEC-2024-0411",
+  "RUSTSEC-2024-0417",
+  "RUSTSEC-2024-0414",
+  "RUSTSEC-2024-0415",
+  "RUSTSEC-2024-0420",
+  "RUSTSEC-2024-0419",
+  "RUSTSEC-2024-0429",
+  # unic-* chain via rrule
+  "RUSTSEC-2025-0081",
+  "RUSTSEC-2025-0075",
+  "RUSTSEC-2025-0080",
+  "RUSTSEC-2025-0100",
+  "RUSTSEC-2025-0098",
+  # Other transitive deps
+  "RUSTSEC-2025-0052", # async-std
+  "RUSTSEC-2024-0370", # proc-macro-error
+  "RUSTSEC-2026-0097", # rand 0.7 / 0.8
+]
+
+# ── Licences ────────────────────────────────────────────────────
+# Allow-list mirrors `SBOM.md`'s "what licences ship with Nimbus"
+# section.  Adding a new licence here is the same project-level
+# decision as adding a row to the SBOM — surface it in the PR
+# description, don't slip it in.
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+  # Permissive
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "BSL-1.0",
+  "Unlicense",
+  "WTFPL",
+  "CC0-1.0",
+  # Data / font / Unicode licences
+  "Unicode-DFS-2016",
+  "Unicode-3.0",
+  "OFL-1.1",
+  "CDLA-Permissive-2.0",
+  # Weak copyleft (file-level)
+  "MPL-2.0",
+  "EPL-2.0",
+  # Strong copyleft — we already ship under GPL-3.0 because of `rrule`.
+  "GPL-3.0",
+  "GPL-3.0-or-later",
+  "LGPL-3.0",
+  "LGPL-3.0-or-later",
+  # OpenSSL is statically linked via vendored-openssl
+  "OpenSSL",
+]
+exceptions = []
+
+# ── Bans ────────────────────────────────────────────────────────
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Crates explicitly off-limits.  Empty for now; revisit if a
+# specific package needs to be banned (e.g. a confirmed-malicious
+# typosquatter, or a crate with a forced-unsound API).
+deny = []
+# When two versions of the same crate end up in the tree, prefer
+# the older one if it's already there (reduces churn).
+skip = []
+skip-tree = []
+
+# ── Sources ─────────────────────────────────────────────────────
+# This is the headline supply-chain protection.  Anyone trying to
+# add a Cargo dep from a non-crates.io source (a private registry,
+# a git URL, a tarball) will fail CI.  Closes off the easiest way
+# to slip a backdoored crate into the tree.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
