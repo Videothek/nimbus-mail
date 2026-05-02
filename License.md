@@ -294,5 +294,3 @@ Whenever a dependency is added, removed, or upgraded:
 3. If the new dependency introduces a stronger copyleft licence than
    what's already present (e.g. AGPL-3.0), surface that as a project-
    level decision before merging — it changes our distribution model.
-
-[CLAUDE.md](CLAUDE.md) lists the AI-assistant version of this rule.
