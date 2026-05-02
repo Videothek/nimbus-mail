@@ -55,6 +55,14 @@ ignore = [
 [licenses]
 version = 2
 confidence-threshold = 0.8
+# Skip licence checks for crates that aren't published anywhere
+# (i.e. our own workspace crates).  Without this, cargo-deny
+# fails on every `nimbus-*` crate because it can't infer a
+# licence from the manifest — and inheriting `license.workspace`
+# would still leave the per-crate manifest ambiguous to
+# cargo-deny's parser.  The `SBOM.md` / `License.md` pair is
+# our authoritative source for what licence Nimbus ships under.
+private = { ignore = true }
 allow = [
   # Permissive
   "MIT",
@@ -87,10 +95,25 @@ allow = [
 ]
 exceptions = []
 
+# Some crates declare their licence via `license-file = "./LICENSE"`
+# rather than the `license = "..."` SPDX field, which cargo-deny
+# can't auto-resolve.  We hand it the SPDX expression here, with
+# the upstream LICENSE file as the source of truth.
+[[licenses.clarify]]
+crate = "ical"
+expression = "Apache-2.0"
+license-files = []
+
 # ── Bans ────────────────────────────────────────────────────────
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace path-deps (`nimbus-core = { path = "../nimbus-core" }`)
+# look like wildcard version requirements to cargo-deny.  This
+# flag exempts intra-workspace path links from the wildcard ban
+# without weakening the ban for *external* deps, which is what
+# we actually care about.
+allow-wildcard-paths = true
 # Crates explicitly off-limits.  Empty for now; revisit if a
 # specific package needs to be banned (e.g. a confirmed-malicious
 # typosquatter, or a crate with a forced-unsound API).
