@@ -2,9 +2,9 @@
 //!
 //! When there's any unread mail we paint a small soft-red disc in
 //! the bottom-right corner of the icon — no count, no digits.
-//! Same pattern Apple Mail uses on its dock icon: the user sees
-//! "you have something to read" at a glance, and reaches for the
-//! actual count from inside the app where typography is legible.
+//! The standard tray-icon attention pattern: the user sees "you
+//! have something to read" at a glance, and reaches for the actual
+//! count from inside the app where typography is legible.
 //!
 //! The disc uses a 2×2 supersampled edge: each pixel along the
 //! circumference samples 4 sub-pixel positions; the fraction

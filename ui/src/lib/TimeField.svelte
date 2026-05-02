@@ -4,7 +4,7 @@
    *
    * Replaces the native `<input type="time">` for consistency
    * with `DateField` and to give users a familiar
-   * Outlook-style 15-minute slot dropdown.  The text input
+   * 15-minute slot dropdown.  The text input
    * itself stays editable so power users can type "08:45"
    * directly without scrolling the list — clicking or focusing
    * just additionally surfaces the slot picker.  Slots run
@@ -35,8 +35,8 @@
   const listId = `timefield-list-${crypto.randomUUID()}`
 
   /** Pre-computed list of selectable times. 15-min increments
-   *  cover the common meeting cadence (Outlook default).
-   *  Cheap enough to compute once at module load. */
+   *  cover the common meeting cadence (the standard scheduler
+   *  default). Cheap enough to compute once at module load. */
   const slots = (() => {
     const out: string[] = []
     for (let h = 0; h < 24; h++) {

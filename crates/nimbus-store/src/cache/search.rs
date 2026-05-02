@@ -14,9 +14,9 @@
 //!
 //! # Query syntax
 //!
-//! Outlook-style operator syntax — we translate it to FTS5's native
-//! `column:term` expression and WHERE-clause filters on the real
-//! columns. Supported forms:
+//! Operator-prefixed query syntax (FROM:, TO:, SUBJECT:, etc.) — we
+//! translate it to FTS5's native `column:term` expression and WHERE-
+//! clause filters on the real columns. Supported forms:
 //!
 //! - `from:alice`        → match in `from_addr`
 //! - `to:bob`            → match in `to_addrs`
@@ -40,9 +40,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache::{Cache, CacheError};
 
-/// Optional scope narrowing — mirrors Outlook's scope selector.
-/// `Current folder` is represented by passing `Some(folder)`;
-/// "all folders across all accounts" is the empty `SearchScope`.
+/// Optional scope narrowing — the standard "current folder vs.
+/// all folders" scope selector. `Current folder` is represented by
+/// passing `Some(folder)`; "all folders across all accounts" is
+/// the empty `SearchScope`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchScope {
@@ -106,8 +107,8 @@ impl Cache {
     /// [`parse_query`]; `scope` restricts to an account/folder and
     /// caps the result count; `filters` layers boolean toggles on
     /// top (UI chips). An empty query with only filters is valid and
-    /// returns the newest matching messages — same as Outlook's
-    /// "Has attachments" sidebar filter.
+    /// returns the newest matching messages — equivalent to a
+    /// "Has attachments" sidebar filter on its own.
     pub fn search_emails(
         &self,
         query: &str,
@@ -264,7 +265,7 @@ impl ParsedQuery {
     }
 }
 
-/// Parse an Outlook-style search string into FTS5 atoms + filters.
+/// Parse an operator-prefixed search string into FTS5 atoms + filters.
 ///
 /// Runs in O(n) over the input, no regex. Unknown `op:value` tokens
 /// are treated as free text — we never reject user input, we just

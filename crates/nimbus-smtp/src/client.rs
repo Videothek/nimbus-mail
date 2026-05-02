@@ -391,7 +391,7 @@ fn build_with_attachments(
 
 /// Build an iMIP-flavoured invite email (#58).
 ///
-/// Structure (matches what Google Calendar / Outlook actually emit):
+/// Structure (matches what major calendar servers actually emit):
 /// ```text
 /// multipart/alternative                       (when no other attachments)
 /// ├── text/plain                              ← fallback body
@@ -405,18 +405,18 @@ fn build_with_attachments(
 /// └── (user attachments)
 /// ```
 ///
-/// The text/calendar alternative is what makes Outlook / Apple Mail /
-/// Gmail / Thunderbird recognise the message as an iTIP invite and
-/// surface their native Accept / Decline / Tentative buttons.
+/// The text/calendar alternative is what makes RFC-compliant mail
+/// clients recognise the message as an iTIP invite and surface their
+/// native Accept / Decline / Tentative buttons.
 ///
-/// Critical Apple Mail quirks (learned the hard way):
+/// Critical interop quirks (learned the hard way):
 /// - The `text/calendar` part must have **no** `name=` parameter and
-///   **no** `Content-Disposition` header.  Either one causes Apple
-///   Mail to treat the part as an attachment, fall through to its
+///   **no** `Content-Disposition` header.  Either one causes some
+///   clients to treat the part as an attachment, fall through to an
 ///   "Add to Calendar" affordance, and hide the RSVP buttons.
 /// - We must NOT also include a duplicate `.ics` as a separate
-///   attachment.  When both are present Apple Mail prefers the
-///   attachment form and again drops the RSVP UI.
+///   attachment.  When both are present some clients prefer the
+///   attachment form and again drop the RSVP UI.
 fn build_with_calendar(
     builder: MessageBuilder,
     email: &OutgoingEmail,
@@ -427,8 +427,8 @@ fn build_with_calendar(
         .expect("build_with_calendar called without calendar_part");
 
     // Bare `text/calendar; method=…; charset=utf-8` — no `name=`,
-    // no Content-Disposition.  This matches what Google Calendar
-    // and Microsoft 365 actually wire on the network.
+    // no Content-Disposition.  This matches what major calendar
+    // servers actually wire on the network.
     let calendar_content_type: ContentType =
         format!("text/calendar; method={}; charset=utf-8", cal.method)
             .parse()
@@ -452,12 +452,12 @@ fn build_with_calendar(
     }
     // Force 8bit Content-Transfer-Encoding on the calendar part.
     // Lettre's auto-encoder picks base64 whenever the body has any
-    // non-ASCII byte (e.g. an umlaut in SUMMARY), and Apple Mail's
-    // iMIP detector has a long-standing bug where base64-encoded
-    // text/calendar parts fall through to the "Add to Calendar"
+    // non-ASCII byte (e.g. an umlaut in SUMMARY), and some mail
+    // clients have long-standing bugs where base64-encoded
+    // text/calendar parts fall through to an "Add to Calendar"
     // affordance instead of surfacing Accept / Decline / Tentative.
-    // 8bit is what Microsoft 365 emits and what Apple Mail
-    // reliably parses on every macOS / iOS version we've tested.
+    // 8bit is what major mail servers emit on the wire and what
+    // every client we've tested parses reliably.
     alternative = alternative.singlepart(
         SinglePart::builder()
             .header(calendar_content_type)

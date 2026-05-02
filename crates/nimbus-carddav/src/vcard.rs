@@ -7,8 +7,8 @@
 //!
 //! # Field selection
 //!
-//! Outlook-style autocomplete needs name + email + photo at minimum;
-//! we also keep phone numbers and the organisation since they're
+//! Address-autocomplete needs name + email + photo at minimum; we
+//! also keep phone numbers and the organisation since they're
 //! cheap to grab and useful for the contact card. Birthday, address,
 //! categories etc. live in `vcard_raw` for now — the row stays
 //! re-extractable when we build a richer contact view later.

@@ -58,10 +58,9 @@ pub struct AppSettings {
     pub auto_load_remote_images: bool,
     /// After delete / archive, automatically open the row directly
     /// below the removed message (or above, if it was the last one).
-    /// Default `true` — matches Gmail / Outlook / Thunderbird /
-    /// Apple Mail's triage behaviour.  Turn off to fall back to the
-    /// previous behaviour where the reading pane goes blank after
-    /// every delete.
+    /// Default `true` — matches the standard mail-client triage
+    /// behaviour.  Turn off to fall back to the previous behaviour
+    /// where the reading pane goes blank after every delete.
     pub auto_advance_after_remove: bool,
     /// Default calendar for events created in CalendarView and for
     /// inbound RSVPs that the user accepts.  Stored as the app-side
@@ -436,11 +435,11 @@ pub struct OutgoingEmail {
     /// iTIP calendar part (#58).  When present, the SMTP layer
     /// emits the canonical iMIP MIME structure: a
     /// `text/calendar; method=…` alternative inside
-    /// `multipart/alternative` (so Outlook / Apple Mail / Gmail /
-    /// Thunderbird recognise the message as an invite and surface
-    /// native Accept/Decline/Tentative buttons), plus a
-    /// downloadable `.ics` attachment for clients that prefer to
-    /// import via the file.  `None` for ordinary mails.
+    /// `multipart/alternative` (so RFC-compliant mail clients
+    /// recognise the message as an invite and surface native
+    /// Accept/Decline/Tentative buttons), plus a downloadable
+    /// `.ics` attachment for clients that prefer to import via
+    /// the file.  `None` for ordinary mails.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_part: Option<CalendarPart>,
     /// Skip the IMAP APPEND-to-Sent step that normally fires after
@@ -570,7 +569,7 @@ pub struct NextcloudCapabilities {
 /// `photo_data` is the decoded image bytes (vCard PHOTO is base64 in
 /// the wire format, we decode once on import). Kept on the contact row
 /// so the autocomplete dropdown can render thumbnails without a
-/// separate fetch — Outlook does this; we should too.
+/// separate fetch — the standard mail-client behaviour.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Contact {
     pub id: String,

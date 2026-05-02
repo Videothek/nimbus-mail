@@ -4,14 +4,14 @@
  * into an outgoing message body (#195).
  *
  * Constraints we design around:
- *   • Inline styles only.  Gmail / Outlook / Yahoo strip <style>
+ *   • Inline styles only.  Many mail clients strip <style>
  *     blocks, classes carry no meaning across clients.
  *   • System font stack — no @import, no remote @font-face.
  *   • Width capped at 560 px so the card doesn't blow out a
  *     mobile inbox view.
  *   • Detail-row glyphs are emoji (📅 🕐 📍 📝) because every
  *     client renders them; SVG / icon fonts inside email are
- *     unreliable across Outlook desktop / Gmail.
+ *     unreliable across mail clients.
  *   • Banner image referenced via the project's GitHub raw URL
  *     so the recipient's mail client fetches a real PNG of the
  *     Nimbus logo when they permit remote content.  Falls back
@@ -25,12 +25,12 @@
  */
 
 /** Compatibility export — the brand logo lived here as a data
- *  URI for one cycle, before we discovered Outlook / Gmail /
- *  many corporate filters strip `<img src="data:…">` (and any
- *  remote URL hits remote-image blocking on first read). Both
- *  paths produced a broken-icon artifact for the recipient, so
- *  the chrome dropped the `<img>` entirely in favour of a
- *  typography-only wordmark.
+ *  URI for one cycle, before we discovered that many mail
+ *  clients and corporate filters strip `<img src="data:…">`
+ *  (and any remote URL hits remote-image blocking on first
+ *  read). Both paths produced a broken-icon artifact for the
+ *  recipient, so the chrome dropped the `<img>` entirely in
+ *  favour of a typography-only wordmark.
  *
  *  Kept as an empty string so any external import resolves to
  *  something falsy without breaking the bundle; new code
@@ -88,11 +88,11 @@ const T = {
   headerBg:
     'background:linear-gradient(135deg,#3b82f6 0%,#6366f1 100%);padding:20px 24px;color:#ffffff;',
   // Typography-only header: a wordmark inside a soft pill.
-  // Outlook / Gmail / Apple Mail strip `<img src="data:…">` URIs
-  // for security, and the previous remote-URL approach hit
-  // image-blocking by default — both left users staring at a
-  // broken-image icon. The pill + wordmark renders identically
-  // in every client because it's pure inline-styled HTML.
+  // Many mail clients strip `<img src="data:…">` URIs for
+  // security, and the previous remote-URL approach hit image-
+  // blocking by default — both left users staring at a broken-
+  // image icon. The pill + wordmark renders identically in every
+  // client because it's pure inline-styled HTML.
   headerPill:
     'display:inline-block;padding:7px 14px;border-radius:999px;background:rgba(255,255,255,0.18);',
   headerWordmark:
@@ -117,12 +117,11 @@ const T = {
 
 /** Wrap the card body inside the shared chrome (outer wrapper +
  *  branded header). The header is a typography-only wordmark in
- *  a soft pill — no image, because mail clients (Gmail / Outlook
- *  desktop / many corporate filters) strip `<img src="data:…">`
- *  for security, and remote URLs hit image-blocking by default,
- *  so any image-based brand element ends up as a broken-icon
- *  artifact for the recipient. The wordmark renders identically
- *  in every client.
+ *  a soft pill — no image, because many mail clients and
+ *  corporate filters strip `<img src="data:…">` for security,
+ *  and remote URLs hit image-blocking by default, so any image-
+ *  based brand element ends up as a broken-icon artifact for the
+ *  recipient. The wordmark renders identically in every client.
  *
  *  The outer `data-nimbus-block` attribute is the marker the
  *  RichTextEditor's `NimbusBlock` extension parses into an atom

@@ -12,7 +12,7 @@
   /**
    * RichTextEditor — Tiptap-based WYSIWYG editor for composing emails.
    *
-   * Provides an Outlook-style toolbar with formatting controls: text
+   * Provides a ribbon-style toolbar with formatting controls: text
    * styles (bold, italic, underline, strikethrough), headings, lists,
    * alignment, links, tables, colors, horizontal rules, and images.
    *
@@ -570,12 +570,11 @@
       //
       // Wire format (#93): mailto-anchor wrapping the pill, plus
       // *inline* styles that mirror our editor's Tailwind look.
-      // Email clients (Gmail, Outlook web, Apple Mail) strip
-      // class= and external CSS but keep `style` attrs and
-      // `title` tooltips, so recipients on those clients see a
-      // styled pill + can hover to read the full address.  The
-      // `data-contact-mention` marker survives the round-trip so
-      // a Nimbus reply re-parses our own pills.
+      // Most mail clients strip `class=` and external CSS but
+      // keep `style` attrs and `title` tooltips, so recipients
+      // see a styled pill + can hover to read the full address.
+      // The `data-contact-mention` marker survives the round-trip
+      // so a Nimbus reply re-parses our own pills.
       Mention.extend({
         name: 'contactMention',
         renderHTML({ node, HTMLAttributes }) {
@@ -695,11 +694,10 @@
       //
       // Wire format (#93): cid-anchor + inline styles + a title
       // tooltip identifying it as an attachment.  Clients that
-      // resolve `cid:` (Apple Mail, Thunderbird, our own renderer)
-      // get a direct jump to the part; Gmail / Outlook strip
-      // cid: but the recipient still sees a styled "🖇️ filename
-      // (attached)" badge and the file is in the message's
-      // attachment tray anyway.
+      // resolve `cid:` (including our own renderer) get a direct
+      // jump to the part; clients that strip `cid:` URLs still
+      // show a styled "🖇️ filename (attached)" badge and the file
+      // is in the message's attachment tray anyway.
       //
       // The plain-text fallback annotates the filename with
       // "(attached)" so a recipient reading the text/plain part
@@ -714,7 +712,7 @@
         // The data-* attrs (data-cid, data-filename,
         // data-attachment-ref) ride along for the new robust
         // click handler and as a cross-client identifier.
-        // Cross-client trade-off: Gmail / Outlook web may
+        // Cross-client trade-off: clients that strip `cid:` may
         // surface a "can't open cid:..." error if the user
         // *clicks* the link.  The visible badge + filename is
         // the part those recipients are meant to read; the
@@ -727,9 +725,9 @@
           // with the format code (PDF/DOC/XLS/PPT/CSV/ZIP) in
           // bold survives every major MUA's content sanitiser
           // because it's just <span style="..."> — no <svg>, no
-          // class names, no external CSS.  Recipients on Gmail
-          // / Outlook web / Apple Mail get a typed-icon look
-          // close to what they'd see in a file explorer.
+          // class names, no external CSS.  Recipients on any
+          // major mail client get a typed-icon look close to
+          // what they'd see in a file explorer.
           //
           // `data-label` carries the filename verbatim so a
           // round-trip back into Tiptap recovers it without
@@ -1214,7 +1212,7 @@
   let tableHoverRows = $state(0)
   let tableHoverCols = $state(0)
   let tablePickerAnchor = $state<HTMLDivElement | null>(null)
-  const TABLE_GRID = 8  // 8x8 picker like Outlook
+  const TABLE_GRID = 8  // 8x8 picker, the common mail-toolbar size
 
   /** Outside-click dismissal for the table picker (#199).  Mirrors
    *  the project-wide idiom from CLAUDE.md: register the listener
@@ -1296,7 +1294,7 @@
   }
 
   // ── Ribbon tab + emoji-picker state (#103 follow-up) ──────────
-  // The toolbar is split into Outlook-style tabs.  `activeTab`
+  // The toolbar is split into ribbon-style tabs.  `activeTab`
   // drives which panel is rendered below the tab strip; values
   // beyond the built-in three come from the embedder's
   // `extraTabs` prop (Compose contributes "attach").
@@ -1331,7 +1329,7 @@
   })
 
   /** Strip every mark + collapse the current block down to the
-   *  default paragraph node.  Outlook's "Clear formatting" button. */
+   *  default paragraph node.  The "Clear formatting" button. */
   function clearFormatting() {
     cmd().unsetAllMarks().clearNodes().run()
   }
@@ -1396,7 +1394,7 @@
   /* ── Ribbon-style tab strip (#103 follow-up) ─────────────────── */
 
   /* Tab buttons.  Rounded-top chip with a primary-colour underline
-     when active, matching Outlook Web's ribbon tabs. */
+     when active, matching the ribbon-style tab look. */
   :global(.rt-tab) {
     padding: 0.45rem 1rem;
     font-size: 0.8125rem;
@@ -1422,8 +1420,8 @@
     border-bottom-color: var(--color-primary-500);
   }
 
-  /* Panel buttons — large stacked icon-above-label.  Outlook-Web
-     ribbon proportions: ~50px tall, 24px icon, 11px label. */
+  /* Panel buttons — large stacked icon-above-label.  Ribbon
+     proportions: ~50px tall, 24px icon, 11px label. */
   :global(.rt-btn) {
     display: inline-flex;
     flex-direction: column;
@@ -1590,7 +1588,7 @@
      back to its intrinsic 200 px minimum. -->
 <div class="h-full flex flex-col min-h-0">
   <!-- ── Ribbon: tab strip + active panel (#103) ───────────────────
-       Outlook-style two-row toolbar.  Top row holds the tab labels
+       Two-row ribbon toolbar.  Top row holds the tab labels
        on the left, undo/redo + the embedder's send actions on the
        right.  Bottom row renders the active tab's panel — bigger
        icon-above-label buttons for a less flat, more discoverable
@@ -1758,7 +1756,7 @@
         <span class="rt-divider"></span>
 
         <!-- Clear formatting — strips marks AND collapses to plain
-             paragraph (matches Outlook's "Clear all formatting"). -->
+             paragraph (the standard "Clear all formatting" action). -->
         <button class="rt-btn" title="Clear all formatting" onclick={clearFormatting}>
           <span class="rt-btn-icon"><Icon name="clear" size={16} /></span>
           <span class="rt-btn-label">Clear</span>

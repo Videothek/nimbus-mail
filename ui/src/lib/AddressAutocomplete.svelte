@@ -136,8 +136,8 @@
         .slice(0, LIMIT)
       // Mailing-list hits stay first (typing a list name is
       // almost always intent to address the bundle), then
-      // individual contacts.  Matches Outlook / Apple Mail's
-      // ranking.
+      // individual contacts.  The standard mail-client
+      // autocomplete ranking.
       // Expand each contact into one suggestion per email
       // address so a contact with both home and work emails
       // shows up twice — the user can pick the address they

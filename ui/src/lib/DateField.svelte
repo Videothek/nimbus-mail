@@ -6,7 +6,8 @@
    * `<input type="date">`.  The native control varies wildly
    * across browsers and platforms (Chromium on Linux ships a
    * particularly minimal one), so we render a custom popover
-   * matching Outlook's calendar-grid style.  Locale-formatted
+   * matching the standard calendar-grid date-picker style.
+   * Locale-formatted
    * display, prev/next month arrows, current-day highlight,
    * outside-click + Escape to close, arrow-key navigation
    * inside the grid.

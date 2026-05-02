@@ -192,7 +192,7 @@ const MIGRATIONS: &[&str] = &[
     //   - `unicode61`  — Unicode-aware word splitter, handles UTF-8
     //     correctly for international names and subjects.
     //   - `remove_diacritics 2` — matches "müller" when searching
-    //     "muller" (Outlook behaves this way).
+    //     "muller" (the common mail-client behaviour).
     //   - `porter` over unicode61 — stems English word endings so
     //     "invoices" matches "invoice". For non-English mail this
     //     is a no-op, which is fine.
@@ -283,8 +283,8 @@ const MIGRATIONS: &[&str] = &[
 
     -- When the body lands (or gets refreshed) splice in the heavy
     -- columns. We intentionally concat plain text only; HTML would
-    -- pollute the index with tag noise and Outlook's search also
-    -- ignores markup.
+    -- pollute the index with tag noise and full-text mail search
+    -- conventionally ignores markup.
     CREATE TRIGGER search_index_body_upsert
     AFTER INSERT ON message_bodies
     BEGIN

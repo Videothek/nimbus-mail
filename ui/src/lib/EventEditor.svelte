@@ -1428,9 +1428,9 @@
            dates take the full column width.  Custom DateField
            / TimeField components (#126) replace the native
            HTML5 inputs — the native pickers vary too much
-           across platforms / browsers and don't match
-           Outlook's "calendar grid + slot list" UX the issue
-           asks for. -->
+           across platforms / browsers and don't match the
+           "calendar grid + slot list" UX the issue asks
+           for. -->
       <div class="grid grid-cols-2 gap-3">
         <div>
           <span class="text-xs text-surface-500 mb-1 block">Start</span>
