@@ -81,14 +81,14 @@
       if (imageBlobGet(key)) return
       let ct = contentType ?? ''
       if (!ct) ct = 'image/png'
-      const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+      const u8 = new Uint8Array(bytes)
       const url = URL.createObjectURL(new Blob([u8], { type: ct }))
       imageBlobPut(key, url)
     } else if (isVideoGuess(contentType, filename)) {
       if (cacheGet(key)) return
       let ct = contentType ?? ''
       if (!ct) ct = 'video/mp4'
-      const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+      const u8 = new Uint8Array(bytes)
       const url = URL.createObjectURL(new Blob([u8], { type: ct }))
       extractionChain = extractionChain
         .then(async () => {
@@ -385,7 +385,7 @@
   function makeBlobUrl(b: Uint8Array | number[]): string {
     let ct = contentType ?? ''
     if (!ct) ct = isVideo() ? 'video/mp4' : 'image/png'
-    const u8 = b instanceof Uint8Array ? b : new Uint8Array(b)
+    const u8 = new Uint8Array(b)
     return URL.createObjectURL(new Blob([u8], { type: ct }))
   }
 

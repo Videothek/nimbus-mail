@@ -962,14 +962,8 @@ fn decode_emails(json: &str) -> Vec<ContactEmail> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{pool, schema};
-
     fn open_test_cache() -> Cache {
-        let pool = pool::open_memory_pool().expect("open memory pool");
-        let mut conn = pool.get().expect("checkout");
-        schema::run_migrations(&mut conn).expect("migrate");
-        drop(conn);
-        Cache { pool }
+        Cache::open_in_memory().expect("open in-memory cache")
     }
 
     fn row(uid: &str, name: &str, email: &str) -> ContactRow {

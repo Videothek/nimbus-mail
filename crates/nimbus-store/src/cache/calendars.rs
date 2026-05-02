@@ -1047,15 +1047,10 @@ fn row_to_calendar_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<CalendarEven
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{pool, schema};
     use chrono::Duration;
 
     fn open_test_cache() -> Cache {
-        let pool = pool::open_memory_pool().expect("open memory pool");
-        let mut conn = pool.get().expect("checkout");
-        schema::run_migrations(&mut conn).expect("migrate");
-        drop(conn);
-        Cache { pool }
+        Cache::open_in_memory().expect("open in-memory cache")
     }
 
     fn cal(path: &str, name: &str) -> CalendarRow {

@@ -113,7 +113,7 @@ strong-copyleft licence stronger than what we already have (e.g.
 AGPL-3.0) is a project-level decision, not a routine PR. See
 [CLAUDE.md](CLAUDE.md) for the AI-assistant version of this rule.
 
-Last manual reconciliation: 2026-05-02 (PR # following #211).
+Last manual reconciliation: 2026-05-02 (CI pipeline fixes — `hickory-resolver` 0.24→0.26 and transitive `rustls-webpki` 0.103.11→0.103.13 security bumps; both keep their existing MIT-OR-Apache-2.0 licences, no new direct deps).
 
 ---
 

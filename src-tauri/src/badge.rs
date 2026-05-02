@@ -80,7 +80,15 @@ pub fn render_taskbar_overlay(unread: u32) -> Option<Image<'static>> {
     let badge_pos = (W - BADGE_SIZE) / 2;
 
     let mut pixels = vec![0u8; (W * H * 4) as usize];
-    draw_filled_circle(&mut pixels, W, H, badge_pos, badge_pos, BADGE_SIZE, BADGE_RGBA);
+    draw_filled_circle(
+        &mut pixels,
+        W,
+        H,
+        badge_pos,
+        badge_pos,
+        BADGE_SIZE,
+        BADGE_RGBA,
+    );
     Some(Image::new_owned(pixels, W, H))
 }
 

@@ -442,16 +442,12 @@ fn fts_column(column: &str, value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{Cache, pool, schema};
+    use crate::cache::Cache;
     use chrono::Duration;
     use nimbus_core::models::Email;
 
     fn open() -> Cache {
-        let pool = pool::open_memory_pool().unwrap();
-        let mut conn = pool.get().unwrap();
-        schema::run_migrations(&mut conn).unwrap();
-        drop(conn);
-        Cache { pool }
+        Cache::open_in_memory().expect("open in-memory cache")
     }
 
     fn email(uid: u32, folder: &str, subject: &str, body: &str, from: &str) -> Email {

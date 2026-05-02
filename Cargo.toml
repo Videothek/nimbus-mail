@@ -126,7 +126,7 @@ uuid = { version = "1", features = ["v4"] }
 # autoconfiguration (`_imaps._tcp.<domain>` etc.) when a provider
 # doesn't expose a Mozilla autoconfig endpoint. Pure Rust, no
 # system-resolver dependency.
-hickory-resolver = "0.24"
+hickory-resolver = "0.26"
 # System font enumeration for the compose toolbar's font picker
 # (#142).  font-kit walks the OS font catalogue (DirectWrite on
 # Windows, Core Text on macOS, fontconfig on Linux) and gives

@@ -239,7 +239,7 @@ pub fn parse_vcard(raw: &str) -> Result<ParsedVcard, NimbusError> {
                 // the same property, preserve cross-property
                 // accumulation in case a card has CATEGORIES
                 // listed twice.
-                for raw in value.split(|c| c == ',' || c == ';') {
+                for raw in value.split([',', ';']) {
                     let t = raw.trim();
                     if !t.is_empty() && !categories.iter().any(|c| c == t) {
                         categories.push(t.to_string());

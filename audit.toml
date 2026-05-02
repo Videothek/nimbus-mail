@@ -1,0 +1,43 @@
+# Configuration for `cargo audit` and the rustsec/audit-check GitHub Action.
+#
+# Each ID listed below is a `cargo audit` warning we are *intentionally*
+# accepting because the affected crate is pulled in transitively by an
+# upstream we cannot upgrade past.  Revisit this list whenever upstream
+# releases land — the goal is to keep it shrinking.
+
+[advisories]
+ignore = [
+  # ── GTK3 chain pulled in transitively by `font-kit` ─────────────
+  # font-kit's Linux fontconfig backend depends on the GTK3 family,
+  # which the maintainers have flagged as unmaintained in favour of
+  # GTK4 bindings.  We use font-kit for system font enumeration in
+  # `src-tauri/src/main.rs`; switching enumerators would mean
+  # platform-specific code on each OS.  Revisit when font-kit
+  # releases a GTK4-based build.
+  "RUSTSEC-2024-0413", # atk
+  "RUSTSEC-2024-0416", # atk-sys
+  "RUSTSEC-2025-0057", # fxhash
+  "RUSTSEC-2024-0412", # gdk
+  "RUSTSEC-2024-0418", # gdk-sys
+  "RUSTSEC-2024-0411", # gdkwayland-sys
+  "RUSTSEC-2024-0417", # gdkx11
+  "RUSTSEC-2024-0414", # gdkx11-sys
+  "RUSTSEC-2024-0415", # gtk
+  "RUSTSEC-2024-0420", # gtk-sys
+  "RUSTSEC-2024-0419", # gtk3-macros
+  "RUSTSEC-2024-0429", # glib (unsound)
+
+  # ── unic-* chain (transitive via rrule / chrono-tz) ──────────────
+  # The unic family is unmaintained.  Pulled in transitively by our
+  # recurrence-rule and timezone deps; no direct API surface for us.
+  "RUSTSEC-2025-0081", # unic-char-property
+  "RUSTSEC-2025-0075", # unic-char-range
+  "RUSTSEC-2025-0080", # unic-common
+  "RUSTSEC-2025-0100", # unic-ucd-ident
+  "RUSTSEC-2025-0098", # unic-ucd-version
+
+  # ── Other transitive unmaintained / unsound deps ─────────────────
+  "RUSTSEC-2025-0052", # async-std (transitive build dep)
+  "RUSTSEC-2024-0370", # proc-macro-error (transitive build-time)
+  "RUSTSEC-2026-0097", # rand 0.7 + 0.8 — unsound; transitive only
+]

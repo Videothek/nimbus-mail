@@ -26,7 +26,7 @@ function bufToB64(buf: ArrayBuffer | Uint8Array): string {
   return btoa(bin)
 }
 
-function b64ToBuf(s: string): Uint8Array {
+function b64ToBuf(s: string): Uint8Array<ArrayBuffer> {
   const bin = atob(s)
   const out = new Uint8Array(bin.length)
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
