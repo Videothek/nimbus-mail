@@ -135,8 +135,9 @@
       // Ctrl/Cmd+click → toggle in multi-select; never opens the row.
       // First ctrl-click on a fresh state promotes the currently-
       // open row into the set so the user's "selection" mental
-      // model matches Outlook / Apple Mail: plain-click A, ctrl-
-      // click B, drag → both A and B move.  Without this promotion
+      // model matches the standard mail-client behaviour: plain-
+      // click A, ctrl-click B, drag → both A and B move.  Without
+      // this promotion
       // A wasn't in the multi-set and got left behind on every
       // batch operation, which is what looked like "the last
       // selected mail won't move".
@@ -169,7 +170,7 @@
   /** Envelopes that should be acted on for an operation triggered
    *  on `env`.  When `env` is part of a multi-select group with
    *  more than one row, we operate on the whole group; otherwise
-   *  it's just `env` (this matches Outlook / Apple Mail's
+   *  it's just `env` (this matches the standard mail-client
    *  right-click + drag behaviour). */
   function affectedEnvelopes(env: EmailEnvelope): EmailEnvelope[] {
     if (multiSelectedUids.size > 1 && multiSelectedUids.has(env.uid)) {
@@ -830,7 +831,7 @@
         // flag.  For a multi-row group flip every row to the
         // *opposite* of the right-clicked row's current state, so
         // a mixed group converges to one consistent state in one
-        // click (matches Outlook / Apple Mail).
+        // click (the standard mail-client behaviour).
         if (groupSize > 1) {
           const target = !contextMenu.env.is_read
           for (const env of ctxGroup) {

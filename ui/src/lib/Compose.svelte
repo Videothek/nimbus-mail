@@ -1484,8 +1484,8 @@
   Talk / Event live alongside the editor's Format / Insert /
   Layout tabs in the same ribbon, AND a tab-strip-trailing snippet
   for the Save / Discard / Send actions which stay visible
-  regardless of which tab is open (matching Outlook's "always-on
-  primary actions in the ribbon header").
+  regardless of which tab is open (the standard "always-on
+  primary actions in the ribbon header" pattern).
 -->
 
 <!-- Attach tab panel — local + Nextcloud file pickers.  Same

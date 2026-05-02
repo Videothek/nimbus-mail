@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * CalendarView — Outlook-style week grid.
+   * CalendarView — week grid layout.
    *
    * Layout: seven day columns with a 24h time axis, events positioned
    * absolutely inside each column, plus an all-day strip above the
@@ -484,9 +484,9 @@
     for (const b of buckets) byKey.set(b.dayKey, b)
 
     for (const ev of events) {
-      // Outlook-style "uncheck a calendar to hide its events" — drop
-      // events from any calendar the user has toggled off before the
-      // (more expensive) date math.
+      // "Uncheck a calendar to hide its events" — drop events from
+      // any calendar the user has toggled off before the (more
+      // expensive) date math.
       if (mutedCalendarIds.has(eventCalendarId(ev))) continue
       const start = new Date(ev.start)
       const end = new Date(ev.end)
@@ -548,11 +548,11 @@
     //    events become single-event clusters.
     //
     // 2. Inside each cluster, assign each event to the lowest-numbered
-    //    lane whose previous occupant has already ended — same
-    //    algorithm Google / Outlook use. The cluster's lane count
-    //    becomes the width divisor *for that cluster's events only*,
-    //    so a 15:30 event with no neighbours stays full width even on
-    //    a day where 08:00 events are sharing two lanes.
+    //    lane whose previous occupant has already ended — the standard
+    //    overlap-packing algorithm. The cluster's lane count becomes
+    //    the width divisor *for that cluster's events only*, so a
+    //    15:30 event with no neighbours stays full width even on a
+    //    day where 08:00 events are sharing two lanes.
     for (const bucket of buckets) {
       bucket.timed.sort((a, b) => a.topPx - b.topPx)
 
@@ -1147,7 +1147,7 @@
     </p>
   {:else}
     <div class="flex flex-1 min-h-0">
-      <!-- Sidebar: per-calendar visibility toggles (Outlook-style).
+      <!-- Sidebar: per-calendar visibility toggles.
            Click a calendar to hide/show its events on the grid. The
            coloured swatch is the calendar's own colour from Nextcloud,
            so it matches the event blocks 1:1. -->
@@ -1302,8 +1302,8 @@
         >
           <!-- Sticky day-of-week header. Each day cell carries the
                weekday label, the date number, and the all-day pills
-               for that day stacked directly underneath — matching
-               Outlook's "all-day events live with their date" layout. -->
+               for that day stacked directly underneath — the standard
+               "all-day events live with their date" layout. -->
           <div
             class="grid sticky top-0 z-10 border-b border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800"
             style="grid-template-columns: 56px repeat(7, minmax(0, 1fr));"
@@ -1323,13 +1323,14 @@
                   {b.date.toLocaleDateString(undefined, { weekday: 'short' })}
                 </div>
                 <!--
-                  Today's date number sits inside a red circle (Outlook /
-                  Google Calendar convention). For past and future days we
-                  drop the badge — past days additionally get a muted text
-                  colour so the visited-vs-upcoming split is obvious at a
-                  glance. We render the digit inside an inline-flex'd span
-                  with fixed dimensions so the badge stays a perfect circle
-                  regardless of digit width (1 vs 31).
+                  Today's date number sits inside a red circle, the
+                  common calendar-app convention. For past and future
+                  days we drop the badge — past days additionally get
+                  a muted text colour so the visited-vs-upcoming split
+                  is obvious at a glance. We render the digit inside
+                  an inline-flex'd span with fixed dimensions so the
+                  badge stays a perfect circle regardless of digit
+                  width (1 vs 31).
                 -->
                 <div class="flex justify-center leading-none">
                   {#if today}
@@ -1433,8 +1434,8 @@
 
                 {#if todayCol}
                   <!-- Current-time line. Red-500 + small leading
-                       dot for an Outlook/Apple-Calendar-style
-                       indicator the eye picks up immediately. -->
+                       dot — the standard calendar-app indicator the
+                       eye picks up immediately. -->
                   <div
                     class="absolute left-0 right-0 z-20 pointer-events-none"
                     style="top: {nowMinutes * PX_PER_MINUTE}px;"
@@ -1502,8 +1503,8 @@
                              "Online" so a 200-character Zoom
                              link doesn't trash a tight column.
                              Pin glyph leads the line as a quick
-                             visual anchor (matches the convention
-                             used by Outlook, Apple Calendar). -->
+                             visual anchor (the common calendar-app
+                             convention). -->
                         <div class="opacity-90 truncate flex items-center gap-1">
                           <svg
                             xmlns="http://www.w3.org/2000/svg"

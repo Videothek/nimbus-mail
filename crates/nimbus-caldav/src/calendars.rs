@@ -35,10 +35,10 @@ use crate::client::{build, delete_resource};
 /// `{calendar_home}/{path_segment}/`.
 ///
 /// `color` is optional; when set, it's written as the Apple-namespace
-/// `calendar-color` property so Nextcloud and every mainstream
-/// CalDAV client (Apple Calendar, Thunderbird, DAVx⁵) render the
-/// same swatch we show in our sidebar. Format is `#RRGGBB` or
-/// `#RRGGBBAA` — the caller enforces that shape; we pass it through.
+/// `calendar-color` property so Nextcloud and other mainstream
+/// CalDAV clients render the same swatch we show in our sidebar.
+/// Format is `#RRGGBB` or `#RRGGBBAA` — the caller enforces that
+/// shape; we pass it through.
 ///
 /// Returns the full URL of the new collection so the caller can
 /// insert a cache row immediately (the next full sync overwrites

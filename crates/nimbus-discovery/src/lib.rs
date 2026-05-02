@@ -5,9 +5,9 @@
 //!
 //! 1. **Mozilla autoconfig** ([`autoconfig`]) — a small XML file the
 //!    user's domain (or Mozilla's ISP database) hosts that names the
-//!    incoming/outgoing servers. Covers most major providers
-//!    (Gmail, Outlook, iCloud, Fastmail, every German Hoster
-//!    that points at Thunderbird's database, …).
+//!    incoming/outgoing servers. Covers most major mail providers
+//!    plus every German Hoster that points at Mozilla's autoconfig
+//!    database.
 //!
 //! 2. **DNS SRV records** ([`srv`]) — RFC 6186 records like
 //!    `_imaps._tcp.<domain>` that point at the right host/port.
@@ -63,8 +63,9 @@ pub enum DiscoverySource {
     /// XML from `autoconfig.<domain>` or `<domain>/.well-known/...`
     /// — the user's own provider published it.
     AutoconfigDomain,
-    /// XML from the public Mozilla ISP database
-    /// (`autoconfig.thunderbird.net`) — Mozilla curates it.
+    /// XML from the public Mozilla ISP database (served at
+    /// `autoconfig.thunderbird.net`, the canonical endpoint of
+    /// the Mozilla autoconfig protocol) — Mozilla curates it.
     AutoconfigIspdb,
     /// SRV records resolved from `_imaps._tcp.<domain>` etc.
     Srv,

@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * SearchBar — Outlook-style search input with scope selector and
+   * SearchBar — search input with scope selector and
    * filter chips. Sits above the mail list. Triggers a parent
    * callback with the parsed query + filters so the caller can
    * decide how to render results (SearchResults vs MailList).

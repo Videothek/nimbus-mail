@@ -1,5 +1,5 @@
-//! Mozilla autoconfig — fetch `config-v1.1.xml` and pull the IMAP /
-//! SMTP server settings out of it.
+//! Mozilla autoconfig discovery protocol — fetch `config-v1.1.xml`
+//! and pull the IMAP / SMTP server settings out of it.
 //!
 //! Three URLs to try, in order:
 //!
@@ -10,16 +10,19 @@
 //!    — the alternative the spec also blesses, occasionally used
 //!    when the provider doesn't control the `autoconfig` subdomain.
 //! 3. `https://autoconfig.thunderbird.net/v1.1/<domain>` — Mozilla's
-//!    public ISP database. Curated, covers most consumer-mail
-//!    providers (Gmail, iCloud, Yahoo, …) plus the long tail that
-//!    bothered to submit a PR there.
+//!    public ISP database (the `autoconfig.thunderbird.net` host is
+//!    the canonical endpoint the autoconfig protocol publishes).
+//!    Curated, covers most consumer-mail providers plus the long
+//!    tail that bothered to submit a PR there.
 //!
 //! Each request gets a tight timeout; we don't want a flaky DNS
 //! response on a misspelled domain to keep the user staring at a
 //! spinner for 30 seconds. The first valid response wins.
 //!
-//! XML format is described in
-//! <https://wiki.mozilla.org/Thunderbird:Autoconfiguration:ConfigFileFormat>.
+//! XML format is described by the Mozilla autoconfig spec at
+//! <https://wiki.mozilla.org/Thunderbird:Autoconfiguration:ConfigFileFormat>
+//! (the wiki page lives under the original implementer's namespace;
+//! the format itself is what the autoconfig protocol defines).
 //! We only care about `<incomingServer type="imap">` and
 //! `<outgoingServer type="smtp">` — the rest of the schema (POP3,
 //! Exchange, identity / SMTP submission auth strings) is ignored.

@@ -3867,7 +3867,7 @@ async fn dismiss_cancelled_event(uid: String, cache: State<'_, Cache>) -> Result
 // Outbound: when Compose's "Add Event" flow saves an event, we hand
 // the recipient mail clients a `text/calendar; method=REQUEST`
 // attachment so any RFC-compliant client can save the invite
-// natively (Outlook, Apple Mail, Gmail, Thunderbird).
+// natively.
 //
 // Inbound: when a received message carries a `text/calendar` part,
 // we parse the iCalendar and surface an "invite card" with
@@ -5896,10 +5896,10 @@ async fn send_email(
     // catch up if the server still received the SMTP-side delivery.
     //
     // Auto-generated calendar mails (the calendar-grid "send invite"
-    // flow + RSVP REPLY) opt out via `skip_sent_copy`: Outlook /
-    // Apple Mail / Google Calendar all hide that traffic from the
-    // sender's Sent view too — RSVP responses are conceptually
-    // meeting machinery, not user-authored mail.
+    // flow + RSVP REPLY) opt out via `skip_sent_copy`: most mail
+    // clients and calendar apps hide that traffic from the sender's
+    // Sent view too — RSVP responses are conceptually meeting
+    // machinery, not user-authored mail.
     if !email.skip_sent_copy
         && let Err(e) = append_to_sent(&account, &raw, &cache).await
     {
@@ -6414,7 +6414,7 @@ fn percent_decode(s: &str) -> String {
 
 // ── Search commands (Issue #15) ────────────────────────────────
 //
-// Two-tier search, Outlook-style:
+// Two-tier search:
 //
 //   1. `search_emails`  — instant, against the local FTS5 index.
 //                         Covers everything in the cache.
@@ -6430,8 +6430,9 @@ fn percent_decode(s: &str) -> String {
 
 /// Run a full-text search against the local mail cache.
 ///
-/// The query is parsed as Outlook-style operator syntax (see
-/// `nimbus_store::cache::search` for grammar). `scope` and
+/// The query is parsed as operator-prefixed syntax (FROM:, TO:,
+/// SUBJECT:, etc. — see `nimbus_store::cache::search` for the full
+/// grammar). `scope` and
 /// `filters` are optional narrowings from the UI — empty values
 /// mean "search everything the cache has".
 #[tauri::command]
@@ -6821,7 +6822,7 @@ struct TalkReminderState {
 /// quarter brings a new conferencing service).
 ///
 /// Searched fields, in priority order: `URL` (canonical), then
-/// `LOCATION` (where Outlook stores the join link), then
+/// `LOCATION` (a common place for join links), then
 /// `DESCRIPTION` (where pasted "click to join" links land).
 fn extract_meeting_url(event: &CalendarEvent) -> Option<String> {
     fn extract_from(s: &str) -> Option<String> {

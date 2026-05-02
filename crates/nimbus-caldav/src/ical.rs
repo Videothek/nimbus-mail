@@ -644,8 +644,8 @@ pub fn build_ics_with_method(
         lines.push(format!("ORGANIZER{params}:mailto:{email}"));
     }
     // For iMIP REQUESTs we enrich each ATTENDEE with the params
-    // Apple Mail / Outlook need to surface RSVP UI: ROLE,
-    // CUTYPE, and especially `RSVP=TRUE` (Apple Mail hides the
+    // RFC-compliant clients need to surface RSVP UI: ROLE,
+    // CUTYPE, and especially `RSVP=TRUE` (some clients hide the
     // Accept / Decline / Tentative buttons entirely when RSVP is
     // absent, treating the message as informational only).
     // CalDAV PUTs (method=None) don't need these — Sabre/DAV
@@ -662,7 +662,7 @@ pub fn build_ics_with_method(
         // EventEditor's Required / Optional / Chair selection
         // round-trips through Nextcloud's Calendar UI).  iMIP
         // REQUESTs additionally guarantee the RFC 5545 default of
-        // REQ-PARTICIPANT when the model is silent — Apple Mail's
+        // REQ-PARTICIPANT when the model is silent — some clients'
         // RSVP detection requires ROLE + RSVP=TRUE to be present.
         let role = att.role.as_deref().filter(|s| !s.is_empty());
         match (role, is_imip_request) {
@@ -690,7 +690,7 @@ pub fn build_ics_with_method(
     }
     // SEQUENCE is required by RFC 5546 on every METHOD-tagged
     // body.  STATUS reflects the REQUEST/CANCEL distinction —
-    // Apple Mail uses STATUS to render the cancelled-meeting
+    // some clients use STATUS to render the cancelled-meeting
     // strikethrough on inbox previews.  REPLY messages don't
     // carry STATUS (it's the attendee's PARTSTAT that conveys
     // the answer, not the event status), so we skip it there.

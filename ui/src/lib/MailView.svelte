@@ -183,8 +183,8 @@
   let inviteLoadError = $state('')
 
   /** Pick the first iCalendar-shaped attachment off the open
-   *  mail.  Senders differ — Google Calendar, NC iMIP, Outlook,
-   *  Apple Mail all pick differently between `text/calendar`,
+   *  mail.  Senders differ — different mail clients and calendar
+   *  servers pick differently between `text/calendar`,
    *  `application/ics` and a generic Content-Type with an
    *  `.ics` filename — so we match all of them. */
   function pickInviteAttachment(em: Email | null): EmailAttachment | null {
@@ -447,7 +447,7 @@
   // We keep inline styles so newsletter formatting survives, but we
   // forbid <style> blocks — they can't be easily scoped and could
   // clobber the app's UI classes. Most real-world HTML email uses
-  // inline styles anyway (Gmail strips <style> too, so senders know).
+  // inline styles anyway (most webmail strips <style> too, so senders know).
   //
   // After DOMPurify, a second pass with DOMParser:
   //   • annotates <a href> with a tooltip showing the raw URL (phishing
@@ -1021,7 +1021,7 @@
     }
   }
 
-  // ── Per-attachment action menu (Outlook-style chevron dropdown) ──
+  // ── Per-attachment action menu (chevron dropdown) ──
   // One menu open at a time, keyed by `part_id`. `null` = closed.
   // Anchor + position are captured at click time so the popup floats
   // next to the row that owns it without needing a portal.
@@ -1375,8 +1375,8 @@
                    verb for the attachment type. Same as a click on
                    the chip itself; the dropdown to the right
                    exposes everything else (Print, Download, Save
-                   to NC, Copy filename). Mirrors Outlook's
-                   "click = open, ▾ = more". -->
+                   to NC, Copy filename). The standard
+                   "click = open, ▾ = more" pattern. -->
               {#if isOffice}
                 <button
                   class="btn btn-sm preset-filled-primary-500 text-xs"
