@@ -18,6 +18,13 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0"
 repository = "https://github.com/Videothek/nimbus-mail"
+# We never publish individual `nimbus-*` crates to crates.io —
+# they're internal building blocks of the desktop app.  Marking
+# them `publish = false` lets cargo-deny treat them as private
+# (so `private = { ignore = true }` in deny.toml takes effect)
+# and lets the `allow-wildcard-paths` flag exempt our internal
+# path-deps from the wildcard ban.
+publish = false
 
 [workspace.dependencies]
 # Async runtime

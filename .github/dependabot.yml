@@ -1,0 +1,82 @@
+# Dependabot configuration.
+#
+# Dependabot does three jobs for us:
+#   1. Watches the Cargo + npm + GitHub-Actions dependency trees and
+#      opens PRs to bump versions.
+#   2. Auto-fast-tracks PRs that fix a known security advisory
+#      (RustSec, GitHub Advisory Database).
+#   3. Honours a *cooldown* window so newly published versions sit on
+#      the registry for a few days before we pick them up — see the
+#      block at the bottom.  This is our main mitigation for npm
+#      supply-chain attacks: most poisoned versions of a popular
+#      package are caught and yanked within hours, so deferring the
+#      bump by a few days keeps us off the bleeding edge.
+#
+# Reference: https://docs.github.com/en/code-security/dependabot/
+
+version: 2
+
+updates:
+  # ── Cargo (Rust) workspace ──────────────────────────────────────
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    # Group non-security updates into a single PR per week so we
+    # don't drown in noise.  Security patches still come as their
+    # own (high-priority) PRs.
+    groups:
+      cargo-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    # Cooldown: do not bump a Cargo crate to a freshly-published
+    # version until it has been on crates.io for at least N days.
+    # cargo-audit + the RustSec DB usually flag malicious or
+    # unsound releases within hours; a week of soak time means
+    # we skip nearly all such releases.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 5
+    # Keep the PR volume manageable.  Security PRs are not capped.
+    open-pull-requests-limit: 5
+
+  # ── npm (frontend) ──────────────────────────────────────────────
+  # The npm ecosystem has been the target of multiple high-profile
+  # supply-chain attacks (event-stream, ua-parser-js, ctx, the 2024
+  # `shai-hulud` worm).  The cooldown below is the single most
+  # important setting in this file — most poisoned npm versions are
+  # detected and yanked within 24-72 hours, so a 7-day cooldown
+  # keeps us off them entirely.
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 5
+    open-pull-requests-limit: 5
+
+  # ── GitHub Actions ─────────────────────────────────────────────
+  # Pin-bump Action versions so we don't silently drift onto a
+  # compromised tag (the `tj-actions/changed-files` 2025 incident
+  # shipped a credential-harvesting payload via a re-tagged release).
+  # We pin to major versions in the workflow files; Dependabot opens
+  # PRs when a new major is available so we can review the diff
+  # before adopting.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
