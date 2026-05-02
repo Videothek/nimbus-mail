@@ -404,6 +404,8 @@ async fn test_send_email() {
         body_text: Some("Hello from JMAP tests!".into()),
         body_html: None,
         attachments: vec![],
+        calendar_part: None,
+        skip_sent_copy: false,
     };
 
     client

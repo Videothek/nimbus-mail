@@ -22,7 +22,7 @@
 
   import { onDestroy } from 'svelte'
   import { createEditor, EditorContent } from 'svelte-tiptap'
-  import { Node, mergeAttributes } from '@tiptap/core'
+  import { Node as TiptapNode, mergeAttributes } from '@tiptap/core'
   import StarterKit from '@tiptap/starter-kit'
   import Underline from '@tiptap/extension-underline'
   import Link from '@tiptap/extension-link'
@@ -330,7 +330,7 @@
   // the inline data URI versions, leaving recipients with a
   // broken-icon. Brand header is typography-only now, so the
   // editor and the recipient see exactly the same thing.)
-  const NimbusBlock = Node.create({
+  const NimbusBlock = TiptapNode.create({
     name: 'nimbusBlock',
     group: 'block',
     atom: true,

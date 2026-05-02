@@ -74,53 +74,32 @@ struct TrayBaseIconBitmap {
 /// small enough that all 7 styles together add < 100 KB to the
 /// binary.
 mod logo_assets {
-    pub const STORM: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo/png/storm/nimbus-256.png"
-    );
-    pub const DAWN: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo/png/dawn/nimbus-256.png"
-    );
-    pub const MINT: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo/png/mint/nimbus-256.png"
-    );
-    pub const SKY: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo/png/sky/nimbus-256.png"
-    );
-    pub const TWILIGHT: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo/png/twilight/nimbus-256.png"
-    );
-    pub const MONO_BLACK: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo/png/monochrome/nimbus-mono-black.png"
-    );
-    pub const MONO_WHITE: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo/png/monochrome/nimbus-mono-white.png"
-    );
+    pub const STORM: &[u8] = include_bytes!("../../logos/nimbus-logo/png/storm/nimbus-256.png");
+    pub const DAWN: &[u8] = include_bytes!("../../logos/nimbus-logo/png/dawn/nimbus-256.png");
+    pub const MINT: &[u8] = include_bytes!("../../logos/nimbus-logo/png/mint/nimbus-256.png");
+    pub const SKY: &[u8] = include_bytes!("../../logos/nimbus-logo/png/sky/nimbus-256.png");
+    pub const TWILIGHT: &[u8] =
+        include_bytes!("../../logos/nimbus-logo/png/twilight/nimbus-256.png");
+    pub const MONO_BLACK: &[u8] =
+        include_bytes!("../../logos/nimbus-logo/png/monochrome/nimbus-mono-black.png");
+    pub const MONO_WHITE: &[u8] =
+        include_bytes!("../../logos/nimbus-logo/png/monochrome/nimbus-mono-white.png");
 
     // ── v2 logo set (added in #197 follow-up) ────────────────────
     // Same 256 px naming convention as v1; lives under the
     // separate `nimbus-logo-v2` folder so the original art and
     // the new pack stay independently swappable.
-    pub const COPPER: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo-v2/png/copper/nimbus-256.png"
-    );
-    pub const FOREST: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo-v2/png/forest/nimbus-256.png"
-    );
-    pub const MIDNIGHT: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo-v2/png/midnight/nimbus-256.png"
-    );
-    pub const OCEAN: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo-v2/png/ocean/nimbus-256.png"
-    );
-    pub const ROSE: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo-v2/png/rose/nimbus-256.png"
-    );
-    pub const SLATE: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo-v2/png/slate/nimbus-256.png"
-    );
-    pub const SUNSET: &[u8] = include_bytes!(
-        "../../logos/nimbus-logo-v2/png/sunset/nimbus-256.png"
-    );
+    pub const COPPER: &[u8] =
+        include_bytes!("../../logos/nimbus-logo-v2/png/copper/nimbus-256.png");
+    pub const FOREST: &[u8] =
+        include_bytes!("../../logos/nimbus-logo-v2/png/forest/nimbus-256.png");
+    pub const MIDNIGHT: &[u8] =
+        include_bytes!("../../logos/nimbus-logo-v2/png/midnight/nimbus-256.png");
+    pub const OCEAN: &[u8] = include_bytes!("../../logos/nimbus-logo-v2/png/ocean/nimbus-256.png");
+    pub const ROSE: &[u8] = include_bytes!("../../logos/nimbus-logo-v2/png/rose/nimbus-256.png");
+    pub const SLATE: &[u8] = include_bytes!("../../logos/nimbus-logo-v2/png/slate/nimbus-256.png");
+    pub const SUNSET: &[u8] =
+        include_bytes!("../../logos/nimbus-logo-v2/png/sunset/nimbus-256.png");
 }
 
 /// Map a style slug to the embedded PNG bytes.  Unknown slug →
@@ -4877,10 +4856,10 @@ async fn fetch_older_envelopes(
         .await?;
     let _ = client.logout().await;
 
-    if !batch.envelopes.is_empty() {
-        if let Err(e) = cache.upsert_envelopes_for_account(&account_id, &batch.envelopes) {
-            tracing::warn!("cache.upsert_envelopes (older) failed: {e}");
-        }
+    if !batch.envelopes.is_empty()
+        && let Err(e) = cache.upsert_envelopes_for_account(&account_id, &batch.envelopes)
+    {
+        tracing::warn!("cache.upsert_envelopes (older) failed: {e}");
     }
 
     // Stamp the account_id into the returned envelopes so the
@@ -4927,11 +4906,12 @@ async fn fetch_older_unified_envelopes(
                 continue;
             }
         };
-        match client.fetch_older_envelopes(&folder, before_uid, limit).await {
+        match client
+            .fetch_older_envelopes(&folder, before_uid, limit)
+            .await
+        {
             Ok(batch) => {
-                if let Err(e) =
-                    cache.upsert_envelopes_for_account(&account.id, &batch.envelopes)
-                {
+                if let Err(e) = cache.upsert_envelopes_for_account(&account.id, &batch.envelopes) {
                     tracing::warn!("cache.upsert_envelopes (unified older) failed: {e}");
                 }
                 for mut env in batch.envelopes {
@@ -5482,7 +5462,7 @@ async fn delete_message(
             if let Err(c) = cache.clear_message_pending(&account_id, &folder, uid) {
                 tracing::warn!("clear_message_pending after connect failure: {c}");
             }
-            return Err(e.into());
+            return Err(e);
         }
     };
     let result = match destination.as_deref() {
@@ -5621,7 +5601,7 @@ async fn archive_message(
             if let Err(c) = cache.clear_message_pending(&account_id, &folder, uid) {
                 tracing::warn!("clear_message_pending after archive connect failure: {c}");
             }
-            return Err(e.into());
+            return Err(e);
         }
     };
     let result = client.move_message(&folder, uid, &archive).await;
@@ -5693,7 +5673,7 @@ async fn move_message(
             if let Err(c) = cache.clear_message_pending(&account_id, &folder, uid) {
                 tracing::warn!("clear_message_pending after connect failure: {c}");
             }
-            return Err(e.into());
+            return Err(e);
         }
     };
     let result = client.move_message(&folder, uid, &dest_folder).await;
@@ -5778,7 +5758,7 @@ async fn move_messages(
                     tracing::warn!("clear_message_pending after batch connect failure: {c}");
                 }
             }
-            return Err(e.into());
+            return Err(e);
         }
     };
     let result = client
@@ -7004,7 +6984,7 @@ async fn check_talk_reminders_inner(app: &AppHandle) -> Result<(), NimbusError> 
             // do allow a tick's worth of catch-up so a slightly
             // late tick still lands.
             let elapsed = (now - fire_at).num_seconds();
-            if elapsed < 0 || elapsed > TALK_REMINDER_FIRE_TOLERANCE_SECS {
+            if !(0..=TALK_REMINDER_FIRE_TOLERANCE_SECS).contains(&elapsed) {
                 continue;
             }
 
@@ -7106,7 +7086,8 @@ async fn prerender_inboxes_on_launch(app: &AppHandle) {
         let app = app.clone();
         handles.push(tauri::async_runtime::spawn(async move {
             let cache = app.state::<Cache>();
-            let uids = match cache.get_envelopes_missing_body(&account.id, "INBOX", PRERENDER_LIMIT) {
+            let uids = match cache.get_envelopes_missing_body(&account.id, "INBOX", PRERENDER_LIMIT)
+            {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(
@@ -7196,7 +7177,7 @@ fn enumerate_system_fonts() -> Vec<String> {
         .into_iter()
         .filter(|f| !f.starts_with('.') && !f.trim().is_empty())
         .collect();
-    out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    out.sort_by_key(|a| a.to_lowercase());
     out.dedup();
     out
 }
@@ -7515,10 +7496,7 @@ fn fido_verify_passphrase(passphrase: String) -> Result<bool, NimbusError> {
 /// here.  Phase 1B's lock screen will use this; today it lets
 /// you sanity-check that a registered hardware key still works.
 #[tauri::command]
-fn fido_verify_prf(
-    credential_id_b64: String,
-    prf_output_b64: String,
-) -> Result<bool, NimbusError> {
+fn fido_verify_prf(credential_id_b64: String, prf_output_b64: String) -> Result<bool, NimbusError> {
     use nimbus_store::fido::{self, WrapKind};
     let env = nimbus_store::cache::key::load_envelope()?;
     let prf = fido::decode_b64(&prf_output_b64)?;
@@ -7639,9 +7617,7 @@ fn note_unlock_failure(cache: &Cache, label: &str) -> NimbusError {
     };
     let tampered = nimbus_store::cache::key::envelope_tampered(&env);
     if tampered {
-        tracing::warn!(
-            "Keychain envelope MAC mismatch — treating this attempt as terminal."
-        );
+        tracing::warn!("Keychain envelope MAC mismatch — treating this attempt as terminal.");
     }
     env.failed_attempts = env.failed_attempts.saturating_add(1);
     let attempts = env.failed_attempts;
@@ -7661,7 +7637,8 @@ fn note_unlock_failure(cache: &Cache, label: &str) -> NimbusError {
             }
             perform_wipe(cache);
             return NimbusError::Auth(if tampered {
-                "Keychain envelope was modified outside Nimbus. The encrypted cache has been wiped.".to_string()
+                "Keychain envelope was modified outside Nimbus. The encrypted cache has been wiped."
+                    .to_string()
             } else {
                 format!(
                     "Too many failed attempts ({attempts}/{max}). The encrypted cache has been wiped."
@@ -7689,10 +7666,7 @@ fn note_unlock_success() {
 /// Unlock the cache from a passphrase.  Tries every passphrase
 /// wrap in the envelope, returns the first match.
 #[tauri::command]
-fn unlock_with_passphrase(
-    passphrase: String,
-    cache: State<'_, Cache>,
-) -> Result<(), NimbusError> {
+fn unlock_with_passphrase(passphrase: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
     use nimbus_store::fido::{self, WrapKind};
     let env = nimbus_store::cache::key::load_envelope()?;
     for wrap in &env.wraps {
@@ -7703,7 +7677,9 @@ fn unlock_with_passphrase(
         let aes_key = fido::derive_passphrase_key(&passphrase, &salt)?;
         if let Ok(master) = fido::unwrap_master_key(wrap, &aes_key) {
             let hex = hex::encode(&master);
-            cache.unlock_with_master_key(hex).map_err(NimbusError::from)?;
+            cache
+                .unlock_with_master_key(hex)
+                .map_err(NimbusError::from)?;
             note_unlock_success();
             return Ok(());
         }
@@ -7733,7 +7709,9 @@ fn unlock_with_prf(
             Err(_) => return Err(note_unlock_failure(&cache, "hardware key PRF output")),
         };
         let hex = hex::encode(&master);
-        cache.unlock_with_master_key(hex).map_err(NimbusError::from)?;
+        cache
+            .unlock_with_master_key(hex)
+            .map_err(NimbusError::from)?;
         note_unlock_success();
         return Ok(());
     }
@@ -7842,9 +7820,7 @@ fn disable_fido_only_mode(cache: State<'_, Cache>) -> Result<(), NimbusError> {
 /// yet), runs the enumeration once on a blocking thread and
 /// memoises the result before returning.
 #[tauri::command]
-async fn list_system_fonts(
-    cache: State<'_, SystemFontsCache>,
-) -> Result<Vec<String>, NimbusError> {
+async fn list_system_fonts(cache: State<'_, SystemFontsCache>) -> Result<Vec<String>, NimbusError> {
     {
         let snap = cache.read().await;
         if !snap.is_empty() {
@@ -7905,22 +7881,21 @@ async fn set_logo_style(
     // the new style.  Then trigger an immediate re-render so the
     // tray reflects the change without waiting for the next
     // unread-count tick.
-    if let Some(tray_state) = app.try_state::<TrayBaseIcon>() {
-        if let Ok(mut guard) = tray_state.0.lock() {
-            *guard = bitmap;
-        }
+    if let Some(tray_state) = app.try_state::<TrayBaseIcon>()
+        && let Ok(mut guard) = tray_state.0.lock()
+    {
+        *guard = bitmap;
     }
     refresh_unread_badge(&app);
 
     // Update the main window's icon — Windows mirrors this into
     // the taskbar entry, macOS into the title bar, X11 into the
     // `_NET_WM_ICON` atom.
-    if let Some(win) = app.get_webview_window("main") {
-        if let Ok(img) = tauri::image::Image::from_bytes(bytes) {
-            if let Err(e) = win.set_icon(img) {
-                tracing::warn!("set_logo_style: window set_icon failed: {e}");
-            }
-        }
+    if let Some(win) = app.get_webview_window("main")
+        && let Ok(img) = tauri::image::Image::from_bytes(bytes)
+        && let Err(e) = win.set_icon(img)
+    {
+        tracing::warn!("set_logo_style: window set_icon failed: {e}");
     }
 
     // Persist last so a transient apply failure can't permanently
@@ -7994,12 +7969,11 @@ fn extract_theme_slug(css: &str, fallback: &str) -> String {
         if let Some(rest) = trimmed
             .strip_prefix('"')
             .or_else(|| trimmed.strip_prefix('\''))
+            && let Some(end) = rest.find(['"', '\''])
         {
-            if let Some(end) = rest.find(['"', '\'']) {
-                let slug = rest[..end].trim();
-                if !slug.is_empty() {
-                    return slug.to_string();
-                }
+            let slug = rest[..end].trim();
+            if !slug.is_empty() {
+                return slug.to_string();
             }
         }
     }
@@ -8288,19 +8262,17 @@ fn main() {
                     "logo style '{chosen_style}' failed to decode ({e}); \
                      falling back to storm"
                 );
-                decode_logo_png(logo_assets::STORM)
-                    .expect("storm logo PNG must always decode")
+                decode_logo_png(logo_assets::STORM).expect("storm logo PNG must always decode")
             });
 
             // Reflect the chosen style on the main window — the
             // titlebar icon and (on Windows) the taskbar entry both
             // pick up `set_icon`.
-            if let Some(win) = app.get_webview_window("main") {
-                if let Ok(img) = tauri::image::Image::from_bytes(style_bytes) {
-                    if let Err(e) = win.set_icon(img) {
-                        tracing::warn!("failed to apply window icon at boot: {e}");
-                    }
-                }
+            if let Some(win) = app.get_webview_window("main")
+                && let Ok(img) = tauri::image::Image::from_bytes(style_bytes)
+                && let Err(e) = win.set_icon(img)
+            {
+                tracing::warn!("failed to apply window icon at boot: {e}");
             }
 
             // Tauri's `Image::from_bytes` decodes into owned RGBA

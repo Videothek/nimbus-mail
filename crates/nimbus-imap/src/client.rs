@@ -1376,9 +1376,7 @@ impl ImapClient {
         let fetches: Vec<_> = session
             .uid_fetch(set, "(UID FLAGS INTERNALDATE ENVELOPE)")
             .await
-            .map_err(|e| {
-                NimbusError::Protocol(format!("UID FETCH (older search) failed: {e}"))
-            })?
+            .map_err(|e| NimbusError::Protocol(format!("UID FETCH (older search) failed: {e}")))?
             .try_collect()
             .await
             .map_err(|e| {
@@ -1504,14 +1502,10 @@ impl ImapClient {
         let fetches: Vec<_> = session
             .uid_fetch(set, "(UID FLAGS INTERNALDATE ENVELOPE)")
             .await
-            .map_err(|e| {
-                NimbusError::Protocol(format!("UID FETCH (older) failed: {e}"))
-            })?
+            .map_err(|e| NimbusError::Protocol(format!("UID FETCH (older) failed: {e}")))?
             .try_collect()
             .await
-            .map_err(|e| {
-                NimbusError::Protocol(format!("Failed to read older FETCH: {e}"))
-            })?;
+            .map_err(|e| NimbusError::Protocol(format!("Failed to read older FETCH: {e}")))?;
 
         let mut envelopes: Vec<EmailEnvelope> = fetches
             .iter()
@@ -1566,7 +1560,10 @@ impl ImapClient {
             "Fetched {} older envelopes in '{folder}' before UID {before_uid}",
             envelopes.len()
         );
-        Ok(EnvelopeBatch { uidvalidity, envelopes })
+        Ok(EnvelopeBatch {
+            uidvalidity,
+            envelopes,
+        })
     }
 
     /// Log out from the IMAP server and close the connection cleanly.

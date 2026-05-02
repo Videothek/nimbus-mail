@@ -14,8 +14,10 @@
 
 use std::time::Duration;
 
-use hickory_resolver::TokioAsyncResolver;
-use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::TokioResolver;
+use hickory_resolver::config::ResolverConfig;
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::proto::rr::RData;
 use tracing::debug;
 
 use crate::{DiscoveredAccount, DiscoveryError, DiscoverySource};
@@ -24,13 +26,18 @@ use crate::{DiscoveredAccount, DiscoveryError, DiscoverySource};
 /// (IMAP, SMTP) pair we manage to put together; `Err(NotFound)` if
 /// no usable records exist.
 pub async fn discover(domain: &str) -> Result<DiscoveredAccount, DiscoveryError> {
-    let mut opts = ResolverOpts::default();
+    let mut builder = TokioResolver::builder_with_config(
+        ResolverConfig::default(),
+        TokioRuntimeProvider::default(),
+    );
     // Default DNS timeout is 5s per attempt × 2 attempts = 10s — too
     // long when the wizard is waiting on us. Cap it at 4s total.
-    opts.timeout = Duration::from_secs(2);
-    opts.attempts = 2;
+    builder.options_mut().timeout = Duration::from_secs(2);
+    builder.options_mut().attempts = 2;
 
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), opts);
+    let resolver = builder
+        .build()
+        .map_err(|e| DiscoveryError::Network(format!("DNS resolver init failed: {e}")))?;
 
     // Implicit-TLS first.
     let imap_tls = lookup_first_srv(&resolver, "_imaps._tcp", domain).await;
@@ -79,24 +86,27 @@ struct SrvEndpoint {
 /// answer is fine because providers rarely publish multiple servers
 /// here, and the user can always override.
 async fn lookup_first_srv(
-    resolver: &TokioAsyncResolver,
+    resolver: &TokioResolver,
     service: &str,
     domain: &str,
 ) -> Option<SrvEndpoint> {
     let name = format!("{service}.{domain}.");
     match resolver.srv_lookup(&name).await {
-        Ok(records) => {
+        Ok(lookup) => {
             let mut best: Option<(u16, u16, SrvEndpoint)> = None;
-            for r in records.iter() {
-                let host = r.target().to_ascii().trim_end_matches('.').to_string();
+            for record in lookup.answers() {
+                let RData::SRV(ref srv) = record.data else {
+                    continue;
+                };
+                let host = srv.target.to_ascii().trim_end_matches('.').to_string();
                 if host.is_empty() {
                     continue;
                 }
                 let candidate = SrvEndpoint {
                     host,
-                    port: r.port(),
+                    port: srv.port,
                 };
-                let key = (r.priority(), u16::MAX - r.weight());
+                let key = (srv.priority, u16::MAX - srv.weight);
                 if best.as_ref().map(|(p, _, _)| key < (*p, 0)).unwrap_or(true) {
                     best = Some((key.0, key.1, candidate));
                 }

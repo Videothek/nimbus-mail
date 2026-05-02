@@ -21,7 +21,9 @@
 //! WebAuthn's PRF extension (RFC-bound; backed by CTAP2's
 //! `hmac-secret`) lets us evaluate
 //!
-//!     prf_output = HMAC-SHA-256(per-credential-secret, salt)
+//! ```text
+//! prf_output = HMAC-SHA-256(per-credential-secret, salt)
+//! ```
 //!
 //! The per-credential secret never leaves the authenticator.  Same
 //! `(credential_id, salt)` always produces the same 32-byte output,
@@ -343,8 +345,13 @@ pub fn derive_passphrase_key(passphrase: &str, salt: &[u8]) -> Result<[u8; PRF_L
         return Err(NimbusError::Other("passphrase must not be empty".into()));
     }
     let mut out = [0u8; PRF_LEN];
-    pbkdf2::<Hmac<Sha256>>(passphrase.as_bytes(), salt, PASSPHRASE_PBKDF2_ITERS, &mut out)
-        .map_err(|e| NimbusError::Storage(format!("pbkdf2 derive: {e}")))?;
+    pbkdf2::<Hmac<Sha256>>(
+        passphrase.as_bytes(),
+        salt,
+        PASSPHRASE_PBKDF2_ITERS,
+        &mut out,
+    )
+    .map_err(|e| NimbusError::Storage(format!("pbkdf2 derive: {e}")))?;
     Ok(out)
 }
 
@@ -360,10 +367,7 @@ pub fn generate_passphrase_id() -> Result<[u8; 16], NimbusError> {
 
 /// Open a single wrap with the FIDO PRF output computed at unlock
 /// time.  Returns the recovered master key bytes (32 bytes).
-pub fn unwrap_master_key(
-    wrap: &WrappedKey,
-    prf_output: &[u8],
-) -> Result<Vec<u8>, NimbusError> {
+pub fn unwrap_master_key(wrap: &WrappedKey, prf_output: &[u8]) -> Result<Vec<u8>, NimbusError> {
     if prf_output.len() != PRF_LEN {
         return Err(NimbusError::Storage(format!(
             "unwrap_master_key: prf_output must be {PRF_LEN} bytes, got {}",
@@ -434,8 +438,7 @@ mod tests {
         let cred = b"fake-credential-id";
         let salt = generate_salt().unwrap();
         let wrap =
-            wrap_master_key(WrapKind::FidoPrf, &master, &prf, cred, &salt, "Test".into())
-                .unwrap();
+            wrap_master_key(WrapKind::FidoPrf, &master, &prf, cred, &salt, "Test".into()).unwrap();
         let recovered = unwrap_master_key(&wrap, &prf).unwrap();
         assert_eq!(recovered, master);
     }
@@ -446,11 +449,16 @@ mod tests {
         let salt = generate_salt().unwrap();
         let id = generate_passphrase_id().unwrap();
         let key = derive_passphrase_key("correct horse battery staple", &salt).unwrap();
-        let wrap =
-            wrap_master_key(WrapKind::Passphrase, &master, &key, &id, &salt, "Recovery".into())
-                .unwrap();
-        let derived =
-            derive_passphrase_key("correct horse battery staple", &salt).unwrap();
+        let wrap = wrap_master_key(
+            WrapKind::Passphrase,
+            &master,
+            &key,
+            &id,
+            &salt,
+            "Recovery".into(),
+        )
+        .unwrap();
+        let derived = derive_passphrase_key("correct horse battery staple", &salt).unwrap();
         let recovered = unwrap_master_key(&wrap, &derived).unwrap();
         assert_eq!(recovered, master);
     }
@@ -462,8 +470,7 @@ mod tests {
         let id = generate_passphrase_id().unwrap();
         let key = derive_passphrase_key("right answer", &salt).unwrap();
         let wrap =
-            wrap_master_key(WrapKind::Passphrase, &master, &key, &id, &salt, "X".into())
-                .unwrap();
+            wrap_master_key(WrapKind::Passphrase, &master, &key, &id, &salt, "X".into()).unwrap();
         let wrong = derive_passphrase_key("wrong answer", &salt).unwrap();
         assert!(unwrap_master_key(&wrap, &wrong).is_err());
     }

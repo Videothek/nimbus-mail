@@ -266,10 +266,7 @@ impl Cache {
     /// in-memory test cache.  Used by `disable_fido_only_mode`
     /// to restore `envelope.plain_key` without re-prompting.
     pub fn master_key_hex(&self) -> Option<String> {
-        self.master_key_hex
-            .read()
-            .ok()
-            .and_then(|g| g.clone())
+        self.master_key_hex.read().ok().and_then(|g| g.clone())
     }
 
     /// Delete the cache DB and its WAL sidecars from disk.  Used
@@ -288,9 +285,7 @@ impl Cache {
     /// state propagates uniformly.  `pub(crate)` so sibling
     /// modules (`account_store`, …) can reuse it instead of
     /// duplicating the lock-and-checkout dance.
-    pub(crate) fn conn(
-        &self,
-    ) -> Result<PooledConnection<SqliteConnectionManager>, CacheError> {
+    pub(crate) fn conn(&self) -> Result<PooledConnection<SqliteConnectionManager>, CacheError> {
         let guard = self.pool.read().expect("Cache pool RwLock poisoned");
         let pool = guard.as_ref().ok_or(CacheError::Locked)?;
         Ok(pool.get()?)
@@ -1371,19 +1366,14 @@ mod tests {
     }
 
     fn open_test_cache() -> Cache {
-        let pool = pool::open_memory_pool().expect("open memory pool");
-        let mut conn = pool.get().expect("checkout");
-        schema::run_migrations(&mut conn).expect("migrate");
-        // Drop the conn before the Cache uses the pool.
-        drop(conn);
-        Cache { pool }
+        Cache::open_in_memory().expect("open in-memory cache")
     }
 
     #[test]
     fn migrations_are_idempotent() {
         let cache = open_test_cache();
         // Running again against the same pool should be a no-op.
-        let mut conn = cache.pool.get().unwrap();
+        let mut conn = cache.conn().expect("checkout");
         schema::run_migrations(&mut conn).expect("second migrate");
     }
 
