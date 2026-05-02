@@ -104,12 +104,16 @@ above still applies — pick the one that fits.
 
 This file must be updated **every time a dependency is added, removed,
 or upgraded** — both in `Cargo.toml` (workspace + per-crate) and in
-`ui/package.json`. Any new dependency must have its licence verified;
-introducing a strong-copyleft licence stronger than what we already
-have (e.g. AGPL-3.0) is a project-level decision, not a routine PR.
-See [CLAUDE.md](CLAUDE.md) for the AI-assistant version of this rule.
+`ui/package.json`. The companion file [`License.md`](License.md) must
+be updated in lockstep: it carries the actual licence-notice text for
+attribution when we ship binaries.
 
-Last manual reconciliation: 2026-05-02 (PR # following #210).
+Any new dependency must have its licence verified; introducing a
+strong-copyleft licence stronger than what we already have (e.g.
+AGPL-3.0) is a project-level decision, not a routine PR. See
+[CLAUDE.md](CLAUDE.md) for the AI-assistant version of this rule.
+
+Last manual reconciliation: 2026-05-02 (PR # following #211).
 
 ---
 

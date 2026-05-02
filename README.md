@@ -351,5 +351,9 @@ during AI-assisted development — read it for the full set of conventions.
 
 ## License
 
-[GPL-3.0](LICENSE). See [SBOM.md](SBOM.md) for the package manifest, license
-inventory, and what that means for distribution.
+Nimbus Mail itself is [GPL-3.0](LICENSE).
+
+- [`SBOM.md`](SBOM.md) — direct-dependency inventory + licence cheat-sheet
+  + what each licence forces our distribution model to look like.
+- [`License.md`](License.md) — third-party attribution document
+  (the legal-notice rollup we ship next to binaries).
