@@ -1,0 +1,50 @@
+name: Weekly security gate
+
+# Once a week, run the full security suite on `main` so the
+# Security tab and the audit / deny / scanner runs stay current
+# even when no release tag is being cut.  This is the safety net
+# for the "checks only run at release time" model — without it
+# we'd go blind to advisories disclosed mid-cycle.
+#
+# Runs every Sunday at 06:00 UTC.  Each gating job is also wired
+# to its own cron in its own file (CodeQL Sunday 03:00, OSV-Scanner
+# Mon+Thu 04:00, Semgrep Mon 05:00) so even if this composite job
+# fails, the individual scanners still run independently.
+
+on:
+  schedule:
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
+
+permissions:
+  security-events: write
+  contents: read
+  actions: read
+
+jobs:
+  quality-gate:
+    name: Quality gate
+    uses: ./.github/workflows/ci.yml
+
+  codeql:
+    name: CodeQL
+    uses: ./.github/workflows/codeql.yml
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+  osv:
+    name: OSV-Scanner
+    uses: ./.github/workflows/osv-scanner.yml
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+  semgrep:
+    name: Semgrep
+    uses: ./.github/workflows/semgrep.yml
+    permissions:
+      security-events: write
+      contents: read

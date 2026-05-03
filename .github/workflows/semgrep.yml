@@ -12,13 +12,13 @@ name: Semgrep
 # any usage including commercial / sold downstream apps.
 
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
+  # Triggered from `release.yml` and `weekly-security.yml`; daily
+  # dev uses `smoke.yml` instead.
+  workflow_call:
+  workflow_dispatch:
   schedule:
-    # Weekly cron so newly-published rule patterns hit our codebase
-    # even when we're not pushing.
+    # Independent weekly cron so newly-published rule patterns hit
+    # the codebase even when no release tag was cut.
     - cron: "0 5 * * 1"
 
 permissions:

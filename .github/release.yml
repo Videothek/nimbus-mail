@@ -1,0 +1,64 @@
+# Configuration for GitHub's "Auto-generated release notes".
+#
+# When the release workflow ticks `generate_release_notes: true`,
+# GitHub walks every PR merged since the previous tag and groups
+# them into the categories below based on PR labels.  PRs without
+# a matching label fall into the "Other" bucket.
+#
+# To assign a PR to a category, just add the right label when you
+# open it (or any time before the release tag goes out).
+
+changelog:
+  exclude:
+    # Don't list bot-authored PRs in the headline changelog —
+    # they go into a separate "Dependency updates" group below.
+    authors:
+      - dependabot
+      - dependabot[bot]
+
+  categories:
+    - title: ✨ New features
+      labels:
+        - feature
+        - enhancement
+
+    - title: 🐛 Bug fixes
+      labels:
+        - bug
+        - fix
+
+    - title: 🔒 Security
+      labels:
+        - security
+
+    - title: ⚡ Performance
+      labels:
+        - performance
+
+    - title: 📚 Documentation
+      labels:
+        - documentation
+        - docs
+
+    - title: 🧹 Refactor & cleanup
+      labels:
+        - refactor
+        - cleanup
+        - chore
+
+    - title: 🧪 Tests & CI
+      labels:
+        - test
+        - ci
+
+    - title: 📦 Dependency updates
+      labels:
+        - dependencies
+        - "*"
+      authors:
+        - dependabot
+        - dependabot[bot]
+
+    - title: 🔧 Other changes
+      labels:
+        - "*"

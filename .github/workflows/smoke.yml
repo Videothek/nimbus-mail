@@ -1,0 +1,69 @@
+name: Smoke
+
+# Cheap, fast checks that run on every push and PR.  The goal is
+# to catch the "I broke the build" / "I broke formatting" class
+# of regressions in ~2 minutes without making contributors wait
+# on the heavy security suite.
+#
+# The full quality gate (clippy, tests, audits, deny, codeql,
+# osv-scanner, semgrep, frontend audits) lives in `quality-gate.yml`
+# and now only runs on:
+#   * pushed `v*` tags (gates the release build)
+#   * the weekly cron in `weekly-security.yml`
+#   * manual `workflow_dispatch`
+#
+# This means the dev experience is fast by default; full
+# verification kicks in when we're actually shipping.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust-smoke:
+    name: Rust smoke (fmt + check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-smoke-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-smoke-
+      - name: Install Tauri system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo check (workspace)
+        run: cargo check --workspace --all-targets
+
+  frontend-smoke:
+    name: Frontend smoke (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build

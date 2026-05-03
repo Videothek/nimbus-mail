@@ -137,13 +137,40 @@ the shipped binary is self-contained. Perl is a build-time tool only.
 
 ### CI
 
-GitHub Actions should install Strawberry Perl before `cargo tauri build`:
+We run a **two-tier CI model** so daily dev stays fast and the heavy security suite only kicks in around release time:
 
-```yaml
-- name: Install Strawberry Perl (Windows)
-  if: runner.os == 'Windows'
-  run: choco install strawberryperl -y
+| Workflow | When it runs | What it does |
+|---|---|---|
+| `smoke.yml` | Every PR + push to `main` | `cargo fmt --check`, `cargo check --workspace`, frontend typecheck + build. ~2 min. |
+| `ci.yml` (a.k.a. *Quality gate*) | `workflow_call` only — invoked from `release.yml` and `weekly-security.yml` | clippy, tests, cargo-audit, cargo-deny, frontend lockfile-lint + npm audit |
+| `codeql.yml` / `osv-scanner.yml` / `semgrep.yml` | `workflow_call` + their own crons | Static / supply-chain scanners that publish to the Security tab |
+| `release.yml` | Push of a `v*` tag (or manual dispatch for a dry-run) | Runs the full quality gate + scanners; if all green, matrix-builds Tauri installers and uploads them to a draft GitHub Release |
+| `weekly-security.yml` | Sunday 06:00 UTC | Runs the full quality gate + scanners on `main` so the Security tab keeps fresh data between releases |
+
+**What this means for daily work:**
+
+- Push freely on any branch — only the 2-minute smoke runs.
+- A red smoke means you broke `cargo check` or formatting; everything else is deferred.
+- Heavy regressions surface at release time (or in the Sunday cron). For a 2-person scaffolding-phase project that's an acceptable trade-off; tighten back up once we have real users.
+
+**How to cut a release:**
+
+```bash
+git checkout main
+git pull origin main
+git tag v0.1.0           # follow semver
+git push origin v0.1.0
 ```
+
+That kicks off `release.yml`. Once the build matrix completes, a *draft* Release appears on the Releases page with all installers attached. Open it, paste in the editorial sections from `RELEASE_NOTES_TEMPLATE.md` (the auto-generated PR changelog will already be there beneath), and publish.
+
+**Release notes:**
+
+- Auto-generated changelog comes from PR titles, grouped by label. The grouping config lives in `.github/release.yml`. To route a PR into a category, label it (`feature` / `bug` / `security` / `performance` / `documentation` / `refactor` / `test` / `dependencies`).
+- The hand-written editorial header lives in `RELEASE_NOTES_TEMPLATE.md` — paste that above the auto-changelog when finalising the release.
+- Dependabot PRs are auto-routed to a "Dependency updates" bucket and excluded from the headline categories so the changelog stays human-curated.
+
+**Windows builds need Strawberry Perl** (the SQLCipher → OpenSSL → vendored-openssl chain compiles OpenSSL from source, and OpenSSL's build scripts need a real Perl). Both `smoke.yml` and `release.yml` install it via `choco install strawberryperl -y` on the Windows runner. Local Windows dev needs the same — see the section above.
 
 ### Commands
 
