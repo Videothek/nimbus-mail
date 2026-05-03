@@ -173,41 +173,39 @@
   /**
    * Esc handler for the modal (#192).
    *
-   * Wired with `addEventListener('keydown', …, { capture: true })`
-   * on the *capture* phase, not the bubble phase.  The reason:
-   * the rich-text editor is Tiptap (ProseMirror), which has its
-   * own keymap that handles Esc inside the contentEditable.  The
-   * default ProseMirror handlers stop propagation — so a normal
-   * bubble-phase listener at window / document level never sees
-   * the key when focus is in the editor (which is the common
-   * case).  Capture phase fires top-down before the event ever
-   * reaches the target, so we get to the keystroke first
-   * regardless of what ProseMirror does with it next.
+   * Wired in the template via `onkeydowncapture={…}` on the
+   * outer modal wrapper div.  Three earlier attempts failed
+   * before landing here:
    *
-   * Routes through `cancel()` so the existing Talk-room (#86)
-   * and Nextcloud share-link (#193) cleanups both fire.
+   *   1. `document.addEventListener('keydown', …)` inside an
+   *      `$effect` — bubble phase, never fired for Compose.
+   *   2. `<svelte:window onkeydown={…}>` — same problem.
+   *   3. `window.addEventListener('keydown', …, { capture: true })`
+   *      inside an `$effect` — also didn't work.  The likely
+   *      culprit is some combination of Tiptap's ProseMirror
+   *      keymap and the modal's z-stacking that swallows the
+   *      key before any global listener can see it.
    *
-   * Inner popovers that own their own Escape behaviour:
-   *   * AddressAutocomplete uses `role="listbox"` — if one is
-   *     open the suggestion list should close, not the whole
-   *     modal.
-   *   * The Nextcloud file picker, image picker, and Talk
-   *     modal each render their own component-level Esc
-   *     handler — we guard against the explicit open-state
-   *     flags so those components own Esc when open.
+   * Binding directly on the wrapper div with the explicit
+   * `onkeydowncapture` event name forces a capture-phase
+   * listener scoped to the wrapper.  When the user is typing
+   * inside Tiptap, the keystroke's capture path is
+   *   window → document → … → wrapper → … → contentEditable.
+   * Our listener fires when the event passes the wrapper, BEFORE
+   * the editor's own handler runs — so even if ProseMirror
+   * subsequently calls `stopPropagation()` we've already done
+   * our work.
+   *
+   * Routes through `cancel()` so the Talk-room (#86) and
+   * Nextcloud share-link (#193) cleanups both fire.
    */
-  $effect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key !== 'Escape') return
-      if (showNcPicker || showNcImagePicker || showTalkModal) return
-      if (document.querySelector('[role="listbox"]')) return
-      e.preventDefault()
-      cancel()
-    }
-    window.addEventListener('keydown', onKey, { capture: true })
-    return () =>
-      window.removeEventListener('keydown', onKey, { capture: true })
-  })
+  function onComposeKeydownCapture(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return
+    if (showNcPicker || showNcImagePicker || showTalkModal) return
+    if (document.querySelector('[role="listbox"]')) return
+    e.preventDefault()
+    cancel()
+  }
 
   // ── From: picker state ──────────────────────────────────────
   // The id is the canonical handle (used for `send_email`); the rest
@@ -1419,11 +1417,21 @@
      is shared via the `composeBody` snippet so we don't duplicate
      several hundred lines of template across the two branches. -->
 {#if inStandaloneWindow}
-  <div class="h-full w-full flex flex-col bg-surface-50 dark:bg-surface-900" role="dialog" aria-modal="false">
+  <div
+    class="h-full w-full flex flex-col bg-surface-50 dark:bg-surface-900"
+    role="dialog"
+    aria-modal="false"
+    onkeydowncapture={onComposeKeydownCapture}
+  >
     {@render composeBody()}
   </div>
 {:else}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" role="dialog" aria-modal="true">
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    onkeydowncapture={onComposeKeydownCapture}
+  >
     <!-- Resizable via native CSS `resize: both`. We seed a comfortable
          720 × 80vh default and then constrain:
            min-w/h — keep the form usable once labels and toolbar fit;
