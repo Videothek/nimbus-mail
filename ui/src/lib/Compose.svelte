@@ -782,6 +782,14 @@
         },
         replaceSource: src ? { folder: src.folder, uid: src.uid } : null,
       })
+      // Disarm the share-cleanup branch in cancel() (#193): the
+      // draft we just persisted has the share URLs baked into its
+      // body, so the user expects them to keep working when they
+      // resume the draft later.  Without this, closing the modal
+      // after Save Draft would call cancel() (no — onclose() is
+      // direct here, but matching the send() pattern keeps the
+      // disarm idiom consistent in case the close path changes).
+      createdShares = []
       onclose()
     } catch (e: any) {
       error = formatError(e) || 'Failed to save draft'
@@ -1063,12 +1071,20 @@
       draftSource: initial?.draftSource ?? null,
     }
 
-    // Disarm the delete-on-discard Talk-room cleanup *now* — once
-    // the modal closes, `cancel()` won't run again, but neither
-    // will any future state mutation here propagate.  Clearing
-    // these in component scope keeps any stray re-render quiet.
+    // Disarm the delete-on-discard cleanups *now* — once the modal
+    // closes, `cancel()` won't run again, but neither will any
+    // future state mutation here propagate.  Clearing these in
+    // component scope keeps any stray re-render quiet.
+    //
+    // Talk room: the recipient is about to be invited via the
+    // background submission below, so we mustn't tear the room
+    // down on close.
+    // Share links (#193): the email body carries the URLs, so the
+    // recipient needs the shares to keep working — clear the
+    // tracking list so cancel()'s cleanup branch is a no-op.
     talkRoomToken = null
     pendingTalkParticipants = []
+    createdShares = []
 
     onclose()
 
@@ -1291,6 +1307,27 @@
         console.warn('delete_talk_room on cancel failed', e)
       })
       talkRoomToken = null
+    }
+    // Clean up any Nextcloud share links the user minted during this
+    // draft (#193).  Same rationale as the Talk-room cleanup above:
+    // shares only make sense once the mail goes out.  Send and
+    // Save-draft both clear `createdShares` to disarm this branch
+    // (the recipient still needs the link in those flows); explicit
+    // cancel is the only path that leaves orphan shares behind, so
+    // we delete them here.  Fire-and-forget — a failure leaves a
+    // stray share in the user's "Shared with others" list, which
+    // they can clean up manually but isn't worth blocking on.
+    if (createdShares.length > 0) {
+      const shares = createdShares.slice()
+      createdShares = []
+      for (const s of shares) {
+        invoke('delete_nextcloud_share', {
+          ncId: s.ncId,
+          shareId: s.id,
+        }).catch((e) => {
+          console.warn('delete_nextcloud_share on cancel failed for', s.id, e)
+        })
+      }
     }
     onclose()
   }

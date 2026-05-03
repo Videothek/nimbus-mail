@@ -753,6 +753,26 @@ async fn update_nextcloud_share_label(
     .await
 }
 
+/// Delete a Nextcloud public share by id (#193).
+///
+/// Compose calls this when the user discards a draft after having
+/// minted share links via the Nextcloud file picker — without the
+/// cleanup, the shares dangle in the user's "Shared with others"
+/// list with no associated mail.  Save-draft / send paths leave
+/// shares intact (the recipient still needs them).
+#[tauri::command]
+async fn delete_nextcloud_share(nc_id: String, share_id: String) -> Result<(), NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    nimbus_nextcloud::delete_share(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &share_id,
+    )
+    .await
+}
+
 /// Write raw bytes to a local file.
 ///
 /// Used by the attachment Download flow: the frontend opens a native
@@ -8655,6 +8675,7 @@ fn main() {
             nextcloud_file_preview,
             create_nextcloud_share,
             update_nextcloud_share_label,
+            delete_nextcloud_share,
             create_nextcloud_directory,
             list_talk_rooms,
             create_talk_room,
