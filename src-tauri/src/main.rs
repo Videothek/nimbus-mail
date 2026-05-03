@@ -7015,10 +7015,17 @@ async fn check_event_reminders_inner(app: &AppHandle) -> Result<(), NimbusError>
     let mut snoozes_to_evict: Vec<String> = Vec::new();
 
     for ev in &events {
-        // Skip past starts — the reminder is moot once the
-        // event is in progress.  We still keep them in the
-        // window above so the prune step has a current picture.
-        if ev.start <= now - chrono::Duration::minutes(1) {
+        // Skip events whose start is far enough in the past that
+        // even a 0-min reminder would no longer be inside the
+        // per-reminder fire-tolerance window.  Using the same
+        // `EVENT_REMINDER_FIRE_TOLERANCE_SECS` constant the
+        // per-reminder check uses (vs. the previous hard-coded
+        // 1-minute) means the "At event start" preset now has
+        // the full tolerance window to fire — without this,
+        // a scan tick landing 60–90 s after the event start
+        // would silently drop the 0-min reminder even though
+        // the per-reminder check would have accepted it.
+        if ev.start <= now - chrono::Duration::seconds(EVENT_REMINDER_FIRE_TOLERANCE_SECS) {
             continue;
         }
         let meeting_url = extract_meeting_url(ev);
