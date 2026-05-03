@@ -171,11 +171,18 @@
   }: Props = $props()
 
   /**
-   * Esc handler for the modal (#192).  Wired in the template
-   * via `<svelte:window onkeydown={onComposeKeydown} />` rather
-   * than `document.addEventListener` inside an `$effect` —
-   * Svelte's window binding is the idiomatic path and avoids
-   * the registration races we hit with the manual approach.
+   * Esc handler for the modal (#192).
+   *
+   * Wired with `addEventListener('keydown', …, { capture: true })`
+   * on the *capture* phase, not the bubble phase.  The reason:
+   * the rich-text editor is Tiptap (ProseMirror), which has its
+   * own keymap that handles Esc inside the contentEditable.  The
+   * default ProseMirror handlers stop propagation — so a normal
+   * bubble-phase listener at window / document level never sees
+   * the key when focus is in the editor (which is the common
+   * case).  Capture phase fires top-down before the event ever
+   * reaches the target, so we get to the keystroke first
+   * regardless of what ProseMirror does with it next.
    *
    * Routes through `cancel()` so the existing Talk-room (#86)
    * and Nextcloud share-link (#193) cleanups both fire.
@@ -186,18 +193,21 @@
    *     modal.
    *   * The Nextcloud file picker, image picker, and Talk
    *     modal each render their own component-level Esc
-   *     handler.  We can't simply select on `[role="dialog"]`
-   *     because Compose's own wrapper carries that role too;
-   *     instead we guard against the explicit open-state
-   *     flags.
+   *     handler — we guard against the explicit open-state
+   *     flags so those components own Esc when open.
    */
-  function onComposeKeydown(e: KeyboardEvent) {
-    if (e.key !== 'Escape') return
-    if (showNcPicker || showNcImagePicker || showTalkModal) return
-    if (document.querySelector('[role="listbox"]')) return
-    e.preventDefault()
-    cancel()
-  }
+  $effect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      if (showNcPicker || showNcImagePicker || showTalkModal) return
+      if (document.querySelector('[role="listbox"]')) return
+      e.preventDefault()
+      cancel()
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () =>
+      window.removeEventListener('keydown', onKey, { capture: true })
+  })
 
   // ── From: picker state ──────────────────────────────────────
   // The id is the canonical handle (used for `send_email`); the rest
@@ -1402,12 +1412,6 @@
     }
   }
 </script>
-
-<!-- Esc → cancel + cleanup (#192).  `<svelte:window>` is the
-     idiomatic Svelte binding for global keystrokes and mounts /
-     unmounts in lockstep with the component, so it works in both
-     the modal-overlay and standalone-window paths below. -->
-<svelte:window onkeydown={onComposeKeydown} />
 
 <!-- In standalone-window mode we drop the modal overlay + the fixed
      resizable card and let Compose fill the whole window.  The OS
