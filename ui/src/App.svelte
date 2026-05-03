@@ -614,25 +614,20 @@
         (e) => handleEventReminder(e.payload),
       )
       // The reminder popup window emits this when the user
-      // clicks "Show event".  We bring our window forward,
-      // flip to the calendar view, and thread the event id
-      // into CalendarView so it opens the editor.
+      // clicks "Show event".  We flip to the calendar view and
+      // thread the event id into CalendarView so it opens the
+      // editor.  The popup also calls `show_main_window_cmd`
+      // (Rust IPC) to actually bring this window to the
+      // foreground — JS-side `setFocus()` from a non-foreground
+      // window is unreliable on Windows because of the
+      // `SetForegroundWindow` lock, especially when the main
+      // window is hidden in the system tray.  Doing it from
+      // Rust avoids that.
       unlistenReminderShowEvent = await listen<{ eventId: string }>(
         'reminder-show-event',
-        async (e) => {
+        (e) => {
           calendarFocusEventId = e.payload.eventId
           currentView = 'calendar'
-          try {
-            const { getCurrentWebviewWindow } = await import(
-              '@tauri-apps/api/webviewWindow'
-            )
-            const win = getCurrentWebviewWindow()
-            await win.unminimize()
-            await win.show()
-            await win.setFocus()
-          } catch (err) {
-            console.warn('failed to focus main window from reminder', err)
-          }
         },
       )
       // #132: backend fires this whenever a custom theme is
