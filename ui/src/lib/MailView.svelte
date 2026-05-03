@@ -20,6 +20,12 @@
   import AttachmentThumb, { seedThumbFromBase64 } from './AttachmentThumb.svelte'
   import CalendarInviteCard, { type InviteSummary } from './CalendarInviteCard.svelte'
   import { openMailInStandaloneWindow } from './standaloneMailWindow'
+  import {
+    isMarkdownAttachment,
+    isOfficeAttachment,
+    isPdfAttachment,
+    openAttachment,
+  } from './attachmentOpen'
 
   interface EmailAttachment {
     filename: string
@@ -994,192 +1000,31 @@
     return out
   }
 
-  /** MIME types Nextcloud Office (Collabora) opens in-browser via
-   *  the `index.php/f/<id>` deep link. Plain `text/*` is NOT in
-   *  the list — those open more cheaply in our existing reading
-   *  pane and routing them through Office for view-only is overkill.
-   *  When the type is missing / generic (`application/octet-stream`,
-   *  common on incoming mail) we fall back to a filename-extension
-   *  check below. */
-  const OFFICE_MIME_TYPES = new Set([
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    'application/vnd.oasis.opendocument.text',
-    'application/vnd.oasis.opendocument.spreadsheet',
-    'application/vnd.oasis.opendocument.presentation',
-    'application/msword',
-    'application/vnd.ms-excel',
-    'application/vnd.ms-powerpoint',
-    'text/csv',
-  ])
-  const OFFICE_EXTENSIONS = new Set([
-    'docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp',
-    'doc', 'xls', 'ppt', 'csv',
-  ])
-
-  function isOfficeAttachment(att: EmailAttachment): boolean {
-    if (OFFICE_MIME_TYPES.has(att.content_type)) return true
-    const dot = att.filename.lastIndexOf('.')
-    if (dot < 0) return false
-    return OFFICE_EXTENSIONS.has(att.filename.slice(dot + 1).toLowerCase())
-  }
-
-  function isPdfAttachment(att: EmailAttachment): boolean {
-    if (att.content_type === 'application/pdf') return true
-    return att.filename.toLowerCase().endsWith('.pdf')
-  }
-
   /** Single dispatch point for any user-driven attachment open
-   *  request (currently: cid:-anchor clicks; the attachment-tray
-   *  buttons keep their explicit Download / Save-to-NC handlers).
-   *  Branches by content type:
-   *    - Office docs → upload-to-NC + open in a Collabora window
-   *    - PDFs → upload-to-NC + open in Nextcloud's built-in PDF
-   *      viewer
-   *    - everything else → fall through to download */
+   *  request (cid:-anchor clicks, primary chip-button clicks).
+   *  Type detection + per-tier behaviour live in
+   *  `./attachmentOpen.ts`; this wrapper just resolves the
+   *  bytes lazily via `download_email_attachment`.  Default for
+   *  non-Office/non-PDF/non-Markdown types is now "Open in
+   *  Desktop App" (#162) instead of falling through to
+   *  Download — Save-to-disk stays available in the dropdown. */
   async function attachmentClicked(att: EmailAttachment) {
-    if (isOfficeAttachment(att)) {
-      await openInOfficeViewer(att)
-      return
-    }
-    if (isPdfAttachment(att)) {
-      await openInPdfViewer(att)
-      return
-    }
-    await downloadAttachment(att)
-  }
-
-  /** Upload `att` to the user's first connected Nextcloud, ask the
-   *  backend for the deep-link URL, and open it in a fresh webview
-   *  window. On window close we DELETE the temp file so the user's
-   *  Nextcloud doesn't accumulate every attachment they've ever
-   *  previewed.
-   *
-   *  Multi-Nextcloud support is intentionally simple here: pick the
-   *  first connected account. The Settings UI will let users choose
-   *  a default once we have more than one user with two NCs. */
-  async function openInOfficeViewer(att: EmailAttachment) {
     if (!email || uid == null) return
+    const acc = email.account_id
+    const fld = email.folder
+    const u = uid
     setBusy(att.part_id, true)
     try {
-      const ncAccounts = await invoke<{ id: string }[]>('get_nextcloud_accounts')
-      if (ncAccounts.length === 0) {
-        error =
-          'Connect a Nextcloud account in Settings to open Office files in the embedded viewer.'
-        return
-      }
-      const ncId = ncAccounts[0].id
-
-      // Pull the bytes — `download_email_attachment` re-fetches the
-      // raw MIME body and decodes the matching part. Fast on a
-      // cached message, a single IMAP round-trip otherwise.
-      const bytes = await invoke<number[]>('download_email_attachment', {
-        accountId: email.account_id,
-        folder: email.folder,
-        uid,
-        partId: att.part_id,
-      })
-
-      const result = await invoke<{ url: string; tempPath: string }>(
-        'office_open_attachment',
-        {
-          ncId,
-          filename: att.filename,
-          data: bytes,
-          contentType: att.content_type || null,
-        },
+      await openAttachment(att, () =>
+        invoke<number[]>('download_email_attachment', {
+          accountId: acc,
+          folder: fld,
+          uid: u,
+          partId: att.part_id,
+        }),
       )
-
-      // Open in a top-level Tauri webview window. Each viewer gets
-      // a unique label so multiple attachments can be open at once
-      // without colliding. The `tauri://destroyed` listener fires
-      // exactly once per window — we use it to expunge the temp
-      // file from the user's Nextcloud.
-      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-      const label = `office-${crypto.randomUUID().replaceAll('-', '')}`
-      const win = new WebviewWindow(label, {
-        url: result.url,
-        title: att.filename,
-        width: 1200,
-        height: 800,
-      })
-      // Attach the cleanup listener BEFORE awaiting create — the
-      // window emits `tauri://destroyed` once it's gone, and on a
-      // fast close we'd otherwise miss the event. Errors are
-      // swallowed; the startup sweeper picks up any orphans.
-      void win.once('tauri://destroyed', async () => {
-        try {
-          await invoke('office_close_attachment', {
-            ncId,
-            tempPath: result.tempPath,
-          })
-        } catch (e) {
-          console.warn('office_close_attachment failed:', e)
-        }
-      })
     } catch (e) {
-      error = formatError(e) || 'Failed to open in Office'
-    } finally {
-      setBusy(att.part_id, false)
-    }
-  }
-
-  /** PDF mirror of `openInOfficeViewer`. The backend uploads the
-   *  bytes to a temp folder on the user's Nextcloud and returns a
-   *  deep link into Nextcloud's built-in PDF viewer; the frontend
-   *  opens that URL in a Tauri window and registers the same
-   *  close-cleanup hook (DAV-deletes the temp file when the
-   *  window is destroyed). */
-  async function openInPdfViewer(att: EmailAttachment) {
-    if (!email || uid == null) return
-    setBusy(att.part_id, true)
-    try {
-      const ncAccounts = await invoke<{ id: string }[]>('get_nextcloud_accounts')
-      if (ncAccounts.length === 0) {
-        error =
-          'Connect a Nextcloud account in Settings to open PDFs in the embedded viewer.'
-        return
-      }
-      const ncId = ncAccounts[0].id
-
-      const bytes = await invoke<number[]>('download_email_attachment', {
-        accountId: email.account_id,
-        folder: email.folder,
-        uid,
-        partId: att.part_id,
-      })
-
-      const result = await invoke<{ url: string; tempPath: string }>(
-        'pdf_open_attachment',
-        {
-          ncId,
-          filename: att.filename,
-          data: bytes,
-          contentType: att.content_type || null,
-        },
-      )
-
-      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-      const label = `pdf-${crypto.randomUUID().replaceAll('-', '')}`
-      const win = new WebviewWindow(label, {
-        url: result.url,
-        title: att.filename,
-        width: 1200,
-        height: 800,
-      })
-      void win.once('tauri://destroyed', async () => {
-        try {
-          await invoke('pdf_close_attachment', {
-            ncId,
-            tempPath: result.tempPath,
-          })
-        } catch (e) {
-          console.warn('pdf_close_attachment failed:', e)
-        }
-      })
-    } catch (e) {
-      error = formatError(e) || 'Failed to open PDF'
+      error = formatError(e) || 'Failed to open attachment'
     } finally {
       setBusy(att.part_id, false)
     }
@@ -1633,6 +1478,7 @@
             {@const busy = busyParts.has(att.part_id)}
             {@const isOffice = isOfficeAttachment(att)}
             {@const isPdf = isPdfAttachment(att)}
+            {@const isMarkdown = isMarkdownAttachment(att)}
             {@const menuOpen = openMenuFor === att.part_id}
             {@const emoji = attachmentEmoji(att)}
             <li class="relative flex items-center gap-2 pl-3 pr-1 py-1.5 rounded-md bg-surface-100 dark:bg-surface-800 text-sm">
@@ -1681,12 +1527,15 @@
                    the chip itself; the dropdown to the right
                    exposes everything else (Print, Download, Save
                    to NC, Copy filename). The standard
-                   "click = open, ▾ = more" pattern. -->
+                   "click = open, ▾ = more" pattern.
+                   #162: types we don't have a webview viewer for
+                   default to "Open" (open-in-desktop-app), not
+                   Download — Save-to-disk stays available below. -->
               {#if isOffice}
                 <button
                   class="btn btn-sm preset-filled-primary-500 text-xs"
                   disabled={busy}
-                  onclick={() => openInOfficeViewer(att)}
+                  onclick={() => attachmentClicked(att)}
                   title="Open in Nextcloud Office (Collabora)"
                 >
                   {#if busy}
@@ -1699,7 +1548,7 @@
                 <button
                   class="btn btn-sm preset-filled-primary-500 text-xs"
                   disabled={busy}
-                  onclick={() => openInPdfViewer(att)}
+                  onclick={() => attachmentClicked(att)}
                   title="Open in Nextcloud's built-in PDF viewer"
                 >
                   {#if busy}
@@ -1708,17 +1557,30 @@
                     <Icon name="open-in-browser" size={12} class="inline-block align-text-bottom mr-1" />Open PDF
                   {/if}
                 </button>
-              {:else}
+              {:else if isMarkdown}
                 <button
-                  class="btn btn-sm preset-filled-primary-500 text-xs inline-flex items-center gap-1.5"
+                  class="btn btn-sm preset-filled-primary-500 text-xs"
                   disabled={busy}
-                  onclick={() => downloadAttachment(att)}
-                  title="Download to your computer"
+                  onclick={() => attachmentClicked(att)}
+                  title="Render the markdown in a read-only viewer window"
                 >
                   {#if busy}
                     …
                   {:else}
-                    <Icon name="download" size={12} /> Download
+                    <Icon name="open-in-browser" size={12} class="inline-block align-text-bottom mr-1" />Open Markdown
+                  {/if}
+                </button>
+              {:else}
+                <button
+                  class="btn btn-sm preset-filled-primary-500 text-xs inline-flex items-center gap-1.5"
+                  disabled={busy}
+                  onclick={() => attachmentClicked(att)}
+                  title="Open in your default desktop app for this file type"
+                >
+                  {#if busy}
+                    …
+                  {:else}
+                    <Icon name="open-on-desktop" size={12} /> Open
                   {/if}
                 </button>
               {/if}
@@ -1754,14 +1616,20 @@
                     <button
                       role="menuitem"
                       class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 inline-flex items-center gap-1.5"
-                      onclick={runAndClose(() => openInOfficeViewer(att))}
+                      onclick={runAndClose(() => attachmentClicked(att))}
                     ><Icon name="open-in-browser" size={14} /> Open in Office</button>
                   {:else if isPdf}
                     <button
                       role="menuitem"
                       class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 inline-flex items-center gap-2"
-                      onclick={runAndClose(() => openInPdfViewer(att))}
+                      onclick={runAndClose(() => attachmentClicked(att))}
                     ><Icon name="open-in-browser" size={14} /> Open PDF</button>
+                  {:else if isMarkdown}
+                    <button
+                      role="menuitem"
+                      class="w-full text-left px-3 py-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 inline-flex items-center gap-2"
+                      onclick={runAndClose(() => attachmentClicked(att))}
+                    ><Icon name="open-in-browser" size={14} /> Open Markdown</button>
                   {/if}
                   <button
                     role="menuitem"
