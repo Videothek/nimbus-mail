@@ -176,6 +176,24 @@ pub fn replace_all(cache: &Cache, entries: &[UrlhausCsvRow]) -> Result<u32, Cach
     Ok(inserted)
 }
 
+/// Count rows in the snapshot whose `host` column matches a
+/// candidate URL's host.  Used by the diagnostic IPC (#165) to
+/// tell "URL not in URLhaus" apart from "host known but exact +
+/// fallback both missed".  Returns 0 when the URL has no
+/// extractable host.
+pub fn host_count_for_url(cache: &Cache, url: &str) -> Result<u32, CacheError> {
+    let Some(host) = extract_host(&trim_url(url)) else {
+        return Ok(0);
+    };
+    let conn = cache.conn()?;
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM urlhaus_urls WHERE host = ?1",
+        params![&host],
+        |r| r.get(0),
+    )?;
+    Ok(n as u32)
+}
+
 /// Read the snapshot status — used by the Settings UI to render
 /// "{n} URLs, last refreshed N hours ago".
 pub fn status(cache: &Cache) -> Result<UrlhausStatus, CacheError> {
