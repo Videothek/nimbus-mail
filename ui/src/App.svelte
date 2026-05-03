@@ -103,6 +103,58 @@
   let accounts = $state<Account[]>([])
   let activeAccountId = $state<string | null>(null)
 
+  // ── Nextcloud capability snapshot (#189) ────────────────────
+  // Drives which integration icons (Contacts / Calendar / Files /
+  // Talk / Notes) the IconRail surfaces at all.  Aggregated from
+  // every connected NC account: a feature is "available" if any
+  // one account exposes it.  Refreshed on the same `loadAppPrefs`
+  // tick that hydrates the rest of the shell so a user adding a
+  // Nextcloud account in Settings sees the rail update on close.
+  interface NextcloudAccountWithCaps {
+    id: string
+    capabilities?: {
+      talk?: boolean
+      files?: boolean
+      caldav?: boolean
+      carddav?: boolean
+      notes?: boolean
+    } | null
+  }
+  let ncCaps = $state({
+    /** True when at least one NC account is connected — gates
+     *  every integration icon at once.  Without this, a user
+     *  who hasn't added a Nextcloud account yet would still see
+     *  the integration nav, click into one, and hit a "no
+     *  accounts" empty state. */
+    hasAny: false,
+    contacts: false,
+    calendar: false,
+    files: false,
+    talk: false,
+    notes: false,
+  })
+
+  async function refreshNextcloudCapabilities() {
+    try {
+      const list = await invoke<NextcloudAccountWithCaps[]>('get_nextcloud_accounts')
+      const any = (pred: (a: NextcloudAccountWithCaps) => boolean) =>
+        list.some(pred)
+      ncCaps = {
+        hasAny: list.length > 0,
+        contacts: any((a) => a.capabilities?.carddav === true),
+        calendar: any((a) => a.capabilities?.caldav === true),
+        files: any((a) => a.capabilities?.files === true),
+        talk: any((a) => a.capabilities?.talk === true),
+        notes: any((a) => a.capabilities?.notes === true),
+      }
+    } catch (e) {
+      console.warn('refreshNextcloudCapabilities failed', e)
+      // Leave the previous snapshot in place on failure — better
+      // to keep a stale "available" answer than to flicker icons
+      // off because of a transient IPC error.
+    }
+  }
+
   // ── Database lock state (#164 Phase 1B) ─────────────────────
   // Cache may be in FIDO-only mode at boot; in that case the
   // lock screen mounts ahead of every other view and the rest
@@ -617,6 +669,14 @@
   }
 
   async function loadAppPrefs() {
+    // Refresh the Nextcloud capability snapshot in parallel with
+    // the settings load (#189).  Doesn't depend on settings — it
+    // queries `get_nextcloud_accounts` which has its own state —
+    // so kicking it off as a side-fire keeps the IconRail's
+    // available-feature flags in sync after Settings closes,
+    // without slowing the main settings round-trip.
+    void refreshNextcloudCapabilities()
+
     try {
       appPrefs = await invoke<AppPrefs>('get_app_settings')
       // Seed the theme module's custom-theme registry so the
@@ -1576,6 +1636,7 @@
       unified={unifiedMode}
       currentView={currentView}
       mailRefreshing={mailRefreshing}
+      ncCaps={ncCaps}
       onselectaccount={selectAccount}
       onselectview={onSelectView}
     />

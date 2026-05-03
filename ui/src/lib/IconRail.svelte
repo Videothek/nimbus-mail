@@ -82,6 +82,22 @@
      *  "Refreshing…" hint lives somewhere persistent rather
      *  than as a buggy strip inside the list (#161). */
     mailRefreshing?: boolean
+    /** Aggregated Nextcloud capability snapshot (#189).  Each
+     *  flag is true when at least one connected NC account
+     *  exposes that feature.  `hasAny` short-circuits the
+     *  whole integration block — without a Nextcloud account
+     *  configured at all, none of the per-feature icons make
+     *  sense.  Defaults to "everything available" so the rail
+     *  doesn't accidentally hide things during the brief
+     *  capability-load window. */
+    ncCaps?: {
+      hasAny: boolean
+      contacts: boolean
+      calendar: boolean
+      files: boolean
+      talk: boolean
+      notes: boolean
+    }
   }
   let {
     accounts,
@@ -91,6 +107,14 @@
     onselectaccount,
     onselectview,
     mailRefreshing = false,
+    ncCaps = {
+      hasAny: true,
+      contacts: true,
+      calendar: true,
+      files: true,
+      talk: true,
+      notes: true,
+    },
   }: Props = $props()
 
   /** First-letter / initial-pair fallback for the avatar bubble.
@@ -211,6 +235,10 @@
   // above the divider already navigate to mail, so a dedicated
   // mail icon would be redundant.  Use `onselectaccount` (with the
   // `'__all__'` sentinel for unified mode) to land in the inbox.
+  // Source-of-truth nav list.  Visibility is gated per-entry
+  // by the matching `ncCaps` flag below; the static list keeps
+  // the order canonical so we don't end up with the icons
+  // shuffling when capabilities flip.
   const MAIN_NAV: NavEntry[] = [
     { match: 'contacts', label: 'Contacts', icon: 'contacts' },
     { match: 'calendar', label: 'Calendar', icon: 'calendar' },
@@ -218,6 +246,28 @@
     { match: 'talk', label: 'Talk', icon: 'meetings' },
     { match: 'notes', label: 'Notes', icon: 'notes' },
   ]
+
+  /** Filtered view of `MAIN_NAV` honouring the Nextcloud
+   *  capability snapshot (#189).  When the user has no NC
+   *  account at all (`hasAny=false`) the whole block is empty,
+   *  matching the issue's "hide features that aren't available
+   *  through Nextcloud" ask.  When they have an account but
+   *  Talk / Notes etc. aren't installed on the server, those
+   *  rows drop out individually. */
+  const visibleNav = $derived(
+    !ncCaps.hasAny
+      ? []
+      : MAIN_NAV.filter((entry) => {
+          switch (entry.match) {
+            case 'contacts': return ncCaps.contacts
+            case 'calendar': return ncCaps.calendar
+            case 'files':    return ncCaps.files
+            case 'talk':     return ncCaps.talk
+            case 'notes':    return ncCaps.notes
+            default:         return true
+          }
+        }),
+  )
 </script>
 
 <aside
@@ -328,14 +378,16 @@
     </button>
   {/each}
 
-  <!-- Divider between account bubbles and the view nav. Only
-       renders when there's at least one account so the very-first-
-       launch empty state doesn't show an orphan line. -->
-  {#if accounts.length > 0}
+  <!-- Divider between account bubbles and the view nav.  Only
+       renders when there's at least one account AND at least
+       one integration icon will follow — when no Nextcloud is
+       connected (#189), the integration block is empty and the
+       divider has nothing to separate. -->
+  {#if accounts.length > 0 && visibleNav.length > 0}
     <div class="w-6 h-px my-1 bg-surface-300 dark:bg-surface-600" aria-hidden="true"></div>
   {/if}
 
-  {#each MAIN_NAV as entry (entry.match)}
+  {#each visibleNav as entry (entry.match)}
     {@const active = currentView === entry.match}
     <button
       class="w-9 h-9 rounded-md flex items-center justify-center text-lg transition-colors relative
