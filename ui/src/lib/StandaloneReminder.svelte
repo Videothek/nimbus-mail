@@ -283,13 +283,20 @@
       </h1>
 
       <!-- Time-slot row.  Always present.
-           Icon vertical alignment: text-sm has a 20 px
-           line-height, so the first line of text is centred 10 px
-           down from the row's top edge.  A 14 px icon centred on
-           that line wants its top at 3 px (≈ Tailwind `mt-0.75`).
-           Same offset on every row below. -->
-      <div class="flex items-start gap-2 text-sm text-surface-700 dark:text-surface-300">
-        <span class="text-surface-500 mt-0.75 shrink-0"><Icon name="time" size={14} /></span>
+           Vertical alignment: each row uses `items-center` so
+           the 14 px icon centres against the text rather than
+           pinning to the row's top edge.  The previous
+           `items-start + mt-0.75` approach was a manual
+           approximation of the same centre-line that left the
+           text reading as bottom-aligned to the icon — CSS's
+           own centring is more reliable across font / zoom /
+           device-pixel-ratio combinations.  Long-text rows
+           (location, attendees) very rarely wrap in practice
+           since they're short labels; on the off chance they
+           do, the icon ends up centred against the wrapped
+           block, which still reads cleanly. -->
+      <div class="flex items-center gap-2 text-sm text-surface-700 dark:text-surface-300">
+        <span class="text-surface-500 shrink-0"><Icon name="time" size={14} /></span>
         <span class="font-mono min-w-0">
           {formatLocalTime(reminder.start)}–{formatLocalTime(reminder.end)}
         </span>
@@ -297,16 +304,16 @@
 
       <!-- Location.  Hidden when the event has none. -->
       {#if reminder.location}
-        <div class="flex items-start gap-2 text-sm text-surface-700 dark:text-surface-300">
-          <span class="text-surface-500 mt-0.75 shrink-0"><Icon name="location" size={14} /></span>
+        <div class="flex items-center gap-2 text-sm text-surface-700 dark:text-surface-300">
+          <span class="text-surface-500 shrink-0"><Icon name="location" size={14} /></span>
           <span class="wrap-break-word min-w-0">{reminder.location}</span>
         </div>
       {/if}
 
       <!-- Attendees.  First three + "+N more". -->
       {#if reminder.attendees.length > 0}
-        <div class="flex items-start gap-2 text-sm text-surface-700 dark:text-surface-300">
-          <span class="text-surface-500 mt-0.75 shrink-0"><Icon name="contacts" size={14} /></span>
+        <div class="flex items-center gap-2 text-sm text-surface-700 dark:text-surface-300">
+          <span class="text-surface-500 shrink-0"><Icon name="contacts" size={14} /></span>
           <span class="wrap-break-word min-w-0">{formatAttendees(reminder.attendees)}</span>
         </div>
       {/if}
