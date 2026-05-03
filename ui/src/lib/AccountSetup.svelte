@@ -343,17 +343,21 @@
       <p class="text-surface-600 dark:text-surface-400">Let's set up your email account</p>
     </div>
 
-    <!-- Card -->
-    <div class="card relative p-6 bg-surface-100 dark:bg-surface-800 rounded-xl shadow-lg">
+    <!-- Card.  When the wizard is closeable, we add extra top
+         padding so the corner-anchored "×" button doesn't crowd
+         the step indicator below it. -->
+    <div
+      class="card relative p-6 {canCancel ? 'pt-10' : ''} bg-surface-100 dark:bg-surface-800 rounded-xl shadow-lg"
+    >
       {#if canCancel}
         <button
           type="button"
-          class="absolute top-3 right-3 p-1.5 rounded-md text-surface-500 hover:text-surface-900 hover:bg-surface-200 dark:hover:text-surface-100 dark:hover:bg-surface-700 transition-colors"
+          class="absolute top-2 right-2 p-1.5 rounded-md text-surface-500 hover:text-surface-900 hover:bg-surface-200 dark:hover:text-surface-100 dark:hover:bg-surface-700 transition-colors"
           onclick={handleCancel}
           aria-label="Close setup wizard"
           title="Close"
         >
-          <Icon name="clear" size={18} />
+          <Icon name="close" size={18} />
         </button>
       {/if}
 

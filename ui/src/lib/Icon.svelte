@@ -51,6 +51,8 @@
     | 'group' | 'address-book' | 'team' | 'location' | 'time' | 'sun'
     | 'add-folder' | 'delete-folder' | 'respond-with-meeting'
     | 'shield-image-blocked'
+    // v6 — UI primitives
+    | 'close'
 </script>
 
 <script lang="ts">
@@ -166,6 +168,8 @@
   import DeleteFolder from './icons/DeleteFolder.svelte'
   import RespondWithMeeting from './icons/RespondWithMeeting.svelte'
   import ShieldImageBlocked from './icons/ShieldImageBlocked.svelte'
+  // v6
+  import Close from './icons/Close.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -287,6 +291,7 @@
     'delete-folder': DeleteFolder,
     'respond-with-meeting': RespondWithMeeting,
     'shield-image-blocked': ShieldImageBlocked,
+    'close': Close,
   }
   const Cmp = $derived(map[name])
 </script>
