@@ -15,7 +15,7 @@
    *     this event's editor, then close ourselves.
    *   * Join meeting — open the meeting URL via `open_url`,
    *     dismiss + close.
-   *   * Snooze — pick a "Remind me in …" option from the
+   *   * Snooze — pick a "Remind me…" option from the
    *     dropdown; calls `snooze_event_reminder` with a UTC
    *     deadline computed from the choice and the event's
    *     start, then closes the window.  The next scan tick
@@ -283,9 +283,9 @@
         <select
           class="select px-2 py-1 text-sm rounded-md flex-1 min-w-0"
           bind:value={snoozeChoice}
-          aria-label="Remind me in"
+          aria-label="Remind me"
         >
-          <option value="">Remind me in…</option>
+          <option value="">Remind me…</option>
           {#if isSnoozeOptionAvailable('before-15', reminder.start)}
             <option value="before-15">15 min before</option>
           {/if}
@@ -293,7 +293,13 @@
             <option value="before-10">10 min before</option>
           {/if}
           {#if isSnoozeOptionAvailable('before-5', reminder.start)}
-            <option value="before-5">5 min before</option>
+            <!-- U+2007 figure-space prefix on the single-digit
+                 "5" so its "min before" column lines up under
+                 "10 min before" / "15 min before".  Native
+                 <option> renders proportional, so without this
+                 the label drifts left.  Figure space is exactly
+                 one digit wide. -->
+            <option value="before-5">&#8199;5 min before</option>
           {/if}
           {#if isSnoozeOptionAvailable('at-start', reminder.start)}
             <option value="at-start">At event start</option>
