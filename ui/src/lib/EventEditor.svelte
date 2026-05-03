@@ -239,9 +239,10 @@
 
   // Async-load the default-calendar setting and switch to it if the
   // user hasn't manually changed the picker yet.  In create-mode
-  // this is the single biggest UX nicety — Nick's "primary"
-  // calendar (NC default) gets used reliably instead of whichever
-  // calendar happened to come back first from the cache.
+  // this is the single biggest UX nicety — the user's chosen
+  // default calendar (or Nextcloud's `primary` if they haven't set
+  // one) gets used reliably instead of whichever calendar happened
+  // to come back first from the cache.
   $effect(() => {
     if (mode !== 'create') return
     void invoke<{ default_calendar_id: string | null }>('get_app_settings')
