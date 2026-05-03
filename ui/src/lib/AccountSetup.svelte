@@ -41,6 +41,28 @@
   }
   let { oncomplete, canCancel = false, oncancel }: Props = $props()
 
+  // Close on Escape (#192).  Only when `canCancel` is true — on
+  // true first launch the user has to finish setup; we don't
+  // want Escape to silently drop them back into a half-bootstrapped
+  // app with no accounts.  Same "skip if a sub-popover is open"
+  // guard as the rest of our modals so an inner popover (e.g. the
+  // future setup-tip dialog) can own Escape itself.
+  $effect(() => {
+    if (!canCancel) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      if (
+        document.querySelector('[role="listbox"], [role="dialog"]')
+      ) {
+        return
+      }
+      e.preventDefault()
+      handleCancel()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  })
+
   // ── Wizard state ────────────────────────────────────────────
   // Which step of the wizard we're on (0-indexed)
   let step = $state(0)
