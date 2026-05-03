@@ -1,0 +1,73 @@
+# Configuration for Google's OSV-Scanner.
+#
+# Mirrors the ignore list in `audit.toml` (cargo-audit) and the
+# `[advisories.ignore]` block in `deny.toml` (cargo-deny).  The
+# three sources need to stay in sync — every advisory we accept is
+# upstream-blocked: a transitive dep we can't bump until its own
+# maintainers cut a release.
+
+# ── GTK3 chain pulled in transitively by `font-kit` ─────────────
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0413"
+reason = "transitive via font-kit / GTK3 — no upstream fix yet"
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0416"
+reason = "transitive via font-kit / GTK3 — no upstream fix yet"
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0057"
+reason = "transitive via font-kit / GTK3 — no upstream fix yet"
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0412"
+reason = "transitive via font-kit / GTK3 — no upstream fix yet"
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0418"
+reason = "transitive via font-kit / GTK3 — no upstream fix yet"
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0411"
+reason = "transitive via font-kit / GTK3 — no upstream fix yet"
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0417"
+reason = "transitive via font-kit / GTK3 — no upstream fix yet"
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0414"
+reason = "transitive via font-kit / GTK3 — no upstream fix yet"
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0415"
+reason = "transitive via font-kit / GTK3 — no upstream fix yet"
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0420"
+reason = "transitive via font-kit / GTK3 — no upstream fix yet"
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0419"
+reason = "transitive via font-kit / GTK3 — no upstream fix yet"
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0429"
+reason = "glib unsoundness — transitive via font-kit / GTK3"
+
+# ── unic-* chain (transitive via rrule / chrono-tz) ──────────────
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0081"
+reason = "unic-* family is unmaintained — transitive via rrule"
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0075"
+reason = "unic-* family is unmaintained — transitive via rrule"
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0080"
+reason = "unic-* family is unmaintained — transitive via rrule"
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0100"
+reason = "unic-* family is unmaintained — transitive via rrule"
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0098"
+reason = "unic-* family is unmaintained — transitive via rrule"
+
+# ── Other transitive unmaintained / unsound deps ─────────────────
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0052"
+reason = "async-std unmaintained — transitive build dep"
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0370"
+reason = "proc-macro-error unmaintained — transitive build-time"
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0097"
+reason = "rand 0.7 / 0.8 unsoundness — transitive only, not exposed in our API"
