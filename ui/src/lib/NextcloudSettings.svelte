@@ -17,6 +17,7 @@
   import { formatError } from './errors'
   import SyncStatusRow from './SyncStatusRow.svelte'
   import Toggle from './Toggle.svelte'
+  import { getSyncState, ncProbeBundle, ncRestoreBundle, setSyncTarget } from './settingsBundle'
 
   // ── Types (mirror the Rust models) ──────────────────────────
   interface NextcloudCapabilities {
@@ -100,6 +101,30 @@
   }
   let calendarsList = $state<Record<string, CalendarSummary[]>>({})
 
+  // ── Settings backup target (#168) ──────────────────────────
+  // Mirrors the dropdown on the Backup & Sync settings page —
+  // exposed here as a per-row toggle because users naturally
+  // look "next to the NC account" when configuring per-account
+  // behaviour.  Mutually exclusive: turning it on for one row
+  // turns off any other row that was previously the target.
+  let settingsSyncTargetId = $state<string | null>(null)
+  async function loadSettingsSyncTarget() {
+    try {
+      const s = await getSyncState()
+      settingsSyncTargetId = s.targetNcId
+    } catch (e) {
+      console.warn('getSyncState failed', e)
+    }
+  }
+  async function onSettingsSyncToggle(ncId: string, on: boolean) {
+    try {
+      await setSyncTarget(on ? ncId : null)
+      settingsSyncTargetId = on ? ncId : null
+    } catch (e) {
+      console.warn('setSyncTarget failed', e)
+    }
+  }
+
   async function loadCalendarsList(ncId: string) {
     try {
       const list = await invoke<CalendarSummary[]>('get_cached_calendars', { ncId })
@@ -135,6 +160,7 @@
 
   $effect(() => {
     loadAccounts()
+    loadSettingsSyncTarget()
     // Cleanup: cancel any in-flight polling if the component unmounts.
     return () => stopPolling()
   })
@@ -301,6 +327,14 @@
   let pendingLoginUrl = $state('')
 
   function beginPolling(init: LoginFlowInit) {
+    // Snapshot the count of NC accounts that already existed
+    // *before* this login flow so the post-success "found a
+    // backup?" probe (#168) can tell first-ever-connect apart
+    // from "connecting another NC".  Recovery on first connect
+    // is the supported path; subsequent NC connects deliberately
+    // do not prompt — restoring would clobber the user's live
+    // settings on a machine they're already running on.
+    const wasFirstEverConnect = accounts.length === 0
     // 2-second cadence is a compromise between UI responsiveness and
     // not hammering the NC server. Login Flow v2 tokens live for ~20
     // minutes; we stop on success, cancel, or any unexpected error.
@@ -316,6 +350,14 @@
           pendingLoginUrl = ''
           serverInput = ''
           await loadAccounts()
+          // Recovery prompt — only on the very first NC connect
+          // (per the agreed spec: a recovery option, not a sync
+          // option).  Failures during the probe stay silent: a
+          // server with no backup or an unreachable .json
+          // shouldn't surface as an error toast.
+          if (wasFirstEverConnect) {
+            void promptRestoreFromNc(result.id)
+          }
         }
       } catch (e) {
         stopPolling()
@@ -324,6 +366,34 @@
         error = formatError(e) || 'Login failed'
       }
     }, 2000)
+  }
+
+  /** Probe the freshly-connected NC for a settings.json bundle;
+   *  if found, ask the user whether to restore it.  Strictly
+   *  silent on errors — we don't want to scare a user during the
+   *  feel-good "I just connected my server" moment. */
+  async function promptRestoreFromNc(ncId: string) {
+    try {
+      const exportedAt = await ncProbeBundle(ncId)
+      if (!exportedAt) return
+      const formatted = (() => {
+        try {
+          return new Date(exportedAt).toLocaleString()
+        } catch {
+          return exportedAt
+        }
+      })()
+      const ok = confirm(
+        `Found a Nimbus settings backup on this Nextcloud (saved ${formatted}). Restore it now? Existing accounts on this machine are kept; the bundle just adds back any that were missing and updates metadata.`,
+      )
+      if (!ok) return
+      await ncRestoreBundle(ncId)
+      alert(
+        'Settings restored. Reload the window (or restart Nimbus) to see every preference apply.',
+      )
+    } catch (e) {
+      console.warn('post-connect bundle probe / restore failed', e)
+    }
   }
 
   function stopPolling() {
@@ -416,6 +486,23 @@
               >
                 Disconnect
               </button>
+            </div>
+
+            <!-- #168 — designate this NC as the destination for
+                 Nimbus settings backups.  Mutually exclusive
+                 across all NC rows; flipping a different row
+                 silently clears this one's toggle next time the
+                 panel reloads. -->
+            <div class="flex items-center gap-3 pt-1">
+              <Toggle
+                checked={settingsSyncTargetId === acct.id}
+                label="Save Nimbus settings to this Nextcloud"
+                onchange={(v) => void onSettingsSyncToggle(acct.id, v)}
+              />
+              <span class="text-xs text-surface-500">
+                Save Nimbus settings here
+                <span class="text-[10px] text-surface-400">— recovery copy at /Nimbus Mail/settings/</span>
+              </span>
             </div>
 
             <!-- Contacts sync row -->

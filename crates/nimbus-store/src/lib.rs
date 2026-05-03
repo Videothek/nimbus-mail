@@ -9,5 +9,7 @@ pub mod cache;
 pub mod credentials;
 pub mod fido;
 pub mod nextcloud_store;
+pub mod settings_bundle;
+pub mod settings_sync;
 
 pub use cache::Cache;
