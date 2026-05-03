@@ -170,24 +170,30 @@
     inStandaloneWindow = false,
   }: Props = $props()
 
-  // Close on Escape (#192).  Mirrors the EventEditor pattern:
-  // attach to `document` so the key works regardless of where
-  // focus is — including inside the rich-text editor, address
-  // autocomplete, or attachment list.  Inner popovers (emoji
-  // picker, file browser, link dialog, attendee suggestions)
-  // render as `role="listbox"` or `role="dialog"`; if any of
-  // those is open we bail out and let it own Escape.  Routes
-  // through `cancel()` so the existing Talk-room and Nextcloud
-  // share-link cleanup runs — the issue explicitly calls these
-  // out as required cleanup tasks.
+  // Close on Escape (#192).  Attach to `document` so the key
+  // works regardless of where focus is — including inside the
+  // rich-text editor, the From: picker, or the attachment row.
+  // Routes through `cancel()` so the existing Talk-room (#86)
+  // and Nextcloud share-link (#193) cleanups both fire.
+  //
+  // Inner popovers that own their own Escape behaviour:
+  //   * AddressAutocomplete uses `role="listbox"` — if one is
+  //     open the suggestion list should close, not the whole
+  //     modal.  We skip listbox-open keystrokes here.
+  //   * The Nextcloud file picker, image picker, and Talk
+  //     modal each render as their *own* nested `<dialog>`-
+  //     style component with their own document-level Esc
+  //     handler.  We can't simply select on `[role="dialog"]`
+  //     because Compose's own wrapper carries that role too;
+  //     instead we guard against the explicit open-state flags.
+  //     When one of these is open the inner component's Esc
+  //     handler fires alongside ours; we bail so the inner
+  //     close is the only thing that runs.
   $effect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return
-      if (
-        document.querySelector('[role="listbox"], [role="dialog"]')
-      ) {
-        return
-      }
+      if (showNcPicker || showNcImagePicker || showTalkModal) return
+      if (document.querySelector('[role="listbox"]')) return
       e.preventDefault()
       cancel()
     }
