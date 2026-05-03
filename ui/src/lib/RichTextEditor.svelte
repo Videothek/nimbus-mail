@@ -394,6 +394,13 @@
         // one undo unit — Ctrl-Z then undoes a word (not a single
         // character), which is what every modern editor does.
         undoRedo: { newGroupDelay: 500 },
+        // StarterKit ships its own Link + Underline; disable
+        // them so the explicit `Link.extend(...)` and the
+        // standalone `Underline` import below don't register a
+        // second copy ("Duplicate extension names found:
+        // ['link', 'underline']" in the console).
+        link: false,
+        underline: false,
       }),
       Underline,
       // Extend the Link mark so every rendered <a> carries a `title`
