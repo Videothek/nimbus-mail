@@ -243,7 +243,7 @@ pub struct Account {
     #[serde(default)]
     pub sort_order: i32,
     /// Human's full name for the From: header (issue #115),
-    /// e.g. `"Nick Schlecker"`.  Separate from `display_name`
+    /// e.g. `"Alex Morgan"`.  Separate from `display_name`
     /// (which is the account *label* — "Work", "Personal").
     /// `None` falls back to `display_name`, preserving the
     /// pre-115 behaviour for users who haven't set it.

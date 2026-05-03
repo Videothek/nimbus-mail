@@ -344,7 +344,7 @@
             <input
               type="text"
               bind:value={personName}
-              placeholder="e.g. Nick Schlecker"
+              placeholder="e.g. Alex Morgan"
               class="input w-full mt-1 px-3 py-2 rounded-md"
             />
             <span class="block text-xs text-surface-500 mt-1">
@@ -356,7 +356,7 @@
             <input
               type="email"
               bind:value={email}
-              placeholder="e.g. nick@example.com"
+              placeholder="e.g. you@example.com"
               class="input w-full mt-1 px-3 py-2 rounded-md"
               onblur={autoFillServers}
               disabled={discovering}

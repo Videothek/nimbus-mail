@@ -266,7 +266,7 @@ mod tests {
             &cache,
             Account {
                 id: "b".into(),
-                signature: Some("Best,\nNick".into()),
+                signature: Some("Best,\nAlex".into()),
                 ..test_account("b")
             },
         )
@@ -275,7 +275,7 @@ mod tests {
         let listed = load_accounts(&cache).unwrap();
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].id, "a"); // insertion order preserved
-        assert_eq!(listed[1].signature.as_deref(), Some("Best,\nNick"));
+        assert_eq!(listed[1].signature.as_deref(), Some("Best,\nAlex"));
 
         // Duplicate id is rejected.
         assert!(add_account(&cache, test_account("a")).is_err());
