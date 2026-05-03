@@ -691,7 +691,7 @@
    *  round-trip anyway). */
   $effect(() => {
     if (!email || !processedHtml.html) {
-      console.debug('[link-check] skip: no body', {
+      console.log('[link-check] skip: no body', {
         hasEmail: !!email,
         hasHtml: !!processedHtml.html,
       })
@@ -700,18 +700,18 @@
       return
     }
     if (!linkCheckEnabled) {
-      console.debug('[link-check] skip: master toggle off')
+      console.log('[link-check] skip: master toggle off')
       linkVerdicts = {}
       return
     }
     if (lastCheckedEmailId === email.id) {
-      console.debug('[link-check] skip: already checked this message', email.id)
+      console.log('[link-check] skip: already checked this message', email.id)
       return
     }
     const urls = extractCheckableUrls(processedHtml.html)
-    console.debug('[link-check] extracted URLs:', urls)
+    console.log('[link-check] extracted URLs:', urls)
     if (urls.length === 0) {
-      console.debug('[link-check] no http(s) anchors in body — done')
+      console.log('[link-check] no http(s) anchors in body — done')
       linkVerdicts = {}
       lastCheckedEmailId = email.id
       return
@@ -723,7 +723,7 @@
         // message before it landed — annotating a stale email
         // would paint pills on the wrong body.
         if (email?.id !== expectedId) return
-        console.debug('[link-check] verdicts:', rows)
+        console.log('[link-check] verdicts:', rows)
         const map: Record<string, LinkVerdict> = {}
         for (const r of rows) map[r.url] = r
         linkVerdicts = map
