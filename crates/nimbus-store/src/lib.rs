@@ -8,6 +8,7 @@ pub mod app_settings;
 pub mod cache;
 pub mod credentials;
 pub mod fido;
+pub mod link_check;
 pub mod nextcloud_store;
 pub mod settings_bundle;
 pub mod settings_sync;

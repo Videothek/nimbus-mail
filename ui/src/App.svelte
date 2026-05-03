@@ -448,6 +448,11 @@
     /** #190: when true, `ui_locale` is ignored and paraglide
      *  picks from `navigator.language` on launch. */
     ui_locale_auto?: boolean
+    /** #165 master toggle for the URLhaus link checker.  When
+     *  true, every link in a rendered email gets a green / red
+     *  safety pill and unsafe clicks confirm.  When false,
+     *  links open without interception. */
+    link_check_enabled?: boolean
   }
   type CustomTheme = {
     id: string
@@ -1738,6 +1743,7 @@
         uid={selectedUid}
         forceWhiteBackground={appPrefs?.mail_html_white_background ?? true}
         autoLoadRemoteImages={appPrefs?.auto_load_remote_images ?? false}
+        linkCheckEnabled={appPrefs?.link_check_enabled ?? true}
         onread={onMessageRead}
         onreply={onReply}
         onreplyall={onReplyAll}

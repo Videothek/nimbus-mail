@@ -113,7 +113,7 @@ strong-copyleft licence stronger than what we already have (e.g.
 AGPL-3.0) is a project-level decision, not a routine PR. See
 [CLAUDE.md](CLAUDE.md) for the AI-assistant version of this rule.
 
-Last manual reconciliation: 2026-05-03 (i18n via `@inlang/paraglide-js` — Apache-2.0, runtime ships a small message-selector function in the bundle; no licence change for the app overall).
+Last manual reconciliation: 2026-05-03 (URLhaus malicious-URL feed via abuse.ch — CC0-1.0, no Rust/JS dependency added; the data itself is fetched at runtime from `urlhaus.abuse.ch/downloads/csv_online/` and stored locally in the encrypted SQLCipher cache).
 
 ---
 
@@ -222,6 +222,18 @@ don't affect distribution. Still worth knowing what's in the toolchain:
 | `tailwindcss` | MIT | CSS framework. |
 | `typescript` | Apache-2.0 | TS compiler. |
 | `vite` | MIT | Build tool / dev server. |
+
+---
+
+## Runtime data feeds
+
+Not a code dependency — **data** consumed at runtime. Each feed
+needs the same kind of attention as a code dep when its licence
+or terms change.
+
+| Source | Licence | Notes |
+|---|---|---|
+| URLhaus by abuse.ch (`urlhaus.abuse.ch/downloads/csv_online/`) | CC0-1.0 | Malicious-URL feed for the link-safety check (#165). Fetched once an hour over HTTPS, stored in the encrypted SQLCipher cache. Public domain — no attribution clause forces redistribution semantics, but we still credit abuse.ch in the Settings UI as a goodwill gesture. |
 
 ---
 

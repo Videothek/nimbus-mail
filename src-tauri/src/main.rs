@@ -36,7 +36,7 @@ use nimbus_store::cache::{
     SearchFilters, SearchHit, SearchScope, SyncState,
 };
 use nimbus_store::{
-    Cache, account_store, app_settings, credentials, nextcloud_store, settings_bundle,
+    Cache, account_store, app_settings, credentials, link_check, nextcloud_store, settings_bundle,
     settings_sync,
 };
 use serde::{Deserialize, Serialize};
@@ -8547,6 +8547,303 @@ async fn check_mail_now(app: AppHandle) -> Result<(), NimbusError> {
     check_mail_now_inner(&app).await
 }
 
+// ── URLhaus link safety (#165) ─────────────────────────────────
+//
+// Local snapshot of abuse.ch's URLhaus "online malicious URLs"
+// CSV.  Refreshed every hour by a background task; lookups go
+// against the encrypted SQLite cache (so the URL list inherits
+// the same at-rest protection as the user's mail).
+//
+// Frontend behaviour:
+//   - On message open, MailView walks every <a href> in the
+//     rendered body, batches the URLs into one `check_urls`
+//     IPC, and renders a green "Safe" / red "Unsafe" pill next
+//     to each link.
+//   - Click on an Unsafe link is intercepted: a confirm modal
+//     offers "Delete mail" (move to Trash) or "Open link
+//     anyway".  Safe links open normally.
+//
+// Refresh behaviour:
+//   - Background worker spawned in main()'s setup block.
+//   - On launch: refresh immediately if the local snapshot is
+//     empty or older than 24 h; otherwise wait for the next
+//     hourly tick.
+//   - Errors are logged at warn level; the worker keeps the
+//     previous snapshot so a transient outage at abuse.ch
+//     doesn't wipe the list.
+
+const URLHAUS_CSV_URL: &str = "https://urlhaus.abuse.ch/downloads/csv_online/";
+
+/// Verdict surfaced to the frontend per URL.  `safe` means the
+/// URL didn't match anything in URLhaus; `unsafe` means there
+/// was either an exact-URL match or a host match (the v1 UI
+/// collapses both into the red pill).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LinkVerdict {
+    /// The URL the verdict was computed for, echoed back so the
+    /// frontend can correlate without keeping its own index.
+    url: String,
+    /// `"safe"` | `"unsafe"`.  String tag rather than a bool so
+    /// future tiers ("caution", "unknown") slot in without an
+    /// IPC schema break.
+    verdict: String,
+    /// Optional context for the unsafe path: URLhaus' threat
+    /// classification (e.g. `"malware_download"`) and tag list.
+    /// `None` for safe URLs.
+    threat: Option<String>,
+    tags: Option<String>,
+    /// `true` when the URL itself was on the list (vs only the
+    /// host).  Used by the modal to render a slightly different
+    /// hint ("This URL is on URLhaus" vs "This domain has
+    /// hosted malicious content before").
+    exact: bool,
+}
+
+#[tauri::command]
+fn check_urls(
+    urls: Vec<String>,
+    cache: State<'_, Cache>,
+    settings: State<'_, SharedSettings>,
+) -> Result<Vec<LinkVerdict>, NimbusError> {
+    // Master toggle short-circuit: when the user has the link
+    // checker turned off, return "unknown" verdicts that the
+    // frontend renders without a pill at all.  We use the
+    // existing `verdict` string ("off") rather than carrying a
+    // separate enabled flag so the UI's per-URL render code
+    // stays a single match.
+    let enabled = futures::executor::block_on(settings.read()).link_check_enabled;
+    if !enabled {
+        return Ok(urls
+            .into_iter()
+            .map(|url| LinkVerdict {
+                url,
+                verdict: "off".into(),
+                threat: None,
+                tags: None,
+                exact: false,
+            })
+            .collect());
+    }
+
+    let mut out = Vec::with_capacity(urls.len());
+    for url in urls {
+        match link_check::lookup(&cache, &url) {
+            Ok(Some(m)) => out.push(LinkVerdict {
+                url,
+                verdict: "unsafe".into(),
+                threat: Some(m.threat),
+                tags: Some(m.tags),
+                exact: m.exact,
+            }),
+            Ok(None) => out.push(LinkVerdict {
+                url,
+                verdict: "safe".into(),
+                threat: None,
+                tags: None,
+                exact: false,
+            }),
+            Err(e) => {
+                // Surface as "unknown" rather than failing the
+                // whole batch; an SQLite error mid-walk is rare
+                // and a single bad lookup shouldn't wipe pills
+                // off every other link in the email.
+                tracing::warn!("link_check lookup failed for {url}: {e}");
+                out.push(LinkVerdict {
+                    url,
+                    verdict: "off".into(),
+                    threat: None,
+                    tags: None,
+                    exact: false,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+fn get_link_check_status(
+    cache: State<'_, Cache>,
+) -> Result<link_check::UrlhausStatus, NimbusError> {
+    link_check::status(&cache).map_err(NimbusError::from)
+}
+
+/// Manually trigger a URLhaus refresh.  Used by the "Refresh
+/// now" button on the Settings page; also called by the
+/// background worker on its hourly tick.
+#[tauri::command]
+async fn refresh_urlhaus_now(cache: State<'_, Cache>) -> Result<u32, NimbusError> {
+    refresh_urlhaus_inner(&cache).await
+}
+
+async fn refresh_urlhaus_inner(cache: &Cache) -> Result<u32, NimbusError> {
+    let http = reqwest::Client::builder()
+        .user_agent(concat!("nimbus-mail/", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| NimbusError::Network(format!("urlhaus client build: {e}")))?;
+    let resp = http
+        .get(URLHAUS_CSV_URL)
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("urlhaus fetch: {e}")))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(NimbusError::Network(format!(
+            "urlhaus fetch returned HTTP {status}"
+        )));
+    }
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| NimbusError::Network(format!("urlhaus body read: {e}")))?;
+    let rows = parse_urlhaus_csv(&body);
+    let cache_clone = cache.clone();
+    let count = tokio::task::spawn_blocking(move || link_check::replace_all(&cache_clone, &rows))
+        .await
+        .map_err(|e| NimbusError::Other(format!("urlhaus replace_all join: {e}")))?
+        .map_err(NimbusError::from)?;
+    tracing::info!("URLhaus refresh complete — {count} URL(s)");
+    Ok(count)
+}
+
+/// Hand-rolled minimal CSV parser for the URLhaus
+/// `csv_online` dump.  The format is well-defined and stable:
+///
+/// ```text
+/// # comment line
+/// "id","dateadded","url","url_status","last_online","threat","tags","urlhaus_link","reporter"
+/// ```
+///
+/// All fields are quoted; embedded commas and quotes are not
+/// part of any URL we'll see in practice (URLhaus only catalogs
+/// HTTP / HTTPS URLs, which can't legally contain unescaped
+/// double quotes anyway).  Going hand-rolled here saves us a
+/// `csv` crate workspace dependency for one feature.
+fn parse_urlhaus_csv(body: &str) -> Vec<link_check::UrlhausCsvRow> {
+    let mut out = Vec::with_capacity(8192);
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields = split_csv_line(line);
+        // Expect the canonical 9 fields; rows with the wrong
+        // arity are upstream malformations we silently skip.
+        if fields.len() < 7 {
+            continue;
+        }
+        let date_added = parse_urlhaus_date(&fields[1]).unwrap_or(0);
+        out.push(link_check::UrlhausCsvRow {
+            url: fields[2].clone(),
+            threat: fields[5].clone(),
+            tags: fields[6].clone(),
+            date_added,
+        });
+    }
+    out
+}
+
+/// Split one CSV line into its quoted fields.  We tolerate
+/// unquoted fields too (the URLhaus header / the occasional
+/// malformed row), so a record with mixed quoting still
+/// recovers cleanly.  Doubled `""` inside a quoted field
+/// decodes to a single literal quote per RFC 4180.
+fn split_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, in_quotes) {
+            ('"', true) => {
+                if matches!(chars.peek(), Some('"')) {
+                    chars.next();
+                    current.push('"');
+                } else {
+                    in_quotes = false;
+                }
+            }
+            ('"', false) => in_quotes = true,
+            (',', false) => {
+                fields.push(std::mem::take(&mut current));
+            }
+            (other, _) => current.push(other),
+        }
+    }
+    fields.push(current);
+    fields
+}
+
+/// Parse URLhaus' `dateadded` field (`YYYY-MM-DD HH:MM:SS` UTC)
+/// into unix epoch seconds.  Falls back to `None` on a malformed
+/// row so the caller can substitute zero rather than skipping.
+fn parse_urlhaus_date(s: &str) -> Option<i64> {
+    use chrono::NaiveDateTime;
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|dt| dt.and_utc().timestamp())
+}
+
+/// Background refresh worker.  Driven by an hourly tick plus a
+/// startup-time decision: if the local snapshot is empty or
+/// older than 24 h, refresh immediately; otherwise wait.  The
+/// worker respects the `link_check_enabled` master toggle —
+/// when off, it sleeps for the full tick window and re-checks
+/// before doing any network work.
+async fn urlhaus_refresh_worker(cache: Cache, settings: SharedSettings) {
+    use tokio::time::{Duration, MissedTickBehavior, interval};
+
+    // Initial decision based on the on-disk snapshot.  We
+    // intentionally do *not* gate this on `link_check_enabled`:
+    // a user who turned the feature off probably wants the
+    // pre-existing list scrubbed too, but we also don't want
+    // to re-download on every restart for a feature they
+    // disabled.  Compromise: only the "stale" path triggers an
+    // initial refresh, and we still respect the toggle inside
+    // the refresh function below.
+    let stale = match link_check::status(&cache) {
+        Ok(s) => match s.last_refreshed_at {
+            None => true, // never refreshed
+            Some(ts) => {
+                let age = chrono::Utc::now().signed_duration_since(ts).num_hours();
+                age >= 24 || s.total_urls == 0
+            }
+        },
+        Err(_) => true,
+    };
+    if stale {
+        let enabled = settings.read().await.link_check_enabled;
+        if enabled {
+            if let Err(e) = refresh_urlhaus_inner(&cache).await {
+                tracing::warn!("URLhaus initial refresh failed: {e}");
+            }
+        }
+    }
+
+    let mut tick = interval(Duration::from_secs(60 * 60));
+    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // Burn the immediate first tick so we don't stack on top
+    // of the startup refresh above.
+    tick.tick().await;
+
+    loop {
+        tick.tick().await;
+        let enabled = settings.read().await.link_check_enabled;
+        if !enabled {
+            continue;
+        }
+        if let Err(e) = refresh_urlhaus_inner(&cache).await {
+            tracing::warn!("URLhaus refresh failed (will retry next tick): {e}");
+        }
+    }
+}
+
 /// Switch the running app's icon (tray, window titlebar, taskbar)
 /// to the user's picked logo style and persist the choice in
 /// `AppSettings.logo_style`.  The next boot reapplies it.
@@ -9160,6 +9457,17 @@ fn main() {
                 initial_kick.notify_one();
             }
 
+            // URLhaus link-safety refresh worker (#165).  Pulls
+            // the abuse.ch CSV every hour, decides on launch
+            // whether the local copy is stale enough to refresh
+            // immediately, and respects the link_check_enabled
+            // master toggle in AppSettings.
+            let urlhaus_cache = app.state::<Cache>().inner().clone();
+            let urlhaus_settings = app.state::<SharedSettings>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                urlhaus_refresh_worker(urlhaus_cache, urlhaus_settings).await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -9314,6 +9622,10 @@ fn main() {
             notify_settings_changed,
             nc_probe_settings_bundle,
             nc_restore_settings_bundle,
+            // Issue #165: URLhaus link safety.
+            check_urls,
+            get_link_check_status,
+            refresh_urlhaus_now,
             set_logo_style,
             import_custom_theme,
             remove_custom_theme,

@@ -27,6 +27,7 @@ applies to every package listed underneath it.
 | [ISC](#isc-license) | rustls, ring (parts) |
 | [MPL-2.0](#mozilla-public-license-20) | webpki-roots, dompurify |
 | [GPL-3.0](#gnu-general-public-license-v3) | rrule (and Nimbus itself) |
+| [CC0-1.0](#cc0-10-runtime-data-feeds) (data only) | URLhaus malicious-URL feed (#165) |
 | Multi-licence components | [ring](#ring-tls-crypto-provider) (ISC + MIT + OpenSSL) |
 
 ---
@@ -245,6 +246,31 @@ links to GPL-3.0 code requires:
 
 The full GPL-3.0 text is in the repository root [LICENSE](LICENSE)
 file and at <https://www.gnu.org/licenses/gpl-3.0.txt>.
+
+---
+
+## CC0-1.0 (runtime data feeds)
+
+The link-safety check (#165) consumes the **URLhaus** malicious-URL
+feed published by [abuse.ch](https://urlhaus.abuse.ch/). The data
+itself is dedicated to the public domain under
+[CC0-1.0](https://creativecommons.org/publicdomain/zero/1.0/) — no
+attribution clause forces redistribution semantics, and no
+copyleft pressure spreads to the rest of Nimbus. We still credit
+abuse.ch in the Settings UI as a goodwill gesture: the project
+runs on community contributions and a visible "powered by" link
+helps them keep funding the work.
+
+The CC0-1.0 dedication does not impose any reproduction or notice
+obligation. Reproduced here for completeness:
+
+> CC0 1.0 Universal — The person who associated a work with this
+> deed has dedicated the work to the public domain by waiving all
+> of his or her rights to the work worldwide under copyright law,
+> including all related and neighboring rights, to the extent
+> allowed by law.
+
+Full text: <https://creativecommons.org/publicdomain/zero/1.0/legalcode>
 
 ---
 

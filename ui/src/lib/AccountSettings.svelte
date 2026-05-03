@@ -180,6 +180,14 @@
     mail_html_white_background: boolean
     auto_load_remote_images: boolean
     auto_advance_after_remove: boolean
+    /** #165 master toggle for the URLhaus link checker.
+     *  Off → no pills, no click interception, refresh worker
+     *  sleeps.  On (default) → links in rendered email show
+     *  green / red safety pills and unsafe clicks confirm.
+     *  Always present once `loadAppSettings` returns (the Rust
+     *  side serialises it with a default), so the type is
+     *  required even though older bundle files may lack it. */
+    link_check_enabled: boolean
     default_calendar_id: string | null
     /** Reminders for events that carry a meeting URL (Talk /
      *  Zoom / Meet / Teams / Jitsi / …).  #203 renamed from
@@ -227,6 +235,7 @@
     mail_html_white_background: true,
     auto_load_remote_images: false,
     auto_advance_after_remove: true,
+    link_check_enabled: true,
     default_calendar_id: null,
     meeting_reminders_enabled: true,
     calendar_reminders_enabled: true,
@@ -315,6 +324,47 @@
   let calendarsForPicker = $state<CalendarRow[]>([])
   let prefsSaveStatus = $state<'' | 'saving' | 'saved' | 'error'>('')
   let checkNowBusy = $state(false)
+
+  // ── Link-check status (#165) ─────────────────────────────────
+  // Surfaced under Settings → E-Mail next to the toggle.  Two
+  // pieces of state: the snapshot status (count + last refresh
+  // timestamp) and a busy flag for the manual "Refresh now"
+  // button so it can show a spinner-ish disabled state.
+  interface LinkCheckStatus {
+    totalUrls: number
+    lastRefreshedAt: string | null
+  }
+  let linkCheckStatus = $state<LinkCheckStatus>({ totalUrls: 0, lastRefreshedAt: null })
+  let linkCheckRefreshing = $state(false)
+  async function loadLinkCheckStatus() {
+    try {
+      linkCheckStatus = await invoke<LinkCheckStatus>('get_link_check_status')
+    } catch (e) {
+      console.warn('get_link_check_status failed', e)
+    }
+  }
+  async function onRefreshUrlhausNow() {
+    if (linkCheckRefreshing) return
+    linkCheckRefreshing = true
+    try {
+      await invoke('refresh_urlhaus_now')
+      await loadLinkCheckStatus()
+    } catch (e) {
+      console.warn('refresh_urlhaus_now failed', e)
+    } finally {
+      linkCheckRefreshing = false
+    }
+  }
+  function formatRefreshAge(ts: string | null): string {
+    if (!ts) return 'Never'
+    const then = new Date(ts).getTime()
+    if (!Number.isFinite(then)) return 'Unknown'
+    const ageSec = Math.max(0, (Date.now() - then) / 1000)
+    if (ageSec < 60) return 'Just now'
+    if (ageSec < 3600) return `${Math.floor(ageSec / 60)} min ago`
+    if (ageSec < 86_400) return `${Math.floor(ageSec / 3600)} h ago`
+    return `${Math.floor(ageSec / 86_400)} d ago`
+  }
 
   // ── Backup & Sync (#168) ─────────────────────────────────────
   // State for the Backup & Sync category panel.  The dropdown
@@ -431,6 +481,7 @@
     loadCalendarsForPicker()
     loadSyncState()
     loadNcOptions()
+    loadLinkCheckStatus()
   })
 
   async function loadCalendarsForPicker() {
@@ -1236,6 +1287,46 @@
               Off (default) blocks remote images and shows a "Show images" banner per message — protects against tracking pixels.
               On loads every image automatically and hides the banner.
             </p>
+          </div>
+        </div>
+
+        <!-- #165 — URLhaus link checker.  When on, every link in
+             a rendered email gets a green "Safe" / red "Unsafe"
+             pill, and a click on an Unsafe link goes through a
+             confirm modal in MailView.  When off, links open
+             without interception and the pills are suppressed. -->
+        <div class="flex items-start gap-3">
+          <Toggle
+            bind:checked={appSettings.link_check_enabled}
+            label="Check links against URLhaus"
+            onchange={() => scheduleSave()}
+          />
+          <div class="flex-1">
+            <span>Check links against URLhaus</span>
+            <p class="text-xs text-surface-400 mt-0.5">
+              Looks up every link in a received mail against
+              <a
+                href="https://urlhaus.abuse.ch/"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-primary-500 underline"
+              >abuse.ch's URLhaus</a> malicious-URL list. Marks safe links
+              with a green pill and unsafe ones with a red pill; clicking an
+              unsafe link asks before opening. The list is downloaded over
+              HTTPS once an hour with no per-user identifiers.
+            </p>
+            {#if appSettings.link_check_enabled}
+              <p class="text-xs text-surface-500 mt-2">
+                Last refreshed: <strong>{formatRefreshAge(linkCheckStatus.lastRefreshedAt)}</strong>
+                · {linkCheckStatus.totalUrls.toLocaleString()} URLs in local snapshot
+                <button
+                  type="button"
+                  class="btn btn-sm preset-outlined-surface-500 ml-2"
+                  disabled={linkCheckRefreshing}
+                  onclick={() => void onRefreshUrlhausNow()}
+                >{linkCheckRefreshing ? 'Refreshing…' : 'Refresh now'}</button>
+              </p>
+            {/if}
           </div>
         </div>
 
