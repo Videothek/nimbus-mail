@@ -1,10 +1,20 @@
-name: CI
+name: Quality gate
+
+# Heavy CI suite — clippy, tests, audit, deny, frontend audits.
+# Runs only when something *needs* to be verified end-to-end:
+#   * `workflow_call` — invoked by `release.yml` before building
+#     installers and by `weekly-security.yml` on the cron tick.
+#   * `workflow_dispatch` — for ad-hoc manual runs from the
+#     Actions UI when you want to gate-check a branch.
+#
+# It is deliberately NOT triggered on every push or PR — that's
+# what `smoke.yml` is for (~2 min: fmt + cargo check + frontend
+# typecheck + build).  This keeps the daily dev loop fast while
+# the strict checks only kick in around release time.
 
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
+  workflow_call:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

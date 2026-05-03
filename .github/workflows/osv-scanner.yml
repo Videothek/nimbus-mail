@@ -11,13 +11,14 @@ name: OSV-Scanner
 # regardless of whether the downstream binary is sold.
 
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
+  # Triggered from `release.yml` and `weekly-security.yml`; daily
+  # dev uses `smoke.yml` instead.
+  workflow_call:
+  workflow_dispatch:
   schedule:
-    # Re-scan twice a week so newly-disclosed advisories that
-    # affect already-merged code surface even when no PRs are open.
+    # Independent twice-weekly cron so newly-disclosed advisories
+    # affecting already-merged code surface even when no release
+    # tag was cut.
     - cron: "0 4 * * 1,4"
 
 permissions:
