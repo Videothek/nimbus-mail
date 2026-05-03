@@ -170,36 +170,34 @@
     inStandaloneWindow = false,
   }: Props = $props()
 
-  // Close on Escape (#192).  Attach to `document` so the key
-  // works regardless of where focus is — including inside the
-  // rich-text editor, the From: picker, or the attachment row.
-  // Routes through `cancel()` so the existing Talk-room (#86)
-  // and Nextcloud share-link (#193) cleanups both fire.
-  //
-  // Inner popovers that own their own Escape behaviour:
-  //   * AddressAutocomplete uses `role="listbox"` — if one is
-  //     open the suggestion list should close, not the whole
-  //     modal.  We skip listbox-open keystrokes here.
-  //   * The Nextcloud file picker, image picker, and Talk
-  //     modal each render as their *own* nested `<dialog>`-
-  //     style component with their own document-level Esc
-  //     handler.  We can't simply select on `[role="dialog"]`
-  //     because Compose's own wrapper carries that role too;
-  //     instead we guard against the explicit open-state flags.
-  //     When one of these is open the inner component's Esc
-  //     handler fires alongside ours; we bail so the inner
-  //     close is the only thing that runs.
-  $effect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key !== 'Escape') return
-      if (showNcPicker || showNcImagePicker || showTalkModal) return
-      if (document.querySelector('[role="listbox"]')) return
-      e.preventDefault()
-      cancel()
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  })
+  /**
+   * Esc handler for the modal (#192).  Wired in the template
+   * via `<svelte:window onkeydown={onComposeKeydown} />` rather
+   * than `document.addEventListener` inside an `$effect` —
+   * Svelte's window binding is the idiomatic path and avoids
+   * the registration races we hit with the manual approach.
+   *
+   * Routes through `cancel()` so the existing Talk-room (#86)
+   * and Nextcloud share-link (#193) cleanups both fire.
+   *
+   * Inner popovers that own their own Escape behaviour:
+   *   * AddressAutocomplete uses `role="listbox"` — if one is
+   *     open the suggestion list should close, not the whole
+   *     modal.
+   *   * The Nextcloud file picker, image picker, and Talk
+   *     modal each render their own component-level Esc
+   *     handler.  We can't simply select on `[role="dialog"]`
+   *     because Compose's own wrapper carries that role too;
+   *     instead we guard against the explicit open-state
+   *     flags.
+   */
+  function onComposeKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return
+    if (showNcPicker || showNcImagePicker || showTalkModal) return
+    if (document.querySelector('[role="listbox"]')) return
+    e.preventDefault()
+    cancel()
+  }
 
   // ── From: picker state ──────────────────────────────────────
   // The id is the canonical handle (used for `send_email`); the rest
@@ -1404,6 +1402,12 @@
     }
   }
 </script>
+
+<!-- Esc → cancel + cleanup (#192).  `<svelte:window>` is the
+     idiomatic Svelte binding for global keystrokes and mounts /
+     unmounts in lockstep with the component, so it works in both
+     the modal-overlay and standalone-window paths below. -->
+<svelte:window onkeydown={onComposeKeydown} />
 
 <!-- In standalone-window mode we drop the modal overlay + the fixed
      resizable card and let Compose fill the whole window.  The OS

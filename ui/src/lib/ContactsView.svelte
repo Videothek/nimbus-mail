@@ -856,6 +856,23 @@
     selectedPhotoBytes = null
   }
 
+  /**
+   * Esc handler for the contact-editor side panel (#192).  Wired
+   * via `<svelte:window onkeydown>` in the template.  Inert
+   * while `saving` is in flight (mid-CardDAV PUT) so the user
+   * can't bail and end up with an indeterminate save state, and
+   * inert if a popover (`role="listbox"` autocomplete or one of
+   * the inline emoji / kind menus) is open so it owns Esc.
+   */
+  function onContactsKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return
+    if (selectedId === null) return
+    if (saving) return
+    if (document.querySelector('[role="listbox"]')) return
+    e.preventDefault()
+    cancelEdit()
+  }
+
   // Pull just the bytes via IPC so we can round-trip them on save.
   // Display elsewhere uses `photoSrc()` against the URI scheme.
   async function loadSelectedPhotoBytes(id: string) {
@@ -1023,6 +1040,8 @@
       : null,
   )
 </script>
+
+<svelte:window onkeydown={onContactsKeydown} />
 
 <div class="h-full flex bg-surface-50 dark:bg-surface-900">
   <!-- ── Sidebar — Contacts heading, tab strip, and (when on

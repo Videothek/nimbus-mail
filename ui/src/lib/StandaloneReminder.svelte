@@ -211,26 +211,26 @@
     reminder = payload
   })
 
-  // Close on Escape (#192).  Routes through `dismiss()` so the
-  // backend `dismiss_event_reminder` IPC fires — pressing Esc
-  // is treated the same as clicking the X in the header, not as
-  // "I want to be reminded again".  Listener attached at window
-  // scope (the popup is the whole window, no inner popovers
-  // worth respecting).
-  $effect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key !== 'Escape') return
-      e.preventDefault()
-      void dismiss()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  })
+  /**
+   * Esc handler for the popup (#192).  Wired via
+   * `<svelte:window onkeydown>` in the template.  Routes
+   * through `dismiss()` so the backend
+   * `dismiss_event_reminder` IPC fires — pressing Esc is
+   * treated the same as clicking the X in the header, not as
+   * "I want to be reminded again".
+   */
+  function onReminderKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return
+    e.preventDefault()
+    void dismiss()
+  }
 
   onDestroy(() => {
     unlistenSystemMode?.()
   })
 </script>
+
+<svelte:window onkeydown={onReminderKeydown} />
 
 <svelte:head>
   <title>{reminder?.summary || 'Nimbus Reminder'}</title>

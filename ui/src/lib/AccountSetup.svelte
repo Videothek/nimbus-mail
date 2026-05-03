@@ -41,23 +41,20 @@
   }
   let { oncomplete, canCancel = false, oncancel }: Props = $props()
 
-  // Close on Escape (#192).  Only when `canCancel` is true — on
-  // true first launch the user has to finish setup; we don't
-  // want Escape to silently drop them back into a half-bootstrapped
-  // app with no accounts.  We skip if an autocomplete listbox is
-  // open so it owns the keystroke; the wizard has no nested
-  // role="dialog" surfaces so we don't need to special-case those.
-  $effect(() => {
+  /**
+   * Esc handler for the wizard (#192).  Wired via
+   * `<svelte:window onkeydown>` in the template — see the
+   * Compose.svelte change for the rationale.  Only fires
+   * when `canCancel` is true; first-launch (no accounts) must
+   * finish the wizard.
+   */
+  function onWizardKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return
     if (!canCancel) return
-    function onKey(e: KeyboardEvent) {
-      if (e.key !== 'Escape') return
-      if (document.querySelector('[role="listbox"]')) return
-      e.preventDefault()
-      handleCancel()
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  })
+    if (document.querySelector('[role="listbox"]')) return
+    e.preventDefault()
+    handleCancel()
+  }
 
   // ── Wizard state ────────────────────────────────────────────
   // Which step of the wizard we're on (0-indexed)
@@ -353,6 +350,7 @@
         - error / cert-trust prompts
         - Back / Next | Add Account buttons
 -->
+<svelte:window onkeydown={onWizardKeydown} />
 <div class="h-full flex items-center justify-center bg-surface-50 dark:bg-surface-900">
   <div class="w-full max-w-xl mx-4">
     <!-- Header -->

@@ -77,20 +77,18 @@
     oncreated,
   }: Props = $props()
 
-  // Close on Escape (#192).  Document-level so the key works
-  // wherever focus is in the modal.  Inert while `creating` is
-  // in flight so the user can't bail mid-OCS-call and end up
-  // with a half-created room.
-  $effect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key !== 'Escape') return
-      if (creating) return
-      e.preventDefault()
-      onclose()
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  })
+  /**
+   * Esc handler for the modal (#192).  Wired via
+   * `<svelte:window onkeydown>` in the template.  Inert while
+   * `creating` is in flight so the user can't bail mid-OCS-call
+   * and end up with a half-created room.
+   */
+  function onTalkModalKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return
+    if (creating) return
+    e.preventDefault()
+    onclose()
+  }
 
   // svelte-ignore state_referenced_locally
   let roomName = $state(initialName)
@@ -157,6 +155,8 @@
     }
   }
 </script>
+
+<svelte:window onkeydown={onTalkModalKeydown} />
 
 <div
   class="fixed inset-0 z-60 flex items-center justify-center bg-black/50"

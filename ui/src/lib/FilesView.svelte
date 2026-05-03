@@ -207,7 +207,24 @@
       sharing = false
     }
   }
+
+  /**
+   * Esc handler for the share prompt (#192).  Wired via
+   * `<svelte:window onkeydown>` in the template so the key
+   * works wherever focus is in the modal — the existing
+   * input-level handler at line 385 only catches the password
+   * field.  Inert while `sharing` is in flight.
+   */
+  function onSharePromptKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return
+    if (!sharePrompt) return
+    if (sharing) return
+    e.preventDefault()
+    sharePrompt = null
+  }
 </script>
+
+<svelte:window onkeydown={onSharePromptKeydown} />
 
 <div class="h-full flex flex-col bg-surface-50 dark:bg-surface-900">
   <!-- Header — same shape as the Calendar / Contacts views so the
