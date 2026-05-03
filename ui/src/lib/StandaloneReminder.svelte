@@ -268,40 +268,41 @@
       </button>
     </div>
 
-    <div class="flex-1 overflow-auto p-4 flex flex-col gap-3">
+    <!-- Body left padding matches the header's `px-3` so the
+         detail rows below sit in the same column as the Nimbus
+         logo at the top of the window.  Removed the leading
+         time / location / contacts / snooze glyphs so the text
+         itself lands flush under the logo — the icons added
+         no information the labels don't already convey, and
+         they pushed the text columns out of alignment. -->
+    <div class="flex-1 overflow-auto px-3 py-4 flex flex-col gap-3">
       <!-- Title row. -->
       <h1 class="text-base font-semibold leading-snug wrap-break-word">
         {reminder.summary || 'Event'}
       </h1>
 
       <!-- Time-slot row.  Always present. -->
-      <div class="flex items-center gap-2 text-sm text-surface-700 dark:text-surface-300">
-        <span class="text-surface-500"><Icon name="time" size={14} /></span>
-        <span class="font-mono">
-          {formatLocalTime(reminder.start)}–{formatLocalTime(reminder.end)}
-        </span>
+      <div class="text-sm text-surface-700 dark:text-surface-300 font-mono">
+        {formatLocalTime(reminder.start)}–{formatLocalTime(reminder.end)}
       </div>
 
       <!-- Location.  Hidden when the event has none. -->
       {#if reminder.location}
-        <div class="flex items-start gap-2 text-sm text-surface-700 dark:text-surface-300">
-          <span class="text-surface-500 mt-0.5 shrink-0"><Icon name="location" size={14} /></span>
-          <span class="wrap-break-word min-w-0">{reminder.location}</span>
+        <div class="text-sm text-surface-700 dark:text-surface-300 wrap-break-word">
+          {reminder.location}
         </div>
       {/if}
 
       <!-- Attendees.  First three + "+N more". -->
       {#if reminder.attendees.length > 0}
-        <div class="flex items-start gap-2 text-sm text-surface-700 dark:text-surface-300">
-          <span class="text-surface-500 mt-0.5 shrink-0"><Icon name="contacts" size={14} /></span>
-          <span class="wrap-break-word min-w-0">{formatAttendees(reminder.attendees)}</span>
+        <div class="text-sm text-surface-700 dark:text-surface-300 wrap-break-word">
+          {formatAttendees(reminder.attendees)}
         </div>
       {/if}
 
       <!-- Snooze dropdown + button.  Each preset is hidden when
            its target moment isn't usefully far in the future. -->
       <div class="flex items-center gap-2 mt-1">
-        <span class="text-surface-500 shrink-0"><Icon name="snooze" size={14} /></span>
         <select
           class="select px-2 py-1 text-sm rounded-md flex-1 min-w-0"
           bind:value={snoozeChoice}
@@ -339,7 +340,7 @@
     </div>
 
     <!-- Footer action row. -->
-    <div class="flex flex-wrap items-center justify-end gap-2 px-4 py-3 border-t border-surface-300/60 dark:border-surface-700/60 bg-surface-100 dark:bg-surface-800">
+    <div class="flex flex-wrap items-center justify-end gap-2 px-3 py-3 border-t border-surface-300/60 dark:border-surface-700/60 bg-surface-100 dark:bg-surface-800">
       <button
         type="button"
         class="btn btn-sm preset-outlined-surface-500 flex items-center gap-1.5"
