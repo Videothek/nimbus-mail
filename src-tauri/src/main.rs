@@ -8956,6 +8956,60 @@ fn logo_protocol(
         .expect("build logo response")
 }
 
+// ── Markdown viewer (#162) ─────────────────────────────────────
+//
+// Tauri 2's WebviewWindow refuses to open `data:` URLs at the
+// platform level, so we can't just stuff the rendered HTML into
+// a data URI and hand it to the window.  Instead, the frontend
+// renders the markdown to HTML, registers it in this in-memory
+// store under a UUID, and opens
+// `nimbus-md://localhost/<uuid>` in the WebviewWindow — the URI
+// scheme handler below picks the HTML back out of the store and
+// serves it.  Single-use: each entry is removed on first GET so
+// a closed-then-revisited window can't resurrect old content,
+// and so a long-running app can't accumulate viewed-but-not-
+// cleaned-up markdown blobs.
+type MarkdownViewStore = Arc<Mutex<std::collections::HashMap<String, String>>>;
+
+#[tauri::command]
+fn register_markdown_view(
+    html: String,
+    store: State<'_, MarkdownViewStore>,
+) -> Result<String, NimbusError> {
+    let id = uuid::Uuid::new_v4().to_string();
+    store
+        .lock()
+        .map_err(|e| NimbusError::Other(format!("markdown store poisoned: {e}")))?
+        .insert(id.clone(), html);
+    Ok(id)
+}
+
+fn markdown_protocol(
+    ctx: UriSchemeContext<'_, tauri::Wry>,
+    request: tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<std::borrow::Cow<'static, [u8]>> {
+    let id = request.uri().path().trim_start_matches('/').to_string();
+    let html = ctx
+        .app_handle()
+        .try_state::<MarkdownViewStore>()
+        .and_then(|store| store.lock().ok().and_then(|mut g| g.remove(&id)));
+    match html {
+        Some(h) => tauri::http::Response::builder()
+            .status(200)
+            .header("Content-Type", "text/html; charset=utf-8")
+            .header("Cache-Control", "no-store")
+            .body(std::borrow::Cow::Owned(h.into_bytes()))
+            .expect("build markdown response"),
+        None => tauri::http::Response::builder()
+            .status(404)
+            .header("Content-Type", "text/plain")
+            .body(std::borrow::Cow::Borrowed(
+                b"markdown view not found (already opened or expired)" as &[u8],
+            ))
+            .expect("build markdown 404 response"),
+    }
+}
+
 // ── Custom themes (#132 tier 2) ────────────────────────────────
 //
 // User picks a Skeleton-shape CSS file in the Settings → Design
@@ -9205,8 +9259,10 @@ fn main() {
         // `notify_settings_changed` IPC fills it in.
         .manage::<SharedLocalStorage>(Arc::new(RwLock::new(std::collections::HashMap::new())))
         .manage(SettingsSyncNotify(Arc::new(tokio::sync::Notify::new())))
+        .manage::<MarkdownViewStore>(Arc::new(Mutex::new(std::collections::HashMap::new())))
         .register_uri_scheme_protocol("contact-photo", contact_photo_protocol)
         .register_uri_scheme_protocol("nimbus-logo", logo_protocol)
+        .register_uri_scheme_protocol("nimbus-md", markdown_protocol)
         .setup(|app| {
             // Windows toast attribution.  Without an explicit
             // AppUserModelID the OS falls back to the launching
@@ -9583,6 +9639,7 @@ fn main() {
             upload_to_nextcloud,
             office_open_attachment,
             office_close_attachment,
+            register_markdown_view,
             office_sweep_temp,
             pdf_open_attachment,
             pdf_close_attachment,
