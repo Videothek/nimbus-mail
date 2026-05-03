@@ -170,6 +170,31 @@
     inStandaloneWindow = false,
   }: Props = $props()
 
+  // Close on Escape (#192).  Mirrors the EventEditor pattern:
+  // attach to `document` so the key works regardless of where
+  // focus is — including inside the rich-text editor, address
+  // autocomplete, or attachment list.  Inner popovers (emoji
+  // picker, file browser, link dialog, attendee suggestions)
+  // render as `role="listbox"` or `role="dialog"`; if any of
+  // those is open we bail out and let it own Escape.  Routes
+  // through `cancel()` so the existing Talk-room and Nextcloud
+  // share-link cleanup runs — the issue explicitly calls these
+  // out as required cleanup tasks.
+  $effect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      if (
+        document.querySelector('[role="listbox"], [role="dialog"]')
+      ) {
+        return
+      }
+      e.preventDefault()
+      cancel()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  })
+
   // ── From: picker state ──────────────────────────────────────
   // The id is the canonical handle (used for `send_email`); the rest
   // of the form pulls the display name / email / signature from the
