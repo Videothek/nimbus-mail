@@ -6940,7 +6940,7 @@ async fn check_event_reminders_inner(app: &AppHandle) -> Result<(), NimbusError>
     // (covers reminders up to "1 day before", which is the
     // largest preset the editor offers).
     let now = Utc::now();
-    let tolerance = chrono::Duration::seconds(TALK_REMINDER_FIRE_TOLERANCE_SECS);
+    let tolerance = chrono::Duration::seconds(EVENT_REMINDER_FIRE_TOLERANCE_SECS);
     let range_start = now - tolerance;
     let range_end = now + chrono::Duration::days(1) + tolerance;
 
