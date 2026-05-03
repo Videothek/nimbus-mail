@@ -1321,10 +1321,13 @@
                 · {linkCheckStatus.totalUrls.toLocaleString()} URLs in local snapshot
                 <button
                   type="button"
-                  class="btn btn-sm preset-outlined-surface-500 ml-2"
+                  class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5 ml-2"
                   disabled={linkCheckRefreshing}
                   onclick={() => void onRefreshUrlhausNow()}
-                >{linkCheckRefreshing ? 'Refreshing…' : 'Refresh now'}</button>
+                >
+                  <Icon name={linkCheckRefreshing ? 'loading' : 'sync'} size={14} />
+                  {linkCheckRefreshing ? 'Refreshing…' : 'Refresh now'}
+                </button>
               </p>
             {/if}
           </div>
