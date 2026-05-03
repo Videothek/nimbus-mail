@@ -52,7 +52,19 @@
 
   let status = $state<FidoStatus | null>(null)
   let loading = $state(true)
-  let busy = $state(false)
+  // Per-action in-flight flags.  A single shared `busy` flag would
+  // make every button's "Working…" label flip on at the same time,
+  // even when only one action is actually running — so each
+  // mutating handler owns its own flag, and `anyBusy` is the
+  // derived "block other actions while something is in flight"
+  // gate.  Buttons read their own flag for the label, and
+  // `anyBusy` for `disabled` so the user can't kick off two
+  // mutations concurrently.
+  let addingKey = $state(false)
+  let savingPassphrase = $state(false)
+  let removingKey = $state(false)
+  let disablingEncryption = $state(false)
+  const anyBusy = $derived(addingKey || savingPassphrase || removingKey || disablingEncryption)
   let error = $state('')
   // Just a coarse "WebAuthn API exists" check.  Don't gate on
   // PRF capability up front — older engines mis-report it; let
@@ -111,7 +123,7 @@
     }
   }
   async function setKeyEncryption(v: boolean) {
-    if (busy) return
+    if (anyBusy) return
     if (v) {
       keyEncryptionEnabled = true
       persistToggle(true)
@@ -125,7 +137,7 @@
       // is in Settings, which lives behind the unlock screen)
       // for the master key to be in memory.
       if (status && !status.hasPlainKey) {
-        busy = true
+        disablingEncryption = true
         try {
           await invoke('disable_fido_only_mode')
           keyEncryptionEnabled = false
@@ -134,7 +146,7 @@
         } catch (e) {
           error = formatError(e) || 'Failed to disable key encryption'
         } finally {
-          busy = false
+          disablingEncryption = false
         }
         return
       }
@@ -147,7 +159,7 @@
    *  backend still has the plain master key.  Saves the user
    *  from having to find a separate "activate" button. */
   $effect(() => {
-    if (busy) return
+    if (anyBusy) return
     if (!keyEncryptionEnabled) return
     if (!status) return
     if (!status.hasPlainKey) return // already FIDO-only
@@ -234,9 +246,9 @@
   }
 
   async function addKey() {
-    if (busy) return
+    if (anyBusy) return
     const label = newLabel.trim() || 'Untitled hardware key'
-    busy = true
+    addingKey = true
     error = ''
     try {
       // Generate a fresh PRF salt server-side so it shares the
@@ -256,12 +268,12 @@
     } catch (e) {
       error = formatError(e) || 'Failed to enroll hardware key'
     } finally {
-      busy = false
+      addingKey = false
     }
   }
 
   async function addPassphrase() {
-    if (busy) return
+    if (anyBusy) return
     if (passphraseValue.length < 8) {
       error = 'Passphrase must be at least 8 characters.'
       return
@@ -270,7 +282,7 @@
       error = "Passphrase and confirmation don't match."
       return
     }
-    busy = true
+    savingPassphrase = true
     error = ''
     try {
       await invoke('fido_enroll_passphrase', {
@@ -284,12 +296,12 @@
     } catch (e) {
       error = formatError(e) || 'Failed to enroll passphrase'
     } finally {
-      busy = false
+      savingPassphrase = false
     }
   }
 
   async function removeKey(c: FidoCredential) {
-    if (busy) return
+    if (anyBusy) return
     // Pre-flight: removing the last unlock method while
     // FIDO-only mode is active would orphan the encrypted DB
     // forever.  The backend rejects this too, but catching it
@@ -306,7 +318,7 @@
     const promptLabel = c.kind === 'passphrase' ? 'Recovery passphrase' : c.label
     if (!confirm(`Remove "${promptLabel}"? You'll need to re-enroll to use it again.`))
       return
-    busy = true
+    removingKey = true
     error = ''
     try {
       // Require the user to actually still possess the key
@@ -325,7 +337,7 @@
     } catch (e) {
       error = formatError(e) || 'Failed to remove credential'
     } finally {
-      busy = false
+      removingKey = false
     }
   }
 
@@ -462,13 +474,13 @@
               class="input flex-1 text-sm px-3 py-1.5 rounded-md"
               placeholder="Label — e.g. “YubiKey 5C”, “MacBook Touch ID”"
               bind:value={newLabel}
-              disabled={busy}
+              disabled={anyBusy}
             />
             <button
               class="btn preset-filled-primary-500"
-              disabled={busy}
+              disabled={anyBusy}
               onclick={() => void addKey()}
-            >{busy ? 'Working…' : 'Add'}</button>
+            >{addingKey ? 'Working…' : 'Add'}</button>
           </div>
         </div>
       {:else}
@@ -503,7 +515,7 @@
               class="input w-full text-sm px-3 py-1.5 rounded-md"
               placeholder="Passphrase (8+ characters)"
               bind:value={passphraseValue}
-              disabled={busy}
+              disabled={anyBusy}
               autocomplete="new-password"
             />
             <input
@@ -511,14 +523,14 @@
               class="input w-full text-sm px-3 py-1.5 rounded-md"
               placeholder="Confirm passphrase"
               bind:value={passphraseConfirm}
-              disabled={busy}
+              disabled={anyBusy}
               autocomplete="new-password"
             />
             <div class="flex gap-2">
               {#if passphraseEditing}
                 <button
                   class="btn preset-outlined-surface-500 flex-1"
-                  disabled={busy}
+                  disabled={anyBusy}
                   onclick={() => {
                     passphraseEditing = false
                     passphraseValue = ''
@@ -528,9 +540,9 @@
               {/if}
               <button
                 class="btn preset-filled-primary-500 flex-1"
-                disabled={busy || passphraseValue.length < 8}
+                disabled={anyBusy || passphraseValue.length < 8}
                 onclick={() => void addPassphrase()}
-              >{busy ? 'Working…' : hasPassphrase ? 'Update passphrase' : 'Save passphrase'}</button>
+              >{savingPassphrase ? 'Working…' : hasPassphrase ? 'Update passphrase' : 'Save passphrase'}</button>
             </div>
           </div>
         </div>
@@ -567,7 +579,7 @@
                 {#if c.kind === 'passphrase'}
                   <button
                     class="btn btn-sm preset-outlined-surface-500"
-                    disabled={busy}
+                    disabled={anyBusy}
                     title="Change passphrase"
                     aria-label="Change passphrase"
                     onclick={() => {
@@ -579,7 +591,7 @@
                 {/if}
                 <button
                   class="btn btn-sm preset-outlined-error-500"
-                  disabled={busy}
+                  disabled={anyBusy}
                   onclick={() => void removeKey(c)}
                 >Remove</button>
               </li>

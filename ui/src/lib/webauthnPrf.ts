@@ -16,8 +16,23 @@
 // error if the engine doesn't expose it; the Settings UI surfaces
 // that as a tooltip on the disabled button.
 
-const RP_ID = 'nimbus-mail.local'
 const RP_NAME = 'Nimbus Mail'
+
+// The Relying Party ID must be a registrable suffix of (or equal to)
+// the current page's effective domain, otherwise the browser refuses
+// the call with "The relying party ID is not a registrable domain
+// suffix of, nor equal to the current domain."  Tauri's webview
+// origin differs by platform — `tauri://localhost` on macOS,
+// `https://tauri.localhost` on Windows, `http://localhost:1420` in
+// Linux dev — so we read the actual hostname at call time instead
+// of hardcoding one.  WebAuthn treats `localhost` and `*.localhost`
+// as a special case (no certificate or HTTPS required), which is
+// exactly what we get inside the Tauri webview.  Using the same
+// value at enroll and unlock time is what matters: a credential
+// registered against host X can only be asserted against host X.
+function rpId(): string {
+  return window.location.hostname
+}
 
 function bufToB64(buf: ArrayBuffer | Uint8Array): string {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
@@ -88,7 +103,7 @@ export async function enrollFidoCredential(
   const userIdBytes = new TextEncoder().encode(userHandle)
   const cred = (await navigator.credentials.create({
     publicKey: {
-      rp: { id: RP_ID, name: RP_NAME },
+      rp: { id: rpId(), name: RP_NAME },
       user: {
         id: userIdBytes,
         name: userHandle,
@@ -183,7 +198,7 @@ export async function evaluateFidoPrf(
   const assertion = (await navigator.credentials.get({
     publicKey: {
       challenge,
-      rpId: RP_ID,
+      rpId: rpId(),
       allowCredentials: [{ type: 'public-key', id: credentialId }],
       userVerification: 'required',
       timeout: 60_000,
