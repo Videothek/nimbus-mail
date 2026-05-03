@@ -32,7 +32,7 @@
   } from './lib/Compose.svelte'
   import ContactsView from './lib/ContactsView.svelte'
   import CalendarView from './lib/CalendarView.svelte'
-  import ReminderCard from './lib/ReminderCard.svelte'
+  import { openReminderInStandaloneWindow } from './lib/reminderPopupWindow'
   import FilesView from './lib/FilesView.svelte'
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
@@ -449,23 +449,19 @@
 
   /** First-three-attendees + "+N more" tail for the OS toast
    *  body.  Linux libnotify wraps badly past three lines, so
-   *  the OS surface gets the short version; the in-app
-   *  ReminderCard renders the same shape with more room. */
+   *  the OS surface gets the short version; the popout
+   *  reminder window renders the same shape with more room. */
   function formatAttendees(list: string[]): string {
     if (list.length === 0) return ''
     const first = list.slice(0, 3).join(', ')
     return list.length > 3 ? `${first} +${list.length - 3} more` : first
   }
 
-  /** Active in-app reminder card.  When non-null, App renders
-   *  the ReminderCard overlay over the current view.  Only one
-   *  card at a time — a fresh reminder replaces the previous
-   *  one rather than stacking, which keeps the corner of the
-   *  screen quiet. */
-  let activeReminder = $state<EventReminder | null>(null)
   /** Event id the user clicked "Show event" for — passed
    *  through to CalendarView so it opens that event's editor.
-   *  CalendarView clears it via `oneventfocused`. */
+   *  CalendarView clears it via `oneventfocused`.  Set by the
+   *  `reminder-show-event` listener below when a popup window
+   *  asks the main window to surface its event. */
   let calendarFocusEventId = $state<string | null>(null)
 
   function handleEventReminder(payload: EventReminder) {
@@ -478,8 +474,10 @@
       : appPrefs?.calendar_reminders_enabled ?? true
     if (!allowed) return
 
-    // OS notification.  Concise body — the in-app card carries
-    // the rich detail.
+    // OS notification fires alongside so the user sees the
+    // reminder even if they immediately close the popup or
+    // miss it.  The popup carries the rich detail + action
+    // buttons; the OS toast is a quick at-a-glance.
     if (shouldNotify()) {
       const lead = formatLeadTime(payload.minutesBefore)
       const startLocal = new Date(payload.start).toLocaleTimeString(undefined, {
@@ -491,19 +489,14 @@
       if (payload.location) bodyLines.push(`📍 ${payload.location}`)
       if (payload.attendees.length > 0)
         bodyLines.push(`👥 ${formatAttendees(payload.attendees)}`)
-      if (isMeeting) bodyLines.push('Click "Join meeting" in the app to enter.')
       void fireToast(title, bodyLines.join('\n'))
     }
 
-    // In-app ReminderCard — has the action buttons (Show event,
-    // Join meeting, Dismiss).  Replaces any prior card.
-    activeReminder = payload
-
     // For an *imminent* meeting (≤1 min lead), keep the old
     // auto-join shortcut: open the URL straight away so the
-    // user lands in the room without clicking through the card.
-    // The card still appears so they can dismiss / find the
-    // event after the fact.
+    // user lands in the room without an extra click.  Skip
+    // popping the standalone window in this case — the user
+    // is already heading into the meeting.
     if (isMeeting && payload.minutesBefore <= 1 && payload.meetingUrl) {
       void invoke('open_url', { url: payload.meetingUrl }).catch((err) =>
         console.warn('open_url for event reminder failed', err),
@@ -511,16 +504,16 @@
       void invoke('dismiss_event_reminder', { uid: payload.uid }).catch(
         () => {},
       )
+      return
     }
-  }
 
-  function dismissReminderCard() {
-    activeReminder = null
-  }
-
-  function showEventFromReminder(eventId: string) {
-    calendarFocusEventId = eventId
-    currentView = 'calendar'
+    // Standalone popup — same Vite bundle, mounts
+    // StandaloneReminder.svelte.  The popup carries Show event
+    // / Join meeting / Snooze / Dismiss actions and survives
+    // the main window being hidden in the tray.
+    void openReminderInStandaloneWindow(payload).catch((err) =>
+      console.warn('openReminderInStandaloneWindow failed', err),
+    )
   }
 
   function handleNewMail(payload: NewMail) {
@@ -606,6 +599,7 @@
 
     let unlistenNewMail: UnlistenFn | null = null
     let unlistenEventReminder: UnlistenFn | null = null
+    let unlistenReminderShowEvent: UnlistenFn | null = null
     let unlistenCustomThemes: UnlistenFn | null = null
     let unlistenCompose: UnlistenFn | null = null
     let unlistenComposeFromMail: UnlistenFn | null = null
@@ -618,6 +612,28 @@
       unlistenEventReminder = await listen<EventReminder>(
         'event-reminder',
         (e) => handleEventReminder(e.payload),
+      )
+      // The reminder popup window emits this when the user
+      // clicks "Show event".  We bring our window forward,
+      // flip to the calendar view, and thread the event id
+      // into CalendarView so it opens the editor.
+      unlistenReminderShowEvent = await listen<{ eventId: string }>(
+        'reminder-show-event',
+        async (e) => {
+          calendarFocusEventId = e.payload.eventId
+          currentView = 'calendar'
+          try {
+            const { getCurrentWebviewWindow } = await import(
+              '@tauri-apps/api/webviewWindow'
+            )
+            const win = getCurrentWebviewWindow()
+            await win.unminimize()
+            await win.show()
+            await win.setFocus()
+          } catch (err) {
+            console.warn('failed to focus main window from reminder', err)
+          }
+        },
       )
       // #132: backend fires this whenever a custom theme is
       // imported / removed (in this window or another).  Re-pull
@@ -652,6 +668,7 @@
     return () => {
       unlistenNewMail?.()
       unlistenEventReminder?.()
+      unlistenReminderShowEvent?.()
       unlistenCustomThemes?.()
       unlistenCompose?.()
       unlistenComposeFromMail?.()
@@ -1633,18 +1650,4 @@
       <span>Refresh</span>
     </button>
   </div>
-{/if}
-
-<!-- In-app reminder overlay (#203).  Mounts at the root so it
-     stays visible across view switches; the user can keep
-     working in mail / calendar / files while a reminder is
-     showing.  One reminder at a time — a fresh one replaces
-     the previous, which keeps the corner of the screen quiet
-     when several reminders fire close together. -->
-{#if activeReminder}
-  <ReminderCard
-    reminder={activeReminder}
-    onShowEvent={showEventFromReminder}
-    ondismiss={dismissReminderCard}
-  />
 {/if}

@@ -6804,14 +6804,22 @@ const EVENT_REMINDER_FIRE_TOLERANCE_SECS: i64 = 90;
 /// `fired`: set of `(uid, minutes_before)` pairs we've already
 ///   pushed a notification for.  Pruned on each scan to drop
 ///   entries whose event has already started (the reminder is
-///   moot once the meeting is in progress).
+///   moot once the event is in progress).
 /// `dismissed`: UIDs the user explicitly silenced for the rest
 ///   of the meeting cycle (e.g. after clicking through to join
 ///   the room — surfaced via the `dismiss_event_reminder` IPC).
+/// `snoozes`: UID → "fire again at this time" map populated by
+///   the `snooze_event_reminder` IPC when the user picks one of
+///   the snooze options on the popup window (#203 follow-up).
+///   While a snooze is pending the scanner skips the event's
+///   normal VALARM-driven reminders entirely; once `now`
+///   crosses the snooze time the scanner fires a synthetic
+///   reminder and removes the entry.
 #[derive(Default)]
 struct EventReminderState {
     fired: Mutex<HashSet<(String, i32)>>,
     dismissed: Mutex<HashSet<String>>,
+    snoozes: Mutex<std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>>,
 }
 
 /// Pull the first plausible meeting URL out of an event's body
@@ -6997,17 +7005,20 @@ async fn check_event_reminders_inner(app: &AppHandle) -> Result<(), NimbusError>
             .expect("event-reminder dismissed mutex");
         d.clone()
     };
+    // Snapshot the snooze map so we can read without holding the
+    // lock through the loop — and a separate list of snooze
+    // entries to fire & evict at the end of the scan.
+    let snoozes_snapshot: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>> = {
+        let s = state.snoozes.lock().expect("event-reminder snoozes mutex");
+        s.clone()
+    };
+    let mut snoozes_to_evict: Vec<String> = Vec::new();
 
     for ev in &events {
         // Skip past starts — the reminder is moot once the
         // event is in progress.  We still keep them in the
         // window above so the prune step has a current picture.
         if ev.start <= now - chrono::Duration::minutes(1) {
-            continue;
-        }
-        if ev.reminders.is_empty() {
-            // No VALARM on the event → user didn't ask for a
-            // reminder; respect that.
             continue;
         }
         let meeting_url = extract_meeting_url(ev);
@@ -7025,6 +7036,54 @@ async fn check_event_reminders_inner(app: &AppHandle) -> Result<(), NimbusError>
         }
         let uid = vevent_uid_from_event_id(&ev.id);
         if dismissed_snapshot.contains(&uid) {
+            continue;
+        }
+
+        // ── Snooze path ───────────────────────────────────────
+        // If the user picked "Remind me 5 min before" / etc. on
+        // the popup, the dispatch table tells us the next time
+        // to fire for this UID.  We *bypass* the VALARM-driven
+        // path entirely while a snooze is pending so we don't
+        // double-fire from both sources, then re-fire here when
+        // `now` crosses the snooze moment.
+        if let Some(snooze_until) = snoozes_snapshot.get(&uid) {
+            if now < *snooze_until {
+                // Still snoozed — skip everything else for this event.
+                continue;
+            }
+            // Snooze elapsed — fire a synthetic reminder with the
+            // matching minutes_before label, then evict the entry.
+            let minutes_before =
+                ((ev.start - now).num_seconds().max(0) / 60).clamp(0, i32::MAX as i64) as i32;
+            let payload = EventReminderPayload {
+                event_id: ev.id.clone(),
+                uid: uid.clone(),
+                summary: ev.summary.clone(),
+                start: ev.start,
+                end: ev.end,
+                location: ev.location.clone(),
+                attendees: ev.attendees.iter().map(|a| a.email.clone()).collect(),
+                meeting_url: meeting_url.clone(),
+                minutes_before,
+            };
+            if let Err(e) = app.emit("event-reminder", &payload) {
+                tracing::warn!("failed to emit snoozed event-reminder: {e}");
+            } else {
+                tracing::info!(
+                    "event-reminder fired (post-snooze): uid={} ({} min before)",
+                    uid,
+                    minutes_before
+                );
+            }
+            snoozes_to_evict.push(uid.clone());
+            // Don't also walk the VALARM-driven path for this event
+            // on the same scan — the snooze fire stands in for it.
+            continue;
+        }
+
+        if ev.reminders.is_empty() {
+            // No VALARM on the event → user didn't ask for a
+            // reminder; respect that.
             continue;
         }
 
@@ -7078,6 +7137,16 @@ async fn check_event_reminders_inner(app: &AppHandle) -> Result<(), NimbusError>
         }
     }
 
+    // Evict snoozes we just fired so we don't loop on them
+    // forever.  Done after the read loop so we never hold the
+    // snoozes mutex through the per-event work.
+    if !snoozes_to_evict.is_empty() {
+        let mut s = state.snoozes.lock().expect("event-reminder snoozes mutex");
+        for uid in &snoozes_to_evict {
+            s.remove(uid);
+        }
+    }
+
     Ok(())
 }
 
@@ -7098,9 +7167,9 @@ fn vevent_uid_from_event_id(id: &str) -> String {
 
 /// Suppress further reminders for the given UID until the user
 /// reopens the editor or the in-memory state is reset (process
-/// restart).  Called from JS when the user dismisses the in-app
-/// reminder card or clicks through to join a meeting early so
-/// we don't pester them mid-event.
+/// restart).  Called from JS when the user clicks Dismiss on
+/// the reminder popup or joins a meeting early so we don't
+/// pester them mid-event.
 #[tauri::command]
 fn dismiss_event_reminder(
     uid: String,
@@ -7114,6 +7183,50 @@ fn dismiss_event_reminder(
         d.insert(uid.clone());
     }
     {
+        let mut f = state.fired.lock().expect("event-reminder fired mutex");
+        f.retain(|(u, _)| u != &uid);
+    }
+    {
+        // Snooze and dismiss are mutually exclusive — clear any
+        // pending snooze on the same UID so it doesn't fire after
+        // the user has already dismissed the event entirely.
+        let mut s = state.snoozes.lock().expect("event-reminder snoozes mutex");
+        s.remove(&uid);
+    }
+    Ok(())
+}
+
+/// Schedule a re-fire for the given UID at `snooze_until_iso`
+/// (RFC 3339 / ISO 8601 in UTC).  Called from JS when the user
+/// picks a "Remind me in …" option on the reminder popup.
+///
+/// While a snooze is pending the scanner skips the event's
+/// normal VALARM-driven reminders (so the user doesn't get
+/// double-toasted from both sources).  Once `now` crosses the
+/// snooze moment the next scan tick fires a synthetic reminder
+/// and removes the entry.
+#[tauri::command]
+fn snooze_event_reminder(
+    uid: String,
+    snooze_until_iso: String,
+    state: State<'_, EventReminderState>,
+) -> Result<(), NimbusError> {
+    let snooze_until = chrono::DateTime::parse_from_rfc3339(&snooze_until_iso)
+        .map_err(|e| {
+            NimbusError::Other(format!(
+                "snooze_event_reminder: invalid timestamp '{snooze_until_iso}': {e}"
+            ))
+        })?
+        .with_timezone(&chrono::Utc);
+    {
+        let mut s = state.snoozes.lock().expect("event-reminder snoozes mutex");
+        s.insert(uid.clone(), snooze_until);
+    }
+    {
+        // Drop any stale `fired` entry so the scanner is willing
+        // to re-fire when the snooze elapses.  Without this the
+        // dedupe key `(uid, minutes_before)` would block the
+        // post-snooze synthetic reminder.
         let mut f = state.fired.lock().expect("event-reminder fired mutex");
         f.retain(|(u, _)| u != &uid);
     }
@@ -8628,6 +8741,7 @@ fn main() {
             remove_custom_theme,
             check_mail_now,
             dismiss_event_reminder,
+            snooze_event_reminder,
             get_total_unread,
             get_unread_counts_by_account,
             show_main_window_cmd,
