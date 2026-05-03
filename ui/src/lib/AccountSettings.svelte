@@ -29,7 +29,7 @@
     UI_SCALE_STEP,
   } from './uiScale'
   import { m } from '../paraglide/messages'
-  import { locales, setLocale } from '../paraglide/runtime'
+  import { getLocale, locales } from '../paraglide/runtime'
 
   // Friendly labels for the locale picker.  Keep the codes in
   // lockstep with `project.inlang/settings.json`.  Native
@@ -40,6 +40,22 @@
     en: 'English',
     de: 'Deutsch',
   }
+
+  /** Drives the "Restart required" prompt that appears after
+   *  the user picks a new locale (#190).  Paraglide reads its
+   *  active locale exactly once at process start (from the
+   *  localStorage pin → navigator.language → baseLocale chain),
+   *  so a runtime switch can't fully take effect without a
+   *  fresh process.  Showing the prompt lets the user decide
+   *  whether to relaunch immediately or wait until next time
+   *  they open the app. */
+  let restartPromptOpen = $state(false)
+  /** Snapshot of the locale that's active *right now* in the
+   *  running process.  We compare against this when deciding
+   *  whether to surface the restart prompt — picking the
+   *  language that's already running is a no-op and shouldn't
+   *  nag the user. */
+  const initialLocale = getLocale()
 
   // ── Types ───────────────────────────────────────────────────
   // Mirrors the Rust `Account` struct from nimbus-core
@@ -950,13 +966,23 @@
             label={m.settings_general_language_auto_label()}
             onchange={() => {
               if (appSettings.ui_locale_auto) {
-                // Returning to auto — drop the pinned value so
-                // paraglide's preferredLanguage strategy can win.
+                // Returning to auto — clear the pinned value so
+                // paraglide's `preferredLanguage` strategy
+                // (`navigator.language`) wins on the next
+                // restart.
                 appSettings.ui_locale = ''
                 try {
                   window.localStorage.removeItem('PARAGLIDE_LOCALE')
                 } catch {}
-                window.location.reload()
+                // Show the restart prompt only when the
+                // resolved auto-locale would actually differ
+                // from what's running now.
+                const wouldBe = (
+                  navigator.language || initialLocale
+                ).split('-')[0]
+                if (wouldBe && wouldBe !== initialLocale) {
+                  restartPromptOpen = true
+                }
               }
               scheduleSave()
             }}
@@ -978,9 +1004,18 @@
                 const v = (e.currentTarget as HTMLSelectElement).value
                 appSettings.ui_locale = v
                 if ((locales as readonly string[]).includes(v)) {
-                  setLocale(v as (typeof locales)[number], { reload: false })
+                  // Pin the localStorage value paraglide reads
+                  // at boot.  `setLocale` is the canonical way
+                  // but it triggers a reload by default and a
+                  // `{#key}` remount otherwise — both had
+                  // visible side-effects in earlier attempts;
+                  // writing the key directly avoids them.
+                  try {
+                    window.localStorage.setItem('PARAGLIDE_LOCALE', v)
+                  } catch {}
                 }
                 scheduleSave()
+                if (v !== initialLocale) restartPromptOpen = true
               }}
             >
               {#each locales as code}
@@ -1831,5 +1866,60 @@
       class="ml-2 underline"
       onclick={() => (trustError = '')}
     >Dismiss</button>
+  </div>
+{/if}
+
+<!-- Restart-required prompt for language changes (#190).
+     Fires from the locale dropdown / auto-toggle when the
+     pick differs from what's currently running.  "Restart
+     later" just dismisses the modal — the new pin is already
+     persisted, so the next manual launch picks it up.
+     "Restart now" calls the Tauri `restart_app` IPC which
+     re-execs the binary; settings have been saved by then via
+     `scheduleSave`. -->
+{#if restartPromptOpen}
+  <div
+    class="fixed inset-0 z-60 flex items-center justify-center bg-black/50"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="restart-required-title"
+  >
+    <div class="card p-5 max-w-sm w-[90%] bg-surface-100 dark:bg-surface-800 rounded-lg shadow-xl">
+      <h2 id="restart-required-title" class="text-base font-semibold mb-2">
+        {m.settings_general_language_restart_title()}
+      </h2>
+      <p class="text-sm text-surface-600 dark:text-surface-300 mb-4">
+        {m.settings_general_language_restart_body()}
+      </p>
+      <div class="flex justify-end gap-2">
+        <button
+          type="button"
+          class="btn btn-sm preset-outlined-surface-500"
+          onclick={() => (restartPromptOpen = false)}
+        >
+          {m.settings_general_language_restart_later()}
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm preset-filled-primary-500"
+          onclick={() => {
+            // Fire-and-forget — `restart_app` re-execs the
+            // binary; once it completes the current webview is
+            // already gone, so awaiting is moot.  The
+            // `scheduleSave` debounce (~600 ms) might still be
+            // pending, so persist explicitly here so the new
+            // process boots with the right locale even on a
+            // slow disk.
+            void invoke('set_app_settings', {
+              settings: appSettings,
+            }).finally(() => {
+              void invoke('restart_app')
+            })
+          }}
+        >
+          {m.settings_general_language_restart_now()}
+        </button>
+      </div>
+    </div>
   </div>
 {/if}
