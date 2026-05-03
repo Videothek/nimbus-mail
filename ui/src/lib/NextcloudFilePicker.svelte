@@ -81,6 +81,31 @@
 
   let pickFolderMode = $derived(onpickfolder != null)
 
+  // Close on Escape (#192).  Document-level so the key works
+  // wherever focus is in the picker — the existing inline Esc
+  // handler at the share-prompt password input only catches that
+  // one element.  Two-stage:
+  //   * If the share-prompt sub-modal is open, Esc closes the
+  //     prompt (matching the existing input-level handler).
+  //   * Otherwise Esc closes the whole picker via `onclose()`.
+  // Inert while `sharing` is in flight so the user can't bail
+  // mid-OCS-call and end up with a half-created share.
+  $effect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      if (sharing) return
+      if (sharePrompt) {
+        e.preventDefault()
+        sharePrompt = null
+        return
+      }
+      e.preventDefault()
+      onclose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  })
+
   // Bound from the inner browser — we read these to drive the footer
   // buttons and the download/share actions.
   let accountId = $state('')
