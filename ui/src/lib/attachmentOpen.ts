@@ -15,12 +15,15 @@
 //     `.docx`, etc.).
 //   - **PDF** — same upload-to-NC path; NC's built-in PDF
 //     viewer handles it.
-//   - **Markdown** — rendered locally with `marked` and
-//     displayed in a fresh Tauri webview window via a data:
-//     URL.  Local-only by design: forcing read-only would
-//     require upload-with-restricted-permissions on NC, and
-//     the user's spec is "read-only", so we skip the NC round
-//     trip entirely.
+//   - **Markdown** — same upload-to-NC path; NC routes
+//     `text/markdown` to its Text app, which renders + edits
+//     `.md` natively.  The temp file is DAV-deleted when the
+//     viewer window closes, so any edits the user made are
+//     discarded — `office_open_attachment` is the right
+//     primitive because the URL it returns
+//     (`index.php/f/<fileid>`) is "open with NC's default app
+//     for this MIME type", which lights up Text for markdown
+//     just like it lights up Collabora for `.docx`.
 //   - **Everything else** — handed to the OS via Rust's
 //     `print_attachment` command (despite the name, it's just
 //     "drop in temp dir + ShellExecute / xdg-open").  This is
@@ -32,7 +35,6 @@
 // from a Tauri IPC against IMAP).
 
 import { invoke } from '@tauri-apps/api/core'
-import { marked } from 'marked'
 
 const OFFICE_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -149,147 +151,6 @@ async function openViaNcViewer(
   })
 }
 
-/** Render markdown to HTML via `marked`, hand the document to
- *  the Rust side via `register_markdown_view` (an in-memory
- *  store keyed by UUID), and open the resulting
- *  `nimbus-md://localhost/<uuid>` URL in a fresh Tauri webview.
- *  Read-only by construction (no editor, no save surface).
- *  Why not a `data:` URL?  Tauri 2's WebviewWindow refuses to
- *  open `data:` URIs at the platform level — the window opens
- *  blank or doesn't open at all.  The custom URI scheme is the
- *  same machinery the existing `nimbus-logo://` and
- *  `contact-photo://` schemes use; the Rust handler returns
- *  `text/html` which the webview renders normally. */
-async function openMarkdownLocally(filename: string, bytes: number[]): Promise<void> {
-  // Bytes → text.  TextDecoder('utf-8') with `fatal: false`
-  // (the default) replaces invalid sequences with U+FFFD, which
-  // is the right behaviour for a viewer — better to render a
-  // mostly-correct file than refuse outright.
-  const text = new TextDecoder('utf-8').decode(new Uint8Array(bytes))
-  // Disable raw-HTML embedding via marked's options so a
-  // markdown file with a `<script>` block can't run JS in the
-  // viewer.  The output still goes through a sanitiser pass
-  // below as belt + braces — every defence layer here is cheap
-  // because we own the document we're constructing.
-  const rendered = await marked.parse(text, { async: true, gfm: true, breaks: false })
-
-  // Belt + braces: even with marked's default escaping, strip
-  // anything outside a small allowlist from the rendered tree.
-  // The viewer is read-only, but a defence-in-depth pass costs
-  // nothing.
-  const safeBody = sanitiseRenderedMarkdown(rendered)
-
-  const html = wrapMarkdownDocument(filename, safeBody)
-
-  // Hand the rendered HTML to the Rust side; the URI scheme
-  // handler will pop it out of the store and return it as
-  // text/html when the webview navigates to the URL.
-  const id = await invoke<string>('register_markdown_view', { html })
-
-  const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-  const label = `md-${crypto.randomUUID().replaceAll('-', '')}`
-  new WebviewWindow(label, {
-    url: `nimbus-md://localhost/${id}`,
-    title: filename,
-    width: 900,
-    height: 700,
-  })
-}
-
-function sanitiseRenderedMarkdown(html: string): string {
-  // Quick allowlist — markdown only legitimately produces a
-  // small set of tags, so anything outside this list either
-  // came from a raw HTML block or from a misconfigured marked.
-  const ALLOWED = new Set([
-    'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li',
-    'blockquote', 'code', 'pre', 'em', 'strong', 'a', 'br', 'hr',
-    'table', 'thead', 'tbody', 'tr', 'th', 'td', 'img', 'span',
-    'del', 'ins', 'sub', 'sup',
-  ])
-  const ALLOWED_ATTR = new Set(['href', 'title', 'alt', 'src', 'colspan', 'rowspan', 'align'])
-  const doc = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html')
-  const walk = (root: Element) => {
-    // Walk a shallow copy of children since we mutate in place.
-    for (const child of Array.from(root.children)) {
-      const tag = child.tagName.toLowerCase()
-      if (!ALLOWED.has(tag)) {
-        // Replace disallowed element with its text content so
-        // the user still sees the data, just not the tag.
-        child.replaceWith(doc.createTextNode(child.textContent ?? ''))
-        continue
-      }
-      for (const attr of Array.from(child.attributes)) {
-        if (!ALLOWED_ATTR.has(attr.name.toLowerCase())) {
-          child.removeAttribute(attr.name)
-        } else if (attr.name.toLowerCase() === 'href' || attr.name.toLowerCase() === 'src') {
-          // Only allow http(s) / mailto / cid / data URIs for
-          // images.  `javascript:` / `vbscript:` / `data:` for
-          // non-images get stripped.
-          const v = attr.value.trim().toLowerCase()
-          const ok =
-            v.startsWith('http://') ||
-            v.startsWith('https://') ||
-            v.startsWith('mailto:') ||
-            (attr.name.toLowerCase() === 'src' && v.startsWith('data:image/'))
-          if (!ok) child.removeAttribute(attr.name)
-        }
-      }
-      walk(child)
-    }
-  }
-  walk(doc.body)
-  return doc.body.innerHTML
-}
-
-function wrapMarkdownDocument(title: string, body: string): string {
-  // Minimal styling so the document renders pleasantly without
-  // pulling in the app's stylesheet.  Inline because the data:
-  // URL is the whole document — there's no second request the
-  // browser could pull a stylesheet from.
-  const escapedTitle = title.replace(/[<>&"]/g, (c) =>
-    ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c] ?? c,
-  )
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>${escapedTitle}</title>
-<style>
-  :root { color-scheme: light dark; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    line-height: 1.6;
-    max-width: 720px;
-    margin: 2.5rem auto;
-    padding: 0 1.5rem;
-    color: #1f2937;
-    background: #fff;
-  }
-  @media (prefers-color-scheme: dark) {
-    body { color: #e5e7eb; background: #0f172a; }
-    a { color: #60a5fa; }
-    code, pre { background: #1e293b; }
-    blockquote { border-left-color: #334155; color: #94a3b8; }
-    th, td { border-color: #334155; }
-  }
-  h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin-top: 2rem; }
-  h1 { border-bottom: 1px solid currentColor; padding-bottom: 0.3rem; }
-  h2 { border-bottom: 1px solid currentColor; padding-bottom: 0.2rem; }
-  a { color: #2563eb; }
-  code { background: #f1f5f9; padding: 0.1em 0.3em; border-radius: 0.2em; font-size: 0.9em; }
-  pre { background: #f1f5f9; padding: 0.8rem 1rem; border-radius: 0.4rem; overflow-x: auto; }
-  pre code { background: transparent; padding: 0; }
-  blockquote { border-left: 4px solid #cbd5e1; margin: 0; padding: 0 1rem; color: #475569; }
-  table { border-collapse: collapse; }
-  th, td { border: 1px solid #cbd5e1; padding: 0.4rem 0.7rem; }
-  img { max-width: 100%; height: auto; }
-</style>
-</head>
-<body>
-${body}
-</body>
-</html>`
-}
 
 /** Drop bytes into a temp dir and hand them to the OS shell so
  *  the user's default app for that file type opens them.  No
@@ -323,8 +184,13 @@ export async function openAttachment(
     return
   }
   if (isMarkdownAttachment(att)) {
+    // Same NC path as Office — `index.php/f/<fileid>` routes
+    // text/markdown to the Text app automatically.  Tell the
+    // server the upload is `text/markdown` so the routing is
+    // unambiguous even when the email's Content-Type was a
+    // generic application/octet-stream.
     const bytes = await getBytes()
-    await openMarkdownLocally(att.filename, bytes)
+    await openViaNcViewer('office_open_attachment', att.filename, 'text/markdown', bytes)
     return
   }
   const bytes = await getBytes()

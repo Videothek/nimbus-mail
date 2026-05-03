@@ -52,7 +52,6 @@
     "@tiptap/suggestion": "^3.22.4",
     "dompurify": "^3.4.2",
     "emoji-picker-element": "^1.29.1",
-    "marked": "^18.0.3",
     "svelte-tiptap": "^3.0.1"
   }
 }
