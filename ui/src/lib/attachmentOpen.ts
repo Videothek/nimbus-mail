@@ -149,13 +149,17 @@ async function openViaNcViewer(
   })
 }
 
-/** Render markdown to HTML via `marked`, wrap in a minimal
- *  styled document, and open it in a fresh Tauri webview via a
- *  data: URL.  Read-only by construction (no editor, no save
- *  surface).  No NC roundtrip — keeps preview fast and offline-
- *  friendly, which matters because Compose may not have a
- *  connected NC and the user still wants to verify what
- *  they're attaching. */
+/** Render markdown to HTML via `marked`, hand the document to
+ *  the Rust side via `register_markdown_view` (an in-memory
+ *  store keyed by UUID), and open the resulting
+ *  `nimbus-md://localhost/<uuid>` URL in a fresh Tauri webview.
+ *  Read-only by construction (no editor, no save surface).
+ *  Why not a `data:` URL?  Tauri 2's WebviewWindow refuses to
+ *  open `data:` URIs at the platform level — the window opens
+ *  blank or doesn't open at all.  The custom URI scheme is the
+ *  same machinery the existing `nimbus-logo://` and
+ *  `contact-photo://` schemes use; the Rust handler returns
+ *  `text/html` which the webview renders normally. */
 async function openMarkdownLocally(filename: string, bytes: number[]): Promise<void> {
   // Bytes → text.  TextDecoder('utf-8') with `fatal: false`
   // (the default) replaces invalid sequences with U+FFFD, which
@@ -169,28 +173,23 @@ async function openMarkdownLocally(filename: string, bytes: number[]): Promise<v
   // because we own the document we're constructing.
   const rendered = await marked.parse(text, { async: true, gfm: true, breaks: false })
 
-  // Belt + braces: even with marked configured to escape HTML,
-  // strip anything dangerous from the rendered tree.  We can't
-  // call DOMPurify directly here (it expects a DOM, not a
-  // string we'll wrap in a data: URL), so we do the strip
-  // server-side: write the markup into a detached DOMParser
-  // document, run a small allowlist over it, then serialise
-  // back.  This duplicates a tiny portion of DOMPurify but
-  // keeps us from shipping the full sanitiser inside the data:
-  // URL.
+  // Belt + braces: even with marked's default escaping, strip
+  // anything outside a small allowlist from the rendered tree.
+  // The viewer is read-only, but a defence-in-depth pass costs
+  // nothing.
   const safeBody = sanitiseRenderedMarkdown(rendered)
 
   const html = wrapMarkdownDocument(filename, safeBody)
-  // Encode via base64 (binary-safe) so the data: URL is valid
-  // even when the rendered HTML contains characters that a
-  // plain `data:text/html,...` would percent-encode awkwardly.
-  const b64 = btoa(unescape(encodeURIComponent(html)))
-  const dataUrl = `data:text/html;base64,${b64}`
+
+  // Hand the rendered HTML to the Rust side; the URI scheme
+  // handler will pop it out of the store and return it as
+  // text/html when the webview navigates to the URL.
+  const id = await invoke<string>('register_markdown_view', { html })
 
   const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
   const label = `md-${crypto.randomUUID().replaceAll('-', '')}`
   new WebviewWindow(label, {
-    url: dataUrl,
+    url: `nimbus-md://localhost/${id}`,
     title: filename,
     width: 900,
     height: 700,
