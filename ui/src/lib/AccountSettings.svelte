@@ -951,12 +951,19 @@
             onchange={() => {
               if (appSettings.ui_locale_auto) {
                 // Returning to auto — drop the pinned value so
-                // paraglide's preferredLanguage strategy can win.
+                // paraglide's preferredLanguage strategy can win
+                // on the next launch.  Persist first, then
+                // reload (the reload re-runs `loadAppPrefs` which
+                // re-applies whatever paraglide picks based on
+                // navigator.language).
                 appSettings.ui_locale = ''
                 try {
                   window.localStorage.removeItem('PARAGLIDE_LOCALE')
                 } catch {}
-                window.location.reload()
+                void invoke('set_app_settings', {
+                  settings: appSettings,
+                }).finally(() => window.location.reload())
+                return
               }
               scheduleSave()
             }}
@@ -978,7 +985,20 @@
                 const v = (e.currentTarget as HTMLSelectElement).value
                 appSettings.ui_locale = v
                 if ((locales as readonly string[]).includes(v)) {
-                  setLocale(v as (typeof locales)[number], { reload: false })
+                  // Persist FIRST, then reload — `setLocale`'s
+                  // default behaviour is to reload the page,
+                  // which is what we want here: paraglide's
+                  // `m.<key>()` calls aren't reactive state, so
+                  // a no-reload switch leaves the previous
+                  // locale's strings rendered until the next
+                  // remount.  The reload re-runs `loadAppPrefs`
+                  // which re-reads what we just saved.
+                  void invoke('set_app_settings', {
+                    settings: appSettings,
+                  }).finally(() => {
+                    setLocale(v as (typeof locales)[number])
+                  })
+                  return
                 }
                 scheduleSave()
               }}

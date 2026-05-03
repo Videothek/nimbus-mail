@@ -58,7 +58,7 @@
     effectiveScale,
     UI_SCALE_STEP,
   } from './lib/uiScale'
-  import { setLocale, locales } from './paraglide/runtime'
+  import { getLocale, setLocale, locales } from './paraglide/runtime'
 
   // ── View state ──────────────────────────────────────────────
   // Which view is currently shown. Starts as 'loading' until we
@@ -663,9 +663,17 @@
         appPrefs.ui_locale &&
         (locales as readonly string[]).includes(appPrefs.ui_locale)
       ) {
-        setLocale(appPrefs.ui_locale as (typeof locales)[number], {
-          reload: false,
-        })
+        // `reload: false` only flips paraglide's internal state.
+        // Svelte components call `m.<key>()` directly, and those
+        // reads aren't part of any `$state` graph — so a no-reload
+        // switch leaves the previous locale's strings on screen
+        // until the next remount.  We compare against the
+        // currently-active locale and only reload when they
+        // differ, so the launch path (where settings come back
+        // matching what's already applied) doesn't loop.
+        if (getLocale() !== appPrefs.ui_locale) {
+          setLocale(appPrefs.ui_locale as (typeof locales)[number])
+        }
       }
     } catch (err) {
       console.warn('get_app_settings failed', err)
