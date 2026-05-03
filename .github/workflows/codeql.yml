@@ -49,10 +49,10 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
-          # `security-extended` adds higher-precision security
-          # queries on top of the default set; `security-and-quality`
-          # would also catch maintainability issues but is noisier.
-          queries: security-extended
+          # See `.github/codeql/codeql-config.yml` for the path
+          # exclusions (test fixtures, generated assets) and the
+          # `security-extended` query pack.
+          config-file: ./.github/codeql/codeql-config.yml
 
       # CodeQL needs to *see* compiled code for compiled languages.
       # For Rust we let its autobuild step run cargo for us.
