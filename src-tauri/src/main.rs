@@ -8572,7 +8572,22 @@ async fn check_mail_now(app: AppHandle) -> Result<(), NimbusError> {
 //     previous snapshot so a transient outage at abuse.ch
 //     doesn't wipe the list.
 
-const URLHAUS_CSV_URL: &str = "https://urlhaus.abuse.ch/downloads/csv_online/";
+// URLhaus exposes three feed sizes:
+//   - `csv_online`  — currently-active malicious URLs only (~10-20k)
+//   - `csv_recent`  — last 30 days, online + offline (~30k)
+//   - `csv`         — full historical dump (~5M, ~500MB)
+//
+// `csv_online` is too narrow for email use: malware infrastructure
+// usually goes offline within hours of being identified, so a URL
+// the user copied from the URLhaus website is more often than not
+// already missing from `csv_online` even though URLhaus publicly
+// shows it as a known-bad URL.  `csv_recent` covers the practical
+// "this URL has been flagged in the last month" case at a quarter
+// the storage size of going to the full dump.  Anything older than
+// 30 days that's not also currently online drops off the local
+// snapshot — acceptable trade-off for a 30k-row hourly refresh
+// vs. a 5M-row monthly download.
+const URLHAUS_CSV_URL: &str = "https://urlhaus.abuse.ch/downloads/csv_recent/";
 
 /// Verdict surfaced to the frontend per URL.  `safe` means the
 /// URL didn't match anything in URLhaus; `unsafe` means there
