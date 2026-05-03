@@ -5,6 +5,7 @@
 use chrono::{DateTime, Utc};
 use nimbus_core::error::NimbusError;
 use nimbus_core::models::{Email, EmailEnvelope, Folder, OutgoingEmail};
+use nimbus_core::url::ensure_https;
 use reqwest::Client;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -140,6 +141,7 @@ impl JmapClient {
     /// Send a JMAP request and return the response.
     async fn call(&self, method_calls: Vec<MethodCall>) -> Result<JmapResponse, NimbusError> {
         let api_url = self.resolve_url(&self.session.api_url)?;
+        ensure_https(&api_url)?;
 
         let request = JmapRequest {
             using: CAPABILITIES.iter().map(|s| s.to_string()).collect(),
