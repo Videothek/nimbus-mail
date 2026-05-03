@@ -1181,7 +1181,7 @@
               step={UI_SCALE_STEP}
               disabled={appSettings.ui_scale_auto ?? true}
               bind:value={appSettings.ui_scale as number}
-              oninput={() => {
+              onchange={() => {
                 appSettings.ui_scale_auto = false
                 applyUiScale(
                   effectiveScale(
