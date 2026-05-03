@@ -6778,20 +6778,28 @@ fn get_unread_counts_by_account(
 // ── Talk-join reminders (issue #123) ──────────────────────────
 //
 // Goal: fire a desktop notification ahead of any calendar event
-// that carries a Nextcloud Talk URL, with the lead time taken
-// from the event's own `VALARM` reminders so the user controls
-// timing per-event.  Rides the background sync loop's tick, so
-// no extra timers; in-memory dedupe keys off `(uid,
-// minutes_before)` so a second tick within the firing window
-// doesn't double-toast.
+// whose VALARM lead time has just elapsed (issues #123 + #203).
+// Lead time is taken from the event's own `VALARM` reminders so
+// the user controls timing per-event.  Rides the background sync
+// loop's tick, so no extra timers; in-memory dedupe keys off
+// `(uid, minutes_before)` so a second tick within the firing
+// window doesn't double-toast.
+//
+// Two settings flags gate the scanner per event:
+//   * `meeting_reminders_enabled` — for events that carry a
+//     meeting URL (Talk / Zoom / Meet / Teams / Jitsi / …).
+//   * `calendar_reminders_enabled` — for events without one.
+// Keeping them separate lets users mute one stream without
+// silencing the other (e.g. "remind me about meetings but
+// don't nag me about every event with an alarm").
 
 /// Lead time in seconds we'll widen the firing window by, on
 /// each side of the reminder's exact moment.  Slightly larger
 /// than the default 60s tick so a tick that drifts by a few
 /// seconds doesn't miss the reminder entirely.
-const TALK_REMINDER_FIRE_TOLERANCE_SECS: i64 = 90;
+const EVENT_REMINDER_FIRE_TOLERANCE_SECS: i64 = 90;
 
-/// In-memory state for the Talk-reminder pipeline.
+/// In-memory state for the event-reminder pipeline.
 ///
 /// `fired`: set of `(uid, minutes_before)` pairs we've already
 ///   pushed a notification for.  Pruned on each scan to drop
@@ -6799,9 +6807,9 @@ const TALK_REMINDER_FIRE_TOLERANCE_SECS: i64 = 90;
 ///   moot once the meeting is in progress).
 /// `dismissed`: UIDs the user explicitly silenced for the rest
 ///   of the meeting cycle (e.g. after clicking through to join
-///   the room — surfaced via the `dismiss_talk_reminder` IPC).
+///   the room — surfaced via the `dismiss_event_reminder` IPC).
 #[derive(Default)]
-struct TalkReminderState {
+struct EventReminderState {
     fired: Mutex<HashSet<(String, i32)>>,
     dismissed: Mutex<HashSet<String>>,
 }
@@ -6850,15 +6858,37 @@ fn extract_meeting_url(event: &CalendarEvent) -> Option<String> {
 /// Mirrors the camelCase shape JS expects.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TalkReminderPayload {
-    /// VEVENT UID — the canonical join key the frontend uses to
-    /// suppress repeat reminders via `dismiss_talk_reminder`.
+struct EventReminderPayload {
+    /// Cached event id (`{nc_id}::{cal_path}::{uid}` for masters
+    /// / singletons; the `::occ::{epoch}` suffix is included for
+    /// expanded recurrence occurrences).  Frontend uses this to
+    /// open the event in the editor when the user clicks "Show
+    /// event" on the in-app reminder card.
+    event_id: String,
+    /// Bare VEVENT UID — used for the dismiss-state key so all
+    /// occurrences of a recurring series share one dismiss
+    /// entry.
     uid: String,
     summary: String,
     /// Event start in UTC RFC 3339 — the JS side localises for
     /// the toast body ("Meeting in 15 min" / "starts at 14:00").
     start: chrono::DateTime<chrono::Utc>,
-    talk_url: String,
+    /// Event end in UTC RFC 3339.  Surfaced on the in-app card
+    /// so the user can see the duration at a glance.
+    end: chrono::DateTime<chrono::Utc>,
+    /// Free-text location string from the VEVENT (may itself
+    /// contain a meeting URL — Nextcloud Calendar puts the Talk
+    /// URL here).  `None` when the event has no LOCATION.
+    location: Option<String>,
+    /// Attendee email list — the in-app card surfaces the first
+    /// few + a "+N more" tail.
+    attendees: Vec<String>,
+    /// First HTTP(S) URL found in URL / LOCATION / DESCRIPTION,
+    /// or `None` when the event isn't a meeting at all.  Drives
+    /// the per-event gate (`meeting_reminders_enabled` vs
+    /// `calendar_reminders_enabled`) and the "Join meeting"
+    /// affordance on the in-app card.
+    meeting_url: Option<String>,
     /// Lead time the reminder fired at, in minutes.  Lets the
     /// JS side word the toast appropriately ("Now" / "in 5 min"
     /// / "in 1 hour").
@@ -6866,14 +6896,21 @@ struct TalkReminderPayload {
 }
 
 /// Scan upcoming events for ones whose VALARM lead time we've
-/// just reached, and emit a `talk-join-reminder` event for any
-/// that carry a Talk URL.  Called from the background sync
-/// loop; cheap because it reads from the local cache only.
-async fn check_talk_reminders_inner(app: &AppHandle) -> Result<(), NimbusError> {
+/// just reached, and emit an `event-reminder` event for each
+/// match (gated per-event by the user's two reminder settings —
+/// `meeting_reminders_enabled` for events with a meeting URL,
+/// `calendar_reminders_enabled` for events without).  Called
+/// from the background sync loop; cheap because it reads from
+/// the local cache only.
+async fn check_event_reminders_inner(app: &AppHandle) -> Result<(), NimbusError> {
     use chrono::Utc;
 
     let settings = app.state::<SharedSettings>();
-    if !settings.read().await.talk_reminder_enabled {
+    let (meetings_on, calendar_on) = {
+        let s = settings.read().await;
+        (s.meeting_reminders_enabled, s.calendar_reminders_enabled)
+    };
+    if !meetings_on && !calendar_on {
         return Ok(());
     }
 
@@ -6939,13 +6976,13 @@ async fn check_talk_reminders_inner(app: &AppHandle) -> Result<(), NimbusError> 
         ));
     }
 
-    let state = app.state::<TalkReminderState>();
+    let state = app.state::<EventReminderState>();
     {
         // Prune `fired` entries whose event has already started —
         // keeps the set bounded in long-running sessions and
         // ensures a meeting that recurs daily fires its reminder
         // again on the next occurrence.
-        let mut fired = state.fired.lock().expect("talk-reminder fired mutex");
+        let mut fired = state.fired.lock().expect("event-reminder fired mutex");
         let active_uids: HashSet<String> = events
             .iter()
             .filter(|e| e.start > now)
@@ -6957,28 +6994,37 @@ async fn check_talk_reminders_inner(app: &AppHandle) -> Result<(), NimbusError> 
         let d = state
             .dismissed
             .lock()
-            .expect("talk-reminder dismissed mutex");
+            .expect("event-reminder dismissed mutex");
         d.clone()
     };
 
     for ev in &events {
         // Skip past starts — the reminder is moot once the
-        // meeting is in progress.  We still keep them in the
+        // event is in progress.  We still keep them in the
         // window above so the prune step has a current picture.
         if ev.start <= now - chrono::Duration::minutes(1) {
             continue;
         }
-        let Some(talk_url) = extract_meeting_url(ev) else {
-            continue;
-        };
-        let uid = vevent_uid_from_event_id(&ev.id);
-        if dismissed_snapshot.contains(&uid) {
-            continue;
-        }
         if ev.reminders.is_empty() {
             // No VALARM on the event → user didn't ask for a
-            // reminder; respect that even though we *could* nag
-            // them about a Talk meeting.
+            // reminder; respect that.
+            continue;
+        }
+        let meeting_url = extract_meeting_url(ev);
+        // Per-event gate.  Events with a meeting URL ride the
+        // `meeting_reminders_enabled` flag; everything else
+        // rides `calendar_reminders_enabled`.  Either flag being
+        // off silences just that bucket.
+        let gate_open = if meeting_url.is_some() {
+            meetings_on
+        } else {
+            calendar_on
+        };
+        if !gate_open {
+            continue;
+        }
+        let uid = vevent_uid_from_event_id(&ev.id);
+        if dismissed_snapshot.contains(&uid) {
             continue;
         }
 
@@ -6995,33 +7041,38 @@ async fn check_talk_reminders_inner(app: &AppHandle) -> Result<(), NimbusError> 
             // do allow a tick's worth of catch-up so a slightly
             // late tick still lands.
             let elapsed = (now - fire_at).num_seconds();
-            if !(0..=TALK_REMINDER_FIRE_TOLERANCE_SECS).contains(&elapsed) {
+            if !(0..=EVENT_REMINDER_FIRE_TOLERANCE_SECS).contains(&elapsed) {
                 continue;
             }
 
             let key = (uid.clone(), minutes);
             {
-                let mut fired = state.fired.lock().expect("talk-reminder fired mutex");
+                let mut fired = state.fired.lock().expect("event-reminder fired mutex");
                 if fired.contains(&key) {
                     continue;
                 }
                 fired.insert(key);
             }
 
-            let payload = TalkReminderPayload {
+            let payload = EventReminderPayload {
+                event_id: ev.id.clone(),
                 uid: uid.clone(),
                 summary: ev.summary.clone(),
                 start: ev.start,
-                talk_url: talk_url.clone(),
+                end: ev.end,
+                location: ev.location.clone(),
+                attendees: ev.attendees.iter().map(|a| a.email.clone()).collect(),
+                meeting_url: meeting_url.clone(),
                 minutes_before: minutes,
             };
-            if let Err(e) = app.emit("talk-join-reminder", &payload) {
-                tracing::warn!("failed to emit talk-join-reminder: {e}");
+            if let Err(e) = app.emit("event-reminder", &payload) {
+                tracing::warn!("failed to emit event-reminder: {e}");
             } else {
                 tracing::info!(
-                    "talk-join-reminder fired: uid={} ({} min before)",
+                    "event-reminder fired: uid={} ({} min before, meeting={})",
                     uid,
-                    minutes
+                    minutes,
+                    meeting_url.is_some()
                 );
             }
         }
@@ -7033,7 +7084,7 @@ async fn check_talk_reminders_inner(app: &AppHandle) -> Result<(), NimbusError> 
 /// Recover the bare VEVENT UID from a composite cached id —
 /// `{nc_id}::{cal_path}::{uid}` for masters/singletons or
 /// `{nc_id}::{cal_path}::{uid}::occ::{epoch}` for expanded
-/// occurrences.  The frontend's `dismiss_talk_reminder` and the
+/// occurrences.  The frontend's `dismiss_event_reminder` and the
 /// dedupe set both key off the bare UID so all occurrences of
 /// the same series share a single dismiss / fire entry.
 fn vevent_uid_from_event_id(id: &str) -> String {
@@ -7045,24 +7096,25 @@ fn vevent_uid_from_event_id(id: &str) -> String {
     }
 }
 
-/// Suppress further Talk-join reminders for the given UID until
-/// the user reopens the editor or the in-memory state is reset
-/// (process restart).  Called from JS when the user clicks
-/// through to join early so we don't pester them mid-meeting.
+/// Suppress further reminders for the given UID until the user
+/// reopens the editor or the in-memory state is reset (process
+/// restart).  Called from JS when the user dismisses the in-app
+/// reminder card or clicks through to join a meeting early so
+/// we don't pester them mid-event.
 #[tauri::command]
-fn dismiss_talk_reminder(
+fn dismiss_event_reminder(
     uid: String,
-    state: State<'_, TalkReminderState>,
+    state: State<'_, EventReminderState>,
 ) -> Result<(), NimbusError> {
     {
         let mut d = state
             .dismissed
             .lock()
-            .expect("talk-reminder dismissed mutex");
+            .expect("event-reminder dismissed mutex");
         d.insert(uid.clone());
     }
     {
-        let mut f = state.fired.lock().expect("talk-reminder fired mutex");
+        let mut f = state.fired.lock().expect("event-reminder fired mutex");
         f.retain(|(u, _)| u != &uid);
     }
     Ok(())
@@ -7154,11 +7206,11 @@ async fn background_sync_loop(app: AppHandle) {
         if let Err(e) = check_mail_now_inner(&app).await {
             tracing::warn!("background check_mail_now_inner failed: {e}");
         }
-        // Talk-join reminders ride the same tick — the cache is
+        // Event reminders ride the same tick — the cache is
         // already warm from the mail poll above and the scan is
         // a couple of SQL queries plus an in-memory loop.
-        if let Err(e) = check_talk_reminders_inner(&app).await {
-            tracing::warn!("background check_talk_reminders_inner failed: {e}");
+        if let Err(e) = check_event_reminders_inner(&app).await {
+            tracing::warn!("background check_event_reminders_inner failed: {e}");
         }
     }
 }
@@ -8196,7 +8248,7 @@ fn main() {
             // Talk-join reminder state — empty fired/dismissed
             // sets at startup, populated as the background scan
             // discovers upcoming events with VALARM triggers.
-            app.manage(TalkReminderState::default());
+            app.manage(EventReminderState::default());
 
             // Warm the system-fonts cache off the main thread so
             // the first compose-toolbar font-dropdown open is
@@ -8575,7 +8627,7 @@ fn main() {
             import_custom_theme,
             remove_custom_theme,
             check_mail_now,
-            dismiss_talk_reminder,
+            dismiss_event_reminder,
             get_total_unread,
             get_unread_counts_by_account,
             show_main_window_cmd,

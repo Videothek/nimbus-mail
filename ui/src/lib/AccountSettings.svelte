@@ -123,7 +123,15 @@
     auto_load_remote_images: boolean
     auto_advance_after_remove: boolean
     default_calendar_id: string | null
-    talk_reminder_enabled: boolean
+    /** Reminders for events that carry a meeting URL (Talk /
+     *  Zoom / Meet / Teams / Jitsi / …).  #203 renamed from
+     *  `talk_reminder_enabled`; backend keeps the old name as
+     *  a serde alias so existing user configs still load. */
+    meeting_reminders_enabled: boolean
+    /** Reminders for events *without* a meeting URL (#203).
+     *  Independent toggle so the two streams can be muted
+     *  separately. */
+    calendar_reminders_enabled: boolean
     autostart_enabled: boolean
     /** User-imported Skeleton themes (#132 tier 2). */
     custom_themes?: CustomThemeRow[]
@@ -150,7 +158,8 @@
     auto_load_remote_images: false,
     auto_advance_after_remove: true,
     default_calendar_id: null,
-    talk_reminder_enabled: true,
+    meeting_reminders_enabled: true,
+    calendar_reminders_enabled: true,
     autostart_enabled: false,
     custom_themes: [],
     logo_style: 'storm',
@@ -979,8 +988,8 @@
     {/if}
 
     {#if activeCategory === 'calendar'}
-    <!-- Calendar preferences: default calendar + Talk-room
-         reminder toggle.  Both belong here because they're
+    <!-- Calendar preferences: default calendar + the two
+         reminder toggles.  Both belong here because they're
          CalDAV / event-level concerns, not mail-app behaviour. -->
     <div class="card p-4 bg-surface-100 dark:bg-surface-800 rounded-lg mb-6">
       <div class="flex items-center justify-between mb-3">
@@ -992,16 +1001,42 @@
         {/if}
       </div>
       <div class="space-y-3 text-sm">
+        <!-- Meeting reminders — events that carry a join URL
+             (Talk / Zoom / Meet / Teams / Jitsi / …).  Same
+             flag the Talk-only nudges used pre-#203, just
+             generalised to any HTTPS meeting URL. -->
         <div class="flex items-start gap-3">
           <Toggle
-            bind:checked={appSettings.talk_reminder_enabled}
-            label="Notify me before meetings with a Talk room"
+            bind:checked={appSettings.meeting_reminders_enabled}
+            label="Meeting reminders"
             onchange={() => scheduleSave()}
           />
           <span>
-            Notify me before meetings with a Talk room
+            Meeting reminders
             <span class="block text-xs text-surface-500">
-              Lead time follows the event's own reminder.
+              Notify me before events that include a meeting URL
+              (Talk, Zoom, Meet, Teams, Jitsi, …).  Lead time
+              follows the event's own reminder.
+            </span>
+          </span>
+        </div>
+
+        <!-- Calendar event reminders — everything *without* a
+             meeting URL.  Independent toggle so users who only
+             want meeting nudges can mute this without losing
+             the meeting stream, and vice-versa. -->
+        <div class="flex items-start gap-3">
+          <Toggle
+            bind:checked={appSettings.calendar_reminders_enabled}
+            label="Calendar event reminders"
+            onchange={() => scheduleSave()}
+          />
+          <span>
+            Calendar event reminders
+            <span class="block text-xs text-surface-500">
+              Notify me before any other calendar event that has
+              a reminder set.  Lead time follows the event's own
+              reminder.
             </span>
           </span>
         </div>
