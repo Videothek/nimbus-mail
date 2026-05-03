@@ -8405,6 +8405,21 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+/// Restart Nimbus in place (#190 follow-up).
+///
+/// Used by the language-change confirmation popup: paraglide
+/// resolves the active locale once, at boot, by walking its
+/// strategy chain (`localStorage` → `preferredLanguage` →
+/// `baseLocale`), so a runtime language switch can't take full
+/// effect without a fresh process.  Tauri's `restart()` calls
+/// the platform's "exec same binary" primitive, which is a
+/// lot smoother than asking the user to close and reopen
+/// manually.
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    app.restart();
+}
+
 // ── App entry point ─────────────────────────────────────────────
 
 fn main() {
@@ -8884,6 +8899,7 @@ fn main() {
             get_unread_counts_by_account,
             show_main_window_cmd,
             quit_app,
+            restart_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nimbus");

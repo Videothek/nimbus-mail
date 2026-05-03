@@ -58,8 +58,7 @@
     effectiveScale,
     UI_SCALE_STEP,
   } from './lib/uiScale'
-  import { getLocale, setLocale, locales } from './paraglide/runtime'
-  import { localeBump } from './lib/localeBump.svelte'
+  import { locales } from './paraglide/runtime'
 
   // ── View state ──────────────────────────────────────────────
   // Which view is currently shown. Starts as 'loading' until we
@@ -647,34 +646,25 @@
       applyUiScale(
         effectiveScale(appPrefs.ui_scale, appPrefs.ui_scale_auto),
       )
-      // Apply the chosen display locale (#190).  When auto is
-      // on we let paraglide's `preferredLanguage` strategy pick
-      // from `navigator.language`; when manual, we force the
-      // pinned tag.  `setLocale` is a paraglide runtime call —
-      // it persists to localStorage and re-renders any reactive
-      // text via the `m.*()` getters.
-      if (appPrefs.ui_locale_auto !== false) {
-        // Auto: don't override paraglide's resolved locale, but
-        // make sure any previously-pinned localStorage value
-        // gets cleared so navigator.language wins again.
-        try {
+      // Sync the paraglide localStorage pin with the persisted
+      // settings (#190).  Paraglide reads localStorage at boot
+      // and never re-checks; the actual UI language for *this*
+      // process was therefore already decided by the time the
+      // settings come back from disk.  We just make sure the
+      // pin matches what's saved so a future restart picks up
+      // the right value.  The Settings page's language picker
+      // owns the in-process restart prompt — see the comment
+      // there.
+      try {
+        if (appPrefs.ui_locale_auto !== false) {
           window.localStorage.removeItem('PARAGLIDE_LOCALE')
-        } catch {}
-      } else if (
-        appPrefs.ui_locale &&
-        (locales as readonly string[]).includes(appPrefs.ui_locale)
-      ) {
-        // Skip when the persisted locale is already what's
-        // active — avoids a needless remount on the launch
-        // path (settings come back matching what paraglide
-        // already picked up from `localStorage`).
-        if (getLocale() !== appPrefs.ui_locale) {
-          setLocale(appPrefs.ui_locale as (typeof locales)[number], {
-            reload: false,
-          })
-          localeBump.bump()
+        } else if (
+          appPrefs.ui_locale &&
+          (locales as readonly string[]).includes(appPrefs.ui_locale)
+        ) {
+          window.localStorage.setItem('PARAGLIDE_LOCALE', appPrefs.ui_locale)
         }
-      }
+      } catch {}
     } catch (err) {
       console.warn('get_app_settings failed', err)
     }
@@ -1528,16 +1518,13 @@
      the user authenticates.  Everything else (loading, setup,
      mail / calendar / contacts views) stays unmounted so no IPC
      fires with the cache still locked. -->
-<!-- Wrap the main router in a `{#key}` keyed on `localeBump.value`
-     so a runtime locale switch (#190) re-mounts the visible
-     subtree, which causes every `m.<key>()` call inside to
-     re-evaluate with the freshly-picked language.  Without
-     this, paraglide flips its internal locale but Svelte never
-     re-renders — the previous language's strings stay on screen
-     until the next mount.  Reloading the page worked but
-     bounced the user out of whichever settings tab they were
-     on; this is the smoother alternative. -->
-{#key localeBump.value}
+<!-- Locale changes require a full app restart (#190): paraglide
+     resolves the active locale once at boot from its strategy
+     chain (localStorage → preferredLanguage → baseLocale) and
+     never re-reads.  In-place reactivity attempts (page
+     reload, `{#key}` remount, etc.) all had visible
+     side-effects — the language picker in Settings now shows
+     a "restart required" prompt instead. -->
 {#if dbStatus && dbStatus.locked}
   <LockScreen
     methods={dbStatus.methods}
@@ -1720,7 +1707,6 @@
     {/if}
   </div>
 {/if}
-{/key}
 
 <!-- "Respond with meeting" event editor — mounted at the app level
      so it can overlay any view. Driven entirely by `meetingDraft`:
