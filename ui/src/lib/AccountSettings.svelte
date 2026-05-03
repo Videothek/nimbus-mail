@@ -21,6 +21,13 @@
     type ThemeMode,
     type ThemeOption,
   } from './theme'
+  import {
+    applyUiScale,
+    effectiveScale,
+    MAX_UI_SCALE,
+    MIN_UI_SCALE,
+    UI_SCALE_STEP,
+  } from './uiScale'
 
   // ── Types ───────────────────────────────────────────────────
   // Mirrors the Rust `Account` struct from nimbus-core
@@ -142,6 +149,10 @@
     /** App-icon style slug — drives the tray, window titlebar and
      *  taskbar icon. Picker lives in Settings → Design. */
     logo_style?: string
+    /** #191 manual UI-scale (0.7 .. 1.5). */
+    ui_scale?: number
+    /** #191 when true, scale is auto-derived from screen width. */
+    ui_scale_auto?: boolean
   }
   interface CustomThemeRow {
     id: string
@@ -168,6 +179,8 @@
     autostart_enabled: false,
     custom_themes: [],
     logo_style: 'storm',
+    ui_scale: 1.0,
+    ui_scale_auto: true,
   })
 
   // ── Logo / app-icon picker (Issue #X) ───────────────────────
@@ -1122,6 +1135,67 @@
           <p class="text-xs text-surface-400 mt-1">
             "Follow OS" tracks your system light/dark preference live.
           </p>
+        </div>
+
+        <!-- UI scale (#191).  Auto by default — picks a sensible
+             multiplier from the screen width on every launch.
+             User can override with the slider below; the slider's
+             onchange flips `ui_scale_auto` off so subsequent
+             launches keep the manual choice instead of snapping
+             back to the auto-derived value.  Ctrl+wheel is also
+             wired in App.svelte and updates the same setting. -->
+        <div>
+          <p class="font-medium mb-1">UI scale</p>
+          <p class="text-xs text-surface-400 mb-2">
+            Resize text, icons, and the rest of the UI uniformly.
+            Tip: Ctrl + scroll over the app also adjusts this.
+          </p>
+          <label class="flex items-center gap-3 mb-3">
+            <Toggle
+              bind:checked={appSettings.ui_scale_auto as boolean}
+              label="Auto-scale based on screen size"
+              onchange={() => {
+                applyUiScale(
+                  effectiveScale(
+                    appSettings.ui_scale,
+                    appSettings.ui_scale_auto,
+                  ),
+                )
+                scheduleSave()
+              }}
+            />
+            <span class="text-sm">
+              Auto-scale
+              <span class="block text-xs text-surface-500">
+                Pick a scale automatically based on the current screen.
+              </span>
+            </span>
+          </label>
+          <label class="flex items-center gap-3 text-sm">
+            <span class="shrink-0 w-16">Manual</span>
+            <input
+              type="range"
+              class="flex-1"
+              min={MIN_UI_SCALE}
+              max={MAX_UI_SCALE}
+              step={UI_SCALE_STEP}
+              disabled={appSettings.ui_scale_auto ?? true}
+              bind:value={appSettings.ui_scale as number}
+              oninput={() => {
+                appSettings.ui_scale_auto = false
+                applyUiScale(
+                  effectiveScale(
+                    appSettings.ui_scale,
+                    appSettings.ui_scale_auto,
+                  ),
+                )
+                scheduleSave()
+              }}
+            />
+            <span class="font-mono text-xs w-12 text-right">
+              {Math.round((appSettings.ui_scale ?? 1) * 100)}%
+            </span>
+          </label>
         </div>
 
         <div>

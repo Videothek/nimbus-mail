@@ -52,6 +52,12 @@
     type ThemeMode,
     type ThemeOption,
   } from './lib/theme'
+  import {
+    applyUiScale,
+    clampScale,
+    effectiveScale,
+    UI_SCALE_STEP,
+  } from './lib/uiScale'
 
   // ── View state ──────────────────────────────────────────────
   // Which view is currently shown. Starts as 'loading' until we
@@ -218,6 +224,45 @@
     return () => document.removeEventListener('contextmenu', onCtx)
   })
 
+  /** Ctrl+wheel UI scale (#191).
+   *  Captures the wheel event before the webview's native zoom
+   *  kicks in.  Each tick adjusts by `UI_SCALE_STEP` (5 %) up
+   *  or down within `[MIN_UI_SCALE, MAX_UI_SCALE]`.  The change
+   *  is persisted via `set_app_settings` and flips
+   *  `ui_scale_auto` off so the auto-derivation doesn't undo
+   *  the user's choice on the next launch.  Persistence is
+   *  fire-and-forget — a save failure leaves the in-memory
+   *  scale applied and the user can retry by scrolling again. */
+  $effect(() => {
+    function onWheel(e: WheelEvent) {
+      if (!e.ctrlKey) return
+      e.preventDefault()
+      if (!appPrefs) return
+      const current = effectiveScale(appPrefs.ui_scale, appPrefs.ui_scale_auto)
+      // wheel-up (deltaY < 0) zooms in; wheel-down zooms out.
+      const direction = e.deltaY < 0 ? +1 : -1
+      const next = clampScale(current + direction * UI_SCALE_STEP)
+      if (next === current) return
+      // Optimistic local apply so the user sees the change
+      // instantly; the persist roundtrip catches up.
+      applyUiScale(next)
+      const updated: AppPrefs = {
+        ...appPrefs,
+        ui_scale: next,
+        ui_scale_auto: false,
+      }
+      appPrefs = updated
+      void invoke('set_app_settings', { settings: updated }).catch((err) =>
+        console.warn('set_app_settings (ui_scale) failed', err),
+      )
+    }
+    // `passive: false` so `preventDefault` is allowed — without
+    // it the browser would also apply its own zoom on top of
+    // ours, doubling the effect.
+    window.addEventListener('wheel', onWheel, { passive: false })
+    return () => window.removeEventListener('wheel', onWheel)
+  })
+
   function closeAppContextMenu() {
     appContextMenu = null
   }
@@ -335,6 +380,14 @@
     autostart_enabled: boolean
     /** User-imported Skeleton themes (#132 tier 2). */
     custom_themes?: CustomTheme[]
+    /** #191: manual UI-scale multiplier applied via CSS `zoom`
+     *  on the document root.  Range 0.7 .. 1.5. */
+    ui_scale?: number
+    /** #191: when true, `ui_scale` is ignored and the
+     *  effective scale is derived from screen width on
+     *  every launch.  User actions that pick an explicit
+     *  scale (slider, Ctrl+wheel) flip this to false. */
+    ui_scale_auto?: boolean
   }
   type CustomTheme = {
     id: string
@@ -578,6 +631,13 @@
         if (!liveIds.has(id)) unregisterCustomThemePath(id)
       }
       prevCustomThemeIds = Object.fromEntries(list.map((t) => [t.id, true]))
+      // Apply the chosen UI scale (#191).  Resolved every time
+      // `get_app_settings` returns — covers the launch path AND
+      // the post-Settings-save path.  `effectiveScale` honours
+      // the auto/manual toggle.
+      applyUiScale(
+        effectiveScale(appPrefs.ui_scale, appPrefs.ui_scale_auto),
+      )
     } catch (err) {
       console.warn('get_app_settings failed', err)
     }
