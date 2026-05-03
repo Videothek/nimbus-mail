@@ -125,10 +125,30 @@ pub struct AppSettings {
     /// this setting — only what the user sees while the app runs.
     #[serde(default = "default_logo_style")]
     pub logo_style: String,
+    /// Manual UI-scale multiplier (#191).  Applied via CSS
+    /// `zoom` on the document root, so it scales every visual
+    /// element including icons / SVGs / pixel-pinned widths
+    /// uniformly.  1.0 = "as designed".  Range enforced
+    /// frontend-side: 0.7 .. 1.5 in 0.05 increments.
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
+    /// When true, the frontend ignores `ui_scale` and computes
+    /// a scale from the screen width on every launch (#191).
+    /// User interactions that change `ui_scale` directly
+    /// (manual slider in Settings, Ctrl+wheel) flip this to
+    /// false so the auto-scale stops fighting the user's
+    /// explicit choice.
+    #[serde(default = "default_true")]
+    pub ui_scale_auto: bool,
 }
 
 fn default_logo_style() -> String {
     "storm".to_string()
+}
+
+/// Default UI-scale multiplier (#191).  1.0 means "as designed".
+fn default_ui_scale() -> f32 {
+    1.0
 }
 
 /// Serde helper for fields whose post-deserialise default is `true`
@@ -204,6 +224,8 @@ impl Default for AppSettings {
             autostart_enabled: false,
             custom_themes: Vec::new(),
             logo_style: default_logo_style(),
+            ui_scale: default_ui_scale(),
+            ui_scale_auto: true,
         }
     }
 }
