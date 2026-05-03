@@ -159,6 +159,11 @@ const NOTIFICATION_ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
 /// Idempotent — overwriting on every launch is cheap (~10 KB) and
 /// keeps the file in sync with whatever's currently bundled.
 fn install_notification_icon() -> Result<std::path::PathBuf, NimbusError> {
+    // nosemgrep: rust.lang.security.temp-dir.temp-dir
+    // The file is the bundled app icon (a static asset, identical
+    // for all installs).  Predictable name in the per-user temp
+    // dir is intentional — Windows' notification API needs a
+    // stable on-disk path to reference.  No secret data here.
     let dir = std::env::temp_dir().join("nimbus-mail");
     std::fs::create_dir_all(&dir)
         .map_err(|e| NimbusError::Other(format!("notification icon mkdir failed: {e}")))?;
@@ -239,6 +244,7 @@ fn set_app_user_model_id() {
     // SAFETY: the function takes a PCWSTR derived from a live
     // HSTRING; the call has no preconditions beyond a valid
     // null-terminated wide string, which `HSTRING` guarantees.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     if let Err(e) = unsafe { SetCurrentProcessExplicitAppUserModelID(&aumid) } {
         tracing::warn!("SetCurrentProcessExplicitAppUserModelID failed: {e}");
     }
@@ -1093,6 +1099,9 @@ async fn office_sweep_temp(nc_id: String) -> Result<u32, NimbusError> {
 /// to actually print before we clean up.
 #[tauri::command]
 async fn print_attachment(file_name: String, bytes: Vec<u8>) -> Result<(), NimbusError> {
+    // nosemgrep: rust.lang.security.temp-dir.temp-dir
+    // Per-call subdir name is a UUID v4 — not a predictable
+    // path, which is exactly what the lint is meant to catch.
     let mut dir = std::env::temp_dir();
     dir.push(format!("nimbus-print-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir)
