@@ -417,6 +417,12 @@
         },
       }).configure({
         openOnClick: false,
+        // Auto-promote pasted / typed URLs into real anchors so
+        // the receiving side's URLhaus check (#165) sees them
+        // as `<a href>` rather than plain text — and so the
+        // sender benefits from the same hover-tooltip behaviour
+        // we add for explicitly-inserted links.
+        autolink: true,
         HTMLAttributes: { target: '_blank', rel: 'noopener noreferrer' },
       }),
       // Image extended with drag-to-resize. A plain `<img>` doesn't
