@@ -32,6 +32,7 @@
   } from './lib/Compose.svelte'
   import ContactsView from './lib/ContactsView.svelte'
   import CalendarView from './lib/CalendarView.svelte'
+  import ReminderCard from './lib/ReminderCard.svelte'
   import FilesView from './lib/FilesView.svelte'
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
@@ -322,7 +323,10 @@
     mail_html_white_background: boolean
     auto_load_remote_images: boolean
     auto_advance_after_remove: boolean
-    talk_reminder_enabled: boolean
+    /** #203: gates reminders for events that carry a meeting URL. */
+    meeting_reminders_enabled: boolean
+    /** #203: gates reminders for events without a meeting URL. */
+    calendar_reminders_enabled: boolean
     autostart_enabled: boolean
     /** User-imported Skeleton themes (#132 tier 2). */
     custom_themes?: CustomTheme[]
@@ -334,14 +338,21 @@
     path: string
   }
 
-  // Issue #123: Talk-join reminders.  Rust scans upcoming
-  // events on every sync tick and emits this event whenever an
-  // event with a Talk URL hits one of its VALARM lead times.
-  type TalkReminder = {
+  // Issues #123 + #203: event reminders.  Rust scans upcoming
+  // events on every sync tick and emits an `event-reminder`
+  // event whenever any VALARM lead time elapses.  Two settings
+  // gate this — `meeting_reminders_enabled` for events with
+  // a meeting URL, `calendar_reminders_enabled` for everything
+  // else (the user can mute one stream without the other).
+  type EventReminder = {
+    eventId: string
     uid: string
     summary: string
     start: string
-    talkUrl: string
+    end: string
+    location: string | null
+    attendees: string[]
+    meetingUrl: string | null
     minutesBefore: number
   }
 
@@ -436,33 +447,80 @@
     return `in ${hours}h ${remainder}m`
   }
 
-  /** Emoji-prefixed clock label for the body line.  We don't
-   *  rely on click-to-launch (Linux libnotify doesn't expose
-   *  it through the plugin), so spelling the join URL into the
-   *  body keeps the affordance visible even when the user has
-   *  to copy/paste it. */
-  function handleTalkReminder(payload: TalkReminder) {
-    if (!shouldNotify()) return
-    if (!appPrefs?.talk_reminder_enabled) return
-    const lead = formatLeadTime(payload.minutesBefore)
-    const startLocal = new Date(payload.start).toLocaleTimeString(undefined, {
-      hour: '2-digit',
-      minute: '2-digit',
-    })
-    const title = `📅 ${payload.summary || 'Meeting'} — ${lead}`
-    const body = `Starts at ${startLocal} · Click to join via Talk`
-    void fireToast(title, body)
-    // Best-effort: tell the OS handler to open the Talk room
-    // when the user chooses to act on the reminder.  We open
-    // immediately for "now"-bucket reminders (≤1 min lead) so
-    // the user lands in the room without an extra click; for
-    // earlier reminders we just toast and let them decide.
-    if (payload.minutesBefore <= 1) {
-      void invoke('open_url', { url: payload.talkUrl }).catch((err) =>
-        console.warn('open_url for talk reminder failed', err),
-      )
-      void invoke('dismiss_talk_reminder', { uid: payload.uid }).catch(() => {})
+  /** First-three-attendees + "+N more" tail for the OS toast
+   *  body.  Linux libnotify wraps badly past three lines, so
+   *  the OS surface gets the short version; the in-app
+   *  ReminderCard renders the same shape with more room. */
+  function formatAttendees(list: string[]): string {
+    if (list.length === 0) return ''
+    const first = list.slice(0, 3).join(', ')
+    return list.length > 3 ? `${first} +${list.length - 3} more` : first
+  }
+
+  /** Active in-app reminder card.  When non-null, App renders
+   *  the ReminderCard overlay over the current view.  Only one
+   *  card at a time — a fresh reminder replaces the previous
+   *  one rather than stacking, which keeps the corner of the
+   *  screen quiet. */
+  let activeReminder = $state<EventReminder | null>(null)
+  /** Event id the user clicked "Show event" for — passed
+   *  through to CalendarView so it opens that event's editor.
+   *  CalendarView clears it via `oneventfocused`. */
+  let calendarFocusEventId = $state<string | null>(null)
+
+  function handleEventReminder(payload: EventReminder) {
+    // Per-event gate, mirroring the backend logic — the backend
+    // already gates by these flags, but settings can change
+    // between the scan and the emit, so re-check here.
+    const isMeeting = !!payload.meetingUrl
+    const allowed = isMeeting
+      ? appPrefs?.meeting_reminders_enabled ?? true
+      : appPrefs?.calendar_reminders_enabled ?? true
+    if (!allowed) return
+
+    // OS notification.  Concise body — the in-app card carries
+    // the rich detail.
+    if (shouldNotify()) {
+      const lead = formatLeadTime(payload.minutesBefore)
+      const startLocal = new Date(payload.start).toLocaleTimeString(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+      const title = `📅 ${payload.summary || 'Event'} — ${lead}`
+      const bodyLines: string[] = [`Starts at ${startLocal}`]
+      if (payload.location) bodyLines.push(`📍 ${payload.location}`)
+      if (payload.attendees.length > 0)
+        bodyLines.push(`👥 ${formatAttendees(payload.attendees)}`)
+      if (isMeeting) bodyLines.push('Click "Join meeting" in the app to enter.')
+      void fireToast(title, bodyLines.join('\n'))
     }
+
+    // In-app ReminderCard — has the action buttons (Show event,
+    // Join meeting, Dismiss).  Replaces any prior card.
+    activeReminder = payload
+
+    // For an *imminent* meeting (≤1 min lead), keep the old
+    // auto-join shortcut: open the URL straight away so the
+    // user lands in the room without clicking through the card.
+    // The card still appears so they can dismiss / find the
+    // event after the fact.
+    if (isMeeting && payload.minutesBefore <= 1 && payload.meetingUrl) {
+      void invoke('open_url', { url: payload.meetingUrl }).catch((err) =>
+        console.warn('open_url for event reminder failed', err),
+      )
+      void invoke('dismiss_event_reminder', { uid: payload.uid }).catch(
+        () => {},
+      )
+    }
+  }
+
+  function dismissReminderCard() {
+    activeReminder = null
+  }
+
+  function showEventFromReminder(eventId: string) {
+    calendarFocusEventId = eventId
+    currentView = 'calendar'
   }
 
   function handleNewMail(payload: NewMail) {
@@ -547,7 +605,7 @@
     void sweepNextcloudTempFiles()
 
     let unlistenNewMail: UnlistenFn | null = null
-    let unlistenTalkReminder: UnlistenFn | null = null
+    let unlistenEventReminder: UnlistenFn | null = null
     let unlistenCustomThemes: UnlistenFn | null = null
     let unlistenCompose: UnlistenFn | null = null
     let unlistenComposeFromMail: UnlistenFn | null = null
@@ -557,9 +615,9 @@
       unlistenNewMail = await listen<NewMail>('new-mail', (e) =>
         handleNewMail(e.payload),
       )
-      unlistenTalkReminder = await listen<TalkReminder>(
-        'talk-join-reminder',
-        (e) => handleTalkReminder(e.payload),
+      unlistenEventReminder = await listen<EventReminder>(
+        'event-reminder',
+        (e) => handleEventReminder(e.payload),
       )
       // #132: backend fires this whenever a custom theme is
       // imported / removed (in this window or another).  Re-pull
@@ -593,7 +651,7 @@
     })()
     return () => {
       unlistenNewMail?.()
-      unlistenTalkReminder?.()
+      unlistenEventReminder?.()
       unlistenCustomThemes?.()
       unlistenCompose?.()
       unlistenComposeFromMail?.()
@@ -1422,7 +1480,11 @@
       </div>
     {:else if currentView === 'calendar'}
       <div class="flex-1 min-w-0">
-        <CalendarView onclose={goToInbox} />
+        <CalendarView
+          onclose={goToInbox}
+          focusEventId={calendarFocusEventId}
+          oneventfocused={() => (calendarFocusEventId = null)}
+        />
       </div>
     {:else if currentView === 'files'}
       <div class="flex-1 min-w-0">
@@ -1571,4 +1633,18 @@
       <span>Refresh</span>
     </button>
   </div>
+{/if}
+
+<!-- In-app reminder overlay (#203).  Mounts at the root so it
+     stays visible across view switches; the user can keep
+     working in mail / calendar / files while a reminder is
+     showing.  One reminder at a time — a fresh one replaces
+     the previous, which keeps the corner of the screen quiet
+     when several reminders fire close together. -->
+{#if activeReminder}
+  <ReminderCard
+    reminder={activeReminder}
+    onShowEvent={showEventFromReminder}
+    ondismiss={dismissReminderCard}
+  />
 {/if}

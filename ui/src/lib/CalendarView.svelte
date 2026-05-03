@@ -38,8 +38,20 @@
 
   interface Props {
     onclose: () => void
+    /** When set (by the in-app reminder card's "Show event"
+     *  action, #203), CalendarView opens this event's editor
+     *  as soon as the matching event is loaded into `events`.
+     *  CalendarView fires `oneventfocused` immediately after
+     *  to clear the parent's state so the same id doesn't
+     *  re-trigger on a later mount. */
+    focusEventId?: string | null
+    oneventfocused?: () => void
   }
-  const { onclose }: Props = $props()
+  const {
+    onclose,
+    focusEventId = null,
+    oneventfocused,
+  }: Props = $props()
 
   // ── Types (mirror the Rust models) ──────────────────────────
   interface NextcloudAccount {
@@ -997,6 +1009,38 @@
     editingEvent = ev
     creatingDraft = null
   }
+
+  /** Honour `focusEventId` from the parent (#203 reminder card's
+   *  "Show event" action).  Runs whenever either the prop or
+   *  the loaded `events` list changes — covers both the case
+   *  where the user clicks "Show event" while CalendarView is
+   *  already mounted (events already loaded) and the case
+   *  where the parent flips to `currentView = 'calendar'` and
+   *  CalendarView mounts fresh (events arrive after the
+   *  initial fetch resolves).  Looks first in `events` for an
+   *  occurrence match (id ends with `::occ::<epoch>` for
+   *  recurrence expansions); falls back to a UID-prefix match
+   *  so the master event opens when the specific occurrence
+   *  hasn't been expanded into the current window. */
+  $effect(() => {
+    if (!focusEventId) return
+    if (events.length === 0) return
+    let match = events.find((e) => e.id === focusEventId)
+    if (!match) {
+      // Try UID-prefix match — `{nc}::{cal}::{uid}` is a prefix
+      // of `{nc}::{cal}::{uid}::occ::{epoch}`, so the master
+      // catches both directions.
+      const parts = focusEventId.split('::')
+      if (parts.length >= 3) {
+        const prefix = parts.slice(0, 3).join('::')
+        match = events.find((e) => e.id.startsWith(prefix))
+      }
+    }
+    if (match) {
+      openEditor(match)
+      oneventfocused?.()
+    }
+  })
 
   function closeEditor() {
     editingEvent = null

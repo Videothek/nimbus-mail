@@ -72,11 +72,24 @@ pub struct AppSettings {
     #[serde(default)]
     pub default_calendar_id: Option<String>,
     /// Whether to fire desktop notifications ahead of calendar
-    /// events that carry a Nextcloud Talk URL (issue #123).
-    /// Lead time is taken from the event's own `VALARM` triggers,
-    /// so the user controls *when* by setting reminders on the
-    /// event and *whether at all* with this opt-out.
-    pub talk_reminder_enabled: bool,
+    /// events that carry **any** meeting URL — Nextcloud Talk,
+    /// Zoom, Meet, Teams, Jitsi, etc. (issues #123 + #203).
+    /// `extract_meeting_url` walks URL / LOCATION / DESCRIPTION
+    /// for the first HTTP(S) URL it finds, so the toggle is not
+    /// platform-specific.  Lead time is taken from the event's
+    /// own `VALARM` triggers; this flag is the master opt-out.
+    /// Stored under the new name; `talk_reminder_enabled` is the
+    /// historical alias so existing user settings still load.
+    #[serde(alias = "talk_reminder_enabled")]
+    pub meeting_reminders_enabled: bool,
+    /// Whether to fire desktop notifications ahead of calendar
+    /// events *without* a meeting URL (issue #203).
+    /// Independent from `meeting_reminders_enabled` so users who
+    /// only want meeting nudges can keep that on while muting
+    /// the generic stream, and vice-versa.  Lead time again comes
+    /// from the event's own `VALARM` triggers.
+    #[serde(default = "default_true")]
+    pub calendar_reminders_enabled: bool,
     /// Launch Nimbus automatically when the user logs in (#131
     /// follow-up).  Backed by `tauri-plugin-autostart`, which
     /// registers an XDG autostart entry on Linux, a LaunchAgent
@@ -107,6 +120,14 @@ pub struct AppSettings {
 
 fn default_logo_style() -> String {
     "storm".to_string()
+}
+
+/// Serde helper for fields whose post-deserialise default is `true`
+/// (rather than `false`, which is what `bool::default()` returns).
+/// Used by settings flags added after v0.1.0 so older config files
+/// load the new flag with the intended on-by-default value.
+fn default_true() -> bool {
+    true
 }
 
 /// One user-imported Skeleton theme — the metadata the picker
@@ -168,7 +189,8 @@ impl Default for AppSettings {
             auto_load_remote_images: false,
             auto_advance_after_remove: true,
             default_calendar_id: None,
-            talk_reminder_enabled: true,
+            meeting_reminders_enabled: true,
+            calendar_reminders_enabled: true,
             autostart_enabled: false,
             custom_themes: Vec::new(),
             logo_style: default_logo_style(),
