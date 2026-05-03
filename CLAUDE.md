@@ -153,16 +153,75 @@ We run a **two-tier CI model** so daily dev stays fast and the heavy security su
 - A red smoke means you broke `cargo check` or formatting; everything else is deferred.
 - Heavy regressions surface at release time (or in the Sunday cron). For a 2-person scaffolding-phase project that's an acceptable trade-off; tighten back up once we have real users.
 
-**How to cut a release:**
+**How to cut a release — full recipe.** When the user says "push a new version" / "release vX.Y.Z" / "ship a new build", walk them through every step below. Do not improvise an abbreviated version of this.
+
+1. **Pick the new version** — semver:
+   - **patch** (`0.1.0 → 0.1.1`): bug fixes, security bumps, internal refactors. No new user-visible behaviour.
+   - **minor** (`0.1.0 → 0.2.0`): new features, additive UI, new settings. Backwards-compatible.
+   - **major** (`0.1.0 → 1.0.0`): breaking config-file changes, removed features, anything that requires a manual upgrade step. Pre-1.0 we're loose with this; once we ship to real users, treat it strictly.
+
+2. **Bump the version in BOTH files** (they must stay in sync — the installer filename is built from `tauri.conf.json` while crate metadata reads from `Cargo.toml`):
+   - `Cargo.toml` → `[workspace.package].version`
+   - `src-tauri/tauri.conf.json` → top-level `"version"`
+   - (`ui/package.json` has its own version — leave it; it's not user-visible.)
+
+3. **Preview the auto-generated changelog** (optional but recommended — saves an "oh no, that PR didn't get a label" moment after the tag is out):
+
+   ```bash
+   gh api repos/Videothek/nimbus-mail/releases/generate-notes \
+     -f tag_name=vX.Y.Z \
+     -f previous_tag_name=vPREV.PREV.PREV \
+     --jq .body
+   ```
+
+   If a PR ended up under "🔧 Other changes" that should have been a feature or fix, label it correctly on GitHub *before* tagging — the auto-generator runs at tag time and bakes the result.
+
+4. **Commit the bump and push to main:**
+
+   ```bash
+   git checkout main
+   git pull origin main
+   # edit Cargo.toml and src-tauri/tauri.conf.json
+   git add Cargo.toml Cargo.lock src-tauri/tauri.conf.json
+   git commit -m "Bump version to vX.Y.Z"
+   git push origin main
+   ```
+
+   Wait for `smoke.yml` to go green on main. If it fails, fix and re-push the bump commit before tagging — never tag a red main.
+
+5. **Tag and push:**
+
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+   This kicks off `release.yml`. Phase 1 runs the full quality gate (clippy / tests / audit / deny / codeql / osv / semgrep). Phase 2 only starts if every gate passed; it matrix-builds the 3-OS installers via `tauri-apps/tauri-action` and creates a *draft* GitHub Release.
+
+6. **Watch the run** — on a cold cache it takes ~25 min. Surface any failures to the user immediately rather than leaving them to discover it on their own.
+
+7. **Finalise the Release**:
+   - Open the draft on the Releases page.
+   - Paste the editorial sections from `RELEASE_NOTES_TEMPLATE.md` *above* the auto-generated changelog (the template comment block explains what goes where).
+   - Verify every expected installer is attached: `nimbus-mail_X.Y.Z_x64-setup.exe`, `nimbus-mail_X.Y.Z_x64_en-US.msi`, `nimbus-mail_X.Y.Z_aarch64.dmg`, `nimbus-mail_X.Y.Z_x64.dmg`, `nimbus-mail_X.Y.Z_amd64.deb`, `nimbus-mail_X.Y.Z_amd64.AppImage`.
+   - Click **Publish release**.
+
+**If the tag pipeline fails** (gate red, build matrix red, etc.):
 
 ```bash
-git checkout main
-git pull origin main
-git tag v0.1.0           # follow semver
-git push origin v0.1.0
+# Delete the bad tag locally and on the remote
+git tag -d vX.Y.Z
+git push origin --delete vX.Y.Z
 ```
 
-That kicks off `release.yml`. Once the build matrix completes, a *draft* Release appears on the Releases page with all installers attached. Open it, paste in the editorial sections from `RELEASE_NOTES_TEMPLATE.md` (the auto-generated PR changelog will already be there beneath), and publish.
+Then fix the underlying problem on `main` (a new commit, not an amend), and re-tag the same `vX.Y.Z` — it's fine to reuse the version number because the failed tag was deleted and no Release was published from it. The draft Release that may have been created can be left alone or deleted from the Releases UI.
+
+**What NOT to do:**
+
+- Don't bump only one of the two version files — you'll get installers named after the old version while crate metadata reports the new one.
+- Don't tag from a branch other than `main`. The release workflow only treats `main` as canonical.
+- Don't tag without pushing the bump commit first. The build will then ship the *previous* version's code under the new tag's name.
+- Don't republish a tag that already shipped — bump the version instead. Mutating a published release breaks anyone who already downloaded it.
 
 **Release notes:**
 
