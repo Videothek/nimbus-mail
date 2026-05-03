@@ -28,6 +28,18 @@
     MIN_UI_SCALE,
     UI_SCALE_STEP,
   } from './uiScale'
+  import { m } from '../paraglide/messages'
+  import { locales, setLocale } from '../paraglide/runtime'
+
+  // Friendly labels for the locale picker.  Keep the codes in
+  // lockstep with `project.inlang/settings.json`.  Native
+  // names (the language as written in *that* language) so the
+  // user can find their language even when the UI is in a
+  // language they don't read.
+  const LOCALE_LABELS: Record<string, string> = {
+    en: 'English',
+    de: 'Deutsch',
+  }
 
   // ── Types ───────────────────────────────────────────────────
   // Mirrors the Rust `Account` struct from nimbus-core
@@ -153,6 +165,10 @@
     ui_scale?: number
     /** #191 when true, scale is auto-derived from screen width. */
     ui_scale_auto?: boolean
+    /** #190 BCP-47 locale tag for the display language. */
+    ui_locale?: string
+    /** #190 when true, the locale follows `navigator.language`. */
+    ui_locale_auto?: boolean
   }
   interface CustomThemeRow {
     id: string
@@ -181,6 +197,8 @@
     logo_style: 'storm',
     ui_scale: 1.0,
     ui_scale_auto: true,
+    ui_locale: '',
+    ui_locale_auto: true,
   })
 
   // ── Logo / app-icon picker (Issue #X) ───────────────────────
@@ -919,6 +937,61 @@
           />
           <span>After delete / archive, open the next message automatically</span>
         </div>
+
+        <!-- Display language (#190).  Auto by default — paraglide
+             picks from `navigator.language` (the OS-reported
+             language) on launch.  The dropdown forces a specific
+             locale; flipping it back to "Auto" clears the pin and
+             returns to OS-following.  Changes apply live via
+             `setLocale` so the user sees the effect immediately. -->
+        <div class="flex items-start gap-3">
+          <Toggle
+            bind:checked={appSettings.ui_locale_auto as boolean}
+            label={m.settings_general_language_auto_label()}
+            onchange={() => {
+              if (appSettings.ui_locale_auto) {
+                // Returning to auto — drop the pinned value so
+                // paraglide's preferredLanguage strategy can win.
+                appSettings.ui_locale = ''
+                try {
+                  window.localStorage.removeItem('PARAGLIDE_LOCALE')
+                } catch {}
+                window.location.reload()
+              }
+              scheduleSave()
+            }}
+          />
+          <span>
+            {m.settings_general_language_auto_label()}
+            <span class="block text-xs text-surface-500">
+              {m.settings_general_language_auto_hint()}
+            </span>
+          </span>
+        </div>
+        {#if !(appSettings.ui_locale_auto ?? true)}
+          <label class="flex items-center gap-2 pt-1 pl-9 text-sm">
+            <span class="shrink-0">{m.settings_general_language_label()}</span>
+            <select
+              class="select px-2 py-1 text-sm rounded-md flex-1 max-w-65"
+              value={appSettings.ui_locale || (locales as readonly string[])[0]}
+              onchange={(e) => {
+                const v = (e.currentTarget as HTMLSelectElement).value
+                appSettings.ui_locale = v
+                if ((locales as readonly string[]).includes(v)) {
+                  setLocale(v as (typeof locales)[number], { reload: false })
+                }
+                scheduleSave()
+              }}
+            >
+              {#each locales as code}
+                <option value={code}>{LOCALE_LABELS[code] ?? code}</option>
+              {/each}
+            </select>
+          </label>
+          <p class="pl-9 text-xs text-surface-500">
+            {m.settings_general_language_hint()}
+          </p>
+        {/if}
       </div>
     </div>
     {/if}

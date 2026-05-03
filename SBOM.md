@@ -113,7 +113,7 @@ strong-copyleft licence stronger than what we already have (e.g.
 AGPL-3.0) is a project-level decision, not a routine PR. See
 [CLAUDE.md](CLAUDE.md) for the AI-assistant version of this rule.
 
-Last manual reconciliation: 2026-05-02 (CI pipeline fixes — `hickory-resolver` 0.24→0.26 and transitive `rustls-webpki` 0.103.11→0.103.13 security bumps; both keep their existing MIT-OR-Apache-2.0 licences, no new direct deps).
+Last manual reconciliation: 2026-05-03 (i18n via `@inlang/paraglide-js` — Apache-2.0, runtime ships a small message-selector function in the bundle; no licence change for the app overall).
 
 ---
 
@@ -200,6 +200,7 @@ us, that's GPL-3.0 via `rrule`.
 | `dompurify` | MPL-2.0 OR Apache-2.0 | HTML sanitiser for inbound mail bodies. We can pick MPL or Apache; either way no licence pressure on our app. |
 | `emoji-picker-element` | MIT | Emoji picker web component. |
 | `svelte-tiptap` | MIT | Svelte wrapper around Tiptap. |
+| `@inlang/paraglide-js` | Apache-2.0 | i18n compiler (#190). Generates per-locale message modules at build time; the runtime helper that ships in the bundle is a small selection-only function. |
 
 ### Build / type-check (`devDependencies`)
 

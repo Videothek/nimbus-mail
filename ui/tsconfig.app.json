@@ -16,5 +16,13 @@
     "checkJs": true,
     "moduleDetection": "force"
   },
-  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte"]
+  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte"],
+  "exclude": [
+    "_comment_paraglide_server",
+    "Paraglide's compiled `server.js` references Node-only `async_hooks`",
+    "for SSR scenarios we never use (we're a browser-only Tauri webview).",
+    "Skip type-checking it; the file is regenerated on every build, so any",
+    "drift in our hand-written code wouldn't carry through anyway.",
+    "src/paraglide/server.js"
+  ]
 }

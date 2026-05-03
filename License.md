@@ -52,8 +52,8 @@ The following packages are distributed under the MIT License:
 `svelte-tiptap`, `@skeletonlabs/skeleton`,
 `@skeletonlabs/skeleton-svelte`, `@sveltejs/vite-plugin-svelte`,
 `@tailwindcss/typography`, `@tailwindcss/vite`, `@tsconfig/svelte`,
-`@types/dompurify`, `@types/node`, `svelte`, `svelte-check`,
-`tailwindcss`, `vite`.
+`@types/dompurify`, `@types/node`, `@inlang/paraglide-js`,
+`svelte`, `svelte-check`, `tailwindcss`, `vite`.
 
 Several of these are dual-licensed `MIT OR Apache-2.0`; we list each
 package only under its first applicable section here.
