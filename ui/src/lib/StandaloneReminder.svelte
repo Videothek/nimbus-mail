@@ -285,7 +285,13 @@
           bind:value={snoozeChoice}
           aria-label="Remind me"
         >
-          <option value="">Remind me…</option>
+          <!-- `hidden` + `disabled` keep "Remind me…" as the
+               closed-state placeholder text without surfacing
+               it as a clickable option in the open dropdown.
+               All real options are left-aligned at the same
+               column as the placeholder — no numeric padding
+               so the labels start flush. -->
+          <option value="" hidden disabled selected>Remind me…</option>
           {#if isSnoozeOptionAvailable('before-15', reminder.start)}
             <option value="before-15">15 min before</option>
           {/if}
@@ -293,13 +299,7 @@
             <option value="before-10">10 min before</option>
           {/if}
           {#if isSnoozeOptionAvailable('before-5', reminder.start)}
-            <!-- U+2007 figure-space prefix on the single-digit
-                 "5" so its "min before" column lines up under
-                 "10 min before" / "15 min before".  Native
-                 <option> renders proportional, so without this
-                 the label drifts left.  Figure space is exactly
-                 one digit wide. -->
-            <option value="before-5">&#8199;5 min before</option>
+            <option value="before-5">5 min before</option>
           {/if}
           {#if isSnoozeOptionAvailable('at-start', reminder.start)}
             <option value="at-start">At event start</option>
