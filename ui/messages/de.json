@@ -4,9 +4,13 @@
   "_comment": "German translations.  Mirror the key set of `en.json` exactly — paraglide warns at compile time about missing keys, but a key with no German translation falls back to English at runtime.  Keep the formality at 'Sie' (formal you) for now; switch to 'du' if the team decides on a more casual register later.",
 
   "settings_general_language_label": "Anzeigesprache",
-  "settings_general_language_hint": "Sprache der Nimbus-Mail-Oberfläche ändern. Ein Neustart ist nicht nötig — die Änderung wird sofort übernommen.",
+  "settings_general_language_hint": "Sprache der Nimbus-Mail-Oberfläche ändern. Die neue Sprache wird beim nächsten Start übernommen.",
   "settings_general_language_auto_label": "Systemsprache verwenden",
   "settings_general_language_auto_hint": "Die vom Betriebssystem gemeldete Sprache verwenden. Deaktivieren, um eine bestimmte Sprache fest auszuwählen.",
+  "settings_general_language_restart_title": "Neustart erforderlich",
+  "settings_general_language_restart_body": "Die neue Sprache wird beim nächsten Start von Nimbus Mail übernommen.",
+  "settings_general_language_restart_now": "Jetzt neu starten",
+  "settings_general_language_restart_later": "Später neu starten",
 
   "account_setup_welcome_title": "Willkommen bei Nimbus Mail",
   "account_setup_welcome_subtitle": "Lassen Sie uns Ihr E-Mail-Konto einrichten",

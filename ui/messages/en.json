@@ -4,9 +4,13 @@
   "_comment": "Naming convention: <surface>_<element>_<role>. Surface = where the string appears (account_setup, settings, compose, …). Element = which UI thing inside that surface. Role = label / placeholder / hint / error / button / etc. Keep keys snake_case so they look good in autocomplete and don't fight ESLint identifier rules. Add new keys when you touch a string; the codebase is migrated lazily — see CLAUDE.md → i18n.",
 
   "settings_general_language_label": "Display language",
-  "settings_general_language_hint": "Change which language Nimbus Mail uses for its UI. Restart isn't required — the change applies live.",
+  "settings_general_language_hint": "Change which language Nimbus Mail uses for its UI. The new language takes effect after the next restart.",
   "settings_general_language_auto_label": "Match system language",
   "settings_general_language_auto_hint": "Use the language reported by your operating system. Turn off to pin a specific language regardless of system setting.",
+  "settings_general_language_restart_title": "Restart required",
+  "settings_general_language_restart_body": "The new language will be applied the next time Nimbus Mail starts.",
+  "settings_general_language_restart_now": "Restart now",
+  "settings_general_language_restart_later": "Restart later",
 
   "account_setup_welcome_title": "Welcome to Nimbus Mail",
   "account_setup_welcome_subtitle": "Let's set up your email account",
