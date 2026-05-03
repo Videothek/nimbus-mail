@@ -30,6 +30,7 @@
   } from './uiScale'
   import { m } from '../paraglide/messages'
   import { locales, setLocale } from '../paraglide/runtime'
+  import { localeBump } from './localeBump.svelte'
 
   // Friendly labels for the locale picker.  Keep the codes in
   // lockstep with `project.inlang/settings.json`.  Native
@@ -952,18 +953,19 @@
               if (appSettings.ui_locale_auto) {
                 // Returning to auto — drop the pinned value so
                 // paraglide's preferredLanguage strategy can win
-                // on the next launch.  Persist first, then
-                // reload (the reload re-runs `loadAppPrefs` which
-                // re-applies whatever paraglide picks based on
-                // navigator.language).
+                // on the next launch.  Resolving the OS-language
+                // immediately on the running window (vs. waiting
+                // for restart) takes the next-launch detour: we
+                // persist the new auto-state via the normal
+                // debounced save and bump the locale key so the
+                // visible tree remounts.  Paraglide rereads
+                // `navigator.language` on the remount because
+                // localStorage was just cleared.
                 appSettings.ui_locale = ''
                 try {
                   window.localStorage.removeItem('PARAGLIDE_LOCALE')
                 } catch {}
-                void invoke('set_app_settings', {
-                  settings: appSettings,
-                }).finally(() => window.location.reload())
-                return
+                localeBump.bump()
               }
               scheduleSave()
             }}
@@ -985,20 +987,19 @@
                 const v = (e.currentTarget as HTMLSelectElement).value
                 appSettings.ui_locale = v
                 if ((locales as readonly string[]).includes(v)) {
-                  // Persist FIRST, then reload — `setLocale`'s
-                  // default behaviour is to reload the page,
-                  // which is what we want here: paraglide's
-                  // `m.<key>()` calls aren't reactive state, so
-                  // a no-reload switch leaves the previous
-                  // locale's strings rendered until the next
-                  // remount.  The reload re-runs `loadAppPrefs`
-                  // which re-reads what we just saved.
-                  void invoke('set_app_settings', {
-                    settings: appSettings,
-                  }).finally(() => {
-                    setLocale(v as (typeof locales)[number])
+                  // `reload: false` keeps paraglide from
+                  // bouncing the page; we then bump the
+                  // shared `localeBump` so App.svelte's
+                  // `{#key …}` block remounts the visible
+                  // tree and `m.<key>()` calls re-evaluate
+                  // with the new locale.  The user stays on
+                  // the Settings page, the in-flight
+                  // `scheduleSave` debounce runs to
+                  // completion without racing a reload.
+                  setLocale(v as (typeof locales)[number], {
+                    reload: false,
                   })
-                  return
+                  localeBump.bump()
                 }
                 scheduleSave()
               }}

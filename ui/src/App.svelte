@@ -59,6 +59,7 @@
     UI_SCALE_STEP,
   } from './lib/uiScale'
   import { getLocale, setLocale, locales } from './paraglide/runtime'
+  import { localeBump } from './lib/localeBump.svelte'
 
   // ── View state ──────────────────────────────────────────────
   // Which view is currently shown. Starts as 'loading' until we
@@ -663,16 +664,15 @@
         appPrefs.ui_locale &&
         (locales as readonly string[]).includes(appPrefs.ui_locale)
       ) {
-        // `reload: false` only flips paraglide's internal state.
-        // Svelte components call `m.<key>()` directly, and those
-        // reads aren't part of any `$state` graph — so a no-reload
-        // switch leaves the previous locale's strings on screen
-        // until the next remount.  We compare against the
-        // currently-active locale and only reload when they
-        // differ, so the launch path (where settings come back
-        // matching what's already applied) doesn't loop.
+        // Skip when the persisted locale is already what's
+        // active — avoids a needless remount on the launch
+        // path (settings come back matching what paraglide
+        // already picked up from `localStorage`).
         if (getLocale() !== appPrefs.ui_locale) {
-          setLocale(appPrefs.ui_locale as (typeof locales)[number])
+          setLocale(appPrefs.ui_locale as (typeof locales)[number], {
+            reload: false,
+          })
+          localeBump.bump()
         }
       }
     } catch (err) {
@@ -1528,6 +1528,16 @@
      the user authenticates.  Everything else (loading, setup,
      mail / calendar / contacts views) stays unmounted so no IPC
      fires with the cache still locked. -->
+<!-- Wrap the main router in a `{#key}` keyed on `localeBump.value`
+     so a runtime locale switch (#190) re-mounts the visible
+     subtree, which causes every `m.<key>()` call inside to
+     re-evaluate with the freshly-picked language.  Without
+     this, paraglide flips its internal locale but Svelte never
+     re-renders — the previous language's strings stay on screen
+     until the next mount.  Reloading the page worked but
+     bounced the user out of whichever settings tab they were
+     on; this is the smoother alternative. -->
+{#key localeBump.value}
 {#if dbStatus && dbStatus.locked}
   <LockScreen
     methods={dbStatus.methods}
@@ -1710,6 +1720,7 @@
     {/if}
   </div>
 {/if}
+{/key}
 
 <!-- "Respond with meeting" event editor — mounted at the app level
      so it can overlay any view. Driven entirely by `meetingDraft`:
