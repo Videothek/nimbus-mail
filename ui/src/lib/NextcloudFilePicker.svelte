@@ -81,30 +81,26 @@
 
   let pickFolderMode = $derived(onpickfolder != null)
 
-  // Close on Escape (#192).  Document-level so the key works
-  // wherever focus is in the picker — the existing inline Esc
-  // handler at the share-prompt password input only catches that
-  // one element.  Two-stage:
-  //   * If the share-prompt sub-modal is open, Esc closes the
-  //     prompt (matching the existing input-level handler).
-  //   * Otherwise Esc closes the whole picker via `onclose()`.
-  // Inert while `sharing` is in flight so the user can't bail
-  // mid-OCS-call and end up with a half-created share.
-  $effect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key !== 'Escape') return
-      if (sharing) return
-      if (sharePrompt) {
-        e.preventDefault()
-        sharePrompt = null
-        return
-      }
+  /**
+   * Esc handler for the picker (#192).  Wired via
+   * `<svelte:window onkeydown>` in the template.  Two-stage:
+   * if the share-prompt sub-modal is open, Esc closes that
+   * first (matching the existing input-level handler).
+   * Otherwise Esc closes the whole picker via `onclose()`.
+   * Inert while `sharing` is in flight so the user can't bail
+   * mid-OCS-call and end up with a half-created share.
+   */
+  function onPickerKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return
+    if (sharing) return
+    if (sharePrompt) {
       e.preventDefault()
-      onclose()
+      sharePrompt = null
+      return
     }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  })
+    e.preventDefault()
+    onclose()
+  }
 
   // Bound from the inner browser — we read these to drive the footer
   // buttons and the download/share actions.
@@ -334,6 +330,8 @@
     }
   }
 </script>
+
+<svelte:window onkeydown={onPickerKeydown} />
 
 <div
   class="fixed inset-0 z-60 flex items-center justify-center bg-black/50"
