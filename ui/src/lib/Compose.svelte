@@ -35,6 +35,7 @@
   import Icon from './Icon.svelte'
   import FileTypeIcon from './FileTypeIcon.svelte'
   import AttachmentThumb, { prewarm as prewarmAttachmentThumb } from './AttachmentThumb.svelte'
+  import { openAttachment } from './attachmentOpen'
   import CreateTalkRoomModal, { type TalkRoom } from './CreateTalkRoomModal.svelte'
   import { openComposeInStandaloneWindow } from './standaloneComposeWindow'
 
@@ -1111,6 +1112,24 @@
     input.value = ''
   }
 
+  /** #162 — let the user click an attachment chip to preview
+   *  what they're about to send.  Same dispatch as the receive
+   *  side: Office/PDF/Markdown go to a viewer window, anything
+   *  else opens in the OS default desktop app.  Bytes are
+   *  already in memory (`att.data`), so no IPC round-trip is
+   *  needed before the open. */
+  async function previewAttachment(att: Attachment) {
+    try {
+      await openAttachment(
+        { filename: att.filename, content_type: att.content_type },
+        async () => att.data,
+      )
+    } catch (e: any) {
+      console.warn('preview attachment failed', e)
+      error = e?.message ?? 'Failed to open attachment'
+    }
+  }
+
   function removeAttachment(i: number) {
     attachments = attachments.filter((_, idx) => idx !== i)
   }
@@ -1605,16 +1624,36 @@
       {#if attachments.length > 0}
         <div class="flex flex-wrap gap-2">
           {#each attachments as att, i (i)}
+            <!-- #162 — chip is clickable; opens the file in
+                 the same viewer the receive side uses (Office /
+                 PDF / Markdown in a webview, everything else in
+                 the OS default app).  The ✕ remove button keeps
+                 its own click handler with stopPropagation so
+                 hitting it doesn't also trigger the preview. -->
             <span class="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-surface-200 dark:bg-surface-800 text-xs">
-              <AttachmentThumb
-                bytes={att.data}
-                contentType={att.content_type}
-                filename={att.filename}
-                cacheKey={att.content_id}
-                class="w-7 h-7"
-              />
-              <span>{att.filename}</span>
-              <button class="text-surface-500 hover:text-red-500" onclick={() => removeAttachment(i)} aria-label="Remove">✕</button>
+              <button
+                type="button"
+                class="inline-flex items-center gap-2 cursor-pointer text-left"
+                onclick={() => void previewAttachment(att)}
+                title="Preview {att.filename}"
+              >
+                <AttachmentThumb
+                  bytes={att.data}
+                  contentType={att.content_type}
+                  filename={att.filename}
+                  cacheKey={att.content_id}
+                  class="w-7 h-7"
+                />
+                <span>{att.filename}</span>
+              </button>
+              <button
+                class="text-surface-500 hover:text-red-500"
+                onclick={(e) => {
+                  e.stopPropagation()
+                  removeAttachment(i)
+                }}
+                aria-label="Remove"
+              >✕</button>
             </span>
           {/each}
         </div>
