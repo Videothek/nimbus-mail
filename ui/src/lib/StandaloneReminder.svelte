@@ -25,8 +25,9 @@
 
   import { invoke } from '@tauri-apps/api/core'
   import { emit } from '@tauri-apps/api/event'
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import Icon from './Icon.svelte'
+  import { applyTheme, installSystemModeListener, type ThemeMode } from './theme'
   import {
     takeReminderPopoutPayload,
     type EventReminderPayload,
@@ -39,6 +40,7 @@
 
   let reminder = $state<EventReminderPayload | null>(null)
   let snoozeChoice = $state<SnoozeChoice>('')
+  let unlistenSystemMode: (() => void) | null = null
 
   // Snooze options.  Each label maps to a callback that returns
   // the `snooze_until` UTC date (computed when the user clicks
@@ -120,11 +122,22 @@
 
   async function showEvent() {
     if (!reminder) return await closeSelf()
-    // Tell the main window to switch to calendar + open the
-    // editor for this event.  App.svelte listens on
-    // `reminder-show-event` and translates it into a
-    // `currentView = 'calendar'` + `calendarFocusEventId =
-    // payload.eventId` flip.
+    // Two steps:
+    //   1. Bring the main window forward via the existing
+    //      `show_main_window_cmd` Rust IPC.  Calling from
+    //      Rust avoids the Win32 SetForegroundWindow lock
+    //      that bites JS-side `setFocus()` from a non-
+    //      foreground window — important for the "main
+    //      window is hidden in the system tray" case where
+    //      a JS focus call from the popup would silently
+    //      no-op.
+    //   2. Emit the cross-window `reminder-show-event`
+    //      event so App.svelte's listener flips the view to
+    //      calendar and threads the event id through to
+    //      CalendarView.
+    void invoke('show_main_window_cmd').catch((err) =>
+      console.warn('show_main_window_cmd failed', err),
+    )
     await emit('reminder-show-event', { eventId: reminder.eventId })
     void invoke('dismiss_event_reminder', { uid: reminder.uid }).catch(
       () => {},
@@ -155,6 +168,29 @@
   }
 
   onMount(() => {
+    // Theme bootstrap so the popout matches the user's chosen
+    // Skeleton theme + light/dark mode.  Same shape as
+    // StandaloneCompose / StandaloneMail — pull the prefs from
+    // the backend, set the `data-theme` + `data-mode`
+    // attributes on `<html>`, then install the system-mode
+    // listener so a runtime theme switch in the main app also
+    // ripples to this window.
+    void (async () => {
+      try {
+        const prefs = await invoke<{
+          theme_name: string
+          theme_mode: ThemeMode
+        }>('get_app_settings')
+        applyTheme(prefs.theme_name, prefs.theme_mode)
+        unlistenSystemMode = installSystemModeListener(
+          prefs.theme_mode,
+          prefs.theme_name,
+        )
+      } catch (e) {
+        console.warn('get_app_settings failed in standalone reminder', e)
+      }
+    })()
+
     const payload = takeReminderPopoutPayload(popoutKey)
     if (!payload) {
       // Stale / missing payload — close immediately so we don't
@@ -163,6 +199,10 @@
       return
     }
     reminder = payload
+  })
+
+  onDestroy(() => {
+    unlistenSystemMode?.()
   })
 </script>
 
@@ -208,7 +248,7 @@
 
     <div class="flex-1 overflow-auto p-4 flex flex-col gap-3">
       <!-- Title row. -->
-      <h1 class="text-base font-semibold leading-snug break-words">
+      <h1 class="text-base font-semibold leading-snug wrap-break-word">
         {reminder.summary || 'Event'}
       </h1>
 
@@ -224,7 +264,7 @@
       {#if reminder.location}
         <div class="flex items-start gap-2 text-sm text-surface-700 dark:text-surface-300">
           <span class="text-surface-500 mt-0.5 shrink-0"><Icon name="location" size={14} /></span>
-          <span class="break-words min-w-0">{reminder.location}</span>
+          <span class="wrap-break-word min-w-0">{reminder.location}</span>
         </div>
       {/if}
 
@@ -232,7 +272,7 @@
       {#if reminder.attendees.length > 0}
         <div class="flex items-start gap-2 text-sm text-surface-700 dark:text-surface-300">
           <span class="text-surface-500 mt-0.5 shrink-0"><Icon name="contacts" size={14} /></span>
-          <span class="break-words min-w-0">{formatAttendees(reminder.attendees)}</span>
+          <span class="wrap-break-word min-w-0">{formatAttendees(reminder.attendees)}</span>
         </div>
       {/if}
 
