@@ -30,6 +30,16 @@
   } from './uiScale'
   import { m } from '../paraglide/messages'
   import { getLocale, locales } from '../paraglide/runtime'
+  import {
+    downloadBundle,
+    getSyncState,
+    ncProbeBundle,
+    ncRestoreBundle,
+    notifySettingsChanged,
+    setSyncTarget,
+    uploadBundle,
+    type SettingsSyncStateView,
+  } from './settingsBundle'
 
   // Friendly labels for the locale picker.  Keep the codes in
   // lockstep with `project.inlang/settings.json`.  Native
@@ -118,7 +128,14 @@
   // categories users actually look for.  The nav lives in a
   // left column and `activeCategory` gates which section block
   // renders so each panel stays focused.
-  type SettingsCategory = 'general' | 'design' | 'mail' | 'calendar' | 'nextcloud' | 'security'
+  type SettingsCategory =
+    | 'general'
+    | 'design'
+    | 'mail'
+    | 'calendar'
+    | 'nextcloud'
+    | 'security'
+    | 'backup'
   let activeCategory = $state<SettingsCategory>('general')
   interface CategoryEntry {
     id: SettingsCategory
@@ -135,6 +152,12 @@
     { id: 'calendar', label: 'Calendar', icon: 'calendar' },
     { id: 'nextcloud', label: 'Nextcloud', icon: 'cloud' },
     { id: 'security', label: 'Security', icon: 'lock' },
+    // #168 — the page where the user manages local export +
+    // Nextcloud-recovery sync.  The `sync` glyph (two arrows in a
+    // loop) communicates "this is the page where state moves
+    // back and forth between machines" better than a generic
+    // archive icon.
+    { id: 'backup', label: 'Backup & Sync', icon: 'sync' },
   ]
 
   // ── State ───────────────────────────────────────────────────
@@ -293,6 +316,112 @@
   let prefsSaveStatus = $state<'' | 'saving' | 'saved' | 'error'>('')
   let checkNowBusy = $state(false)
 
+  // ── Backup & Sync (#168) ─────────────────────────────────────
+  // State for the Backup & Sync category panel.  The dropdown
+  // shows every connected NC account so the user can pick which
+  // one becomes the recovery destination, mirrored by a per-row
+  // toggle on the Nextcloud category.
+  interface NcOption {
+    id: string
+    label: string
+  }
+  let ncOptions = $state<NcOption[]>([])
+  let syncState = $state<SettingsSyncStateView>({ targetNcId: null, pending: false })
+  /** Status string surfaced under the Download / Upload buttons.
+   *  Mirrors the `prefsSaveStatus` pattern but with longer-lived
+   *  messages (we want the user to see "Saved to /tmp/foo.json"
+   *  for a few seconds, not flash through "saved" → ""). */
+  let backupStatus = $state<{ kind: 'idle' | 'busy' | 'done' | 'error'; msg: string }>(
+    { kind: 'idle', msg: '' },
+  )
+  function showBackupStatus(kind: 'busy' | 'done' | 'error', msg: string) {
+    backupStatus = { kind, msg }
+    if (kind !== 'busy') {
+      setTimeout(() => {
+        if (backupStatus.kind === kind && backupStatus.msg === msg) {
+          backupStatus = { kind: 'idle', msg: '' }
+        }
+      }, 4000)
+    }
+  }
+
+  async function loadSyncState() {
+    try {
+      syncState = await getSyncState()
+    } catch (e) {
+      console.warn('get_settings_sync_state failed', e)
+    }
+  }
+  async function loadNcOptions() {
+    try {
+      const accs = await invoke<{ id: string; username: string; server_url: string; display_name?: string | null }[]>('get_nextcloud_accounts')
+      ncOptions = accs.map((a) => ({
+        id: a.id,
+        label: a.display_name || `${a.username} @ ${new URL(a.server_url).hostname}`,
+      }))
+    } catch (e) {
+      console.warn('loadNcOptions failed', e)
+      ncOptions = []
+    }
+  }
+  async function onSyncTargetChange(next: string | null) {
+    try {
+      await setSyncTarget(next)
+      await loadSyncState()
+    } catch (e) {
+      console.warn('setSyncTarget failed', e)
+    }
+  }
+  async function onDownloadClick() {
+    showBackupStatus('busy', 'Saving…')
+    try {
+      const path = await downloadBundle()
+      if (path) showBackupStatus('done', `Saved to ${path}`)
+      else backupStatus = { kind: 'idle', msg: '' }
+    } catch (e: any) {
+      showBackupStatus('error', e?.message ?? String(e))
+    }
+  }
+  async function onUploadClick() {
+    if (
+      !confirm(
+        'Importing a settings backup will overwrite your current preferences and merge in any accounts from the file. Continue?',
+      )
+    )
+      return
+    showBackupStatus('busy', 'Importing…')
+    try {
+      const path = await uploadBundle()
+      if (path) {
+        showBackupStatus('done', 'Imported — reload the window to see every change.')
+        await loadAppSettings()
+        await loadAccounts()
+      } else {
+        backupStatus = { kind: 'idle', msg: '' }
+      }
+    } catch (e: any) {
+      showBackupStatus('error', e?.message ?? String(e))
+    }
+  }
+  async function onRestoreFromNcClick() {
+    if (!syncState.targetNcId) return
+    if (
+      !confirm(
+        'Replace your local preferences with the latest backup from this Nextcloud? Existing accounts on this machine are kept; the bundle just adds back any that were missing and updates metadata.',
+      )
+    )
+      return
+    showBackupStatus('busy', 'Downloading from Nextcloud…')
+    try {
+      await ncRestoreBundle(syncState.targetNcId)
+      showBackupStatus('done', 'Restored — reload the window to see every change.')
+      await loadAppSettings()
+      await loadAccounts()
+    } catch (e: any) {
+      showBackupStatus('error', e?.message ?? String(e))
+    }
+  }
+
   // ── Load accounts on mount ──────────────────────────────────
   // $effect runs when the component is first rendered (like onMount).
   // We call the Rust backend to get all saved accounts.
@@ -300,6 +429,8 @@
     loadAccounts()
     loadAppSettings()
     loadCalendarsForPicker()
+    loadSyncState()
+    loadNcOptions()
   })
 
   async function loadCalendarsForPicker() {
@@ -345,6 +476,11 @@
       try {
         await invoke('update_app_settings', { newSettings: appSettings })
         prefsSaveStatus = 'saved'
+        // Settings changed → kick the auto-sync worker so a
+        // recovery push to the configured Nextcloud (#168)
+        // happens in the background.  Fire-and-forget; the
+        // helper logs and swallows its own errors.
+        void notifySettingsChanged()
         setTimeout(() => {
           if (prefsSaveStatus === 'saved') prefsSaveStatus = ''
         }, 1500)
@@ -1718,6 +1854,116 @@
 
     {#if activeCategory === 'security'}
     <SecuritySettings />
+    {/if}
+
+    {#if activeCategory === 'backup'}
+      <!-- Issue #168: Backup & Sync.
+           Two surfaces in one panel:
+             1. Local — Download / Upload settings.json via the OS
+                file dialog.  Cross-machine portable; users can
+                stash a copy in their own backup pipeline.
+             2. Nextcloud — pick a connected NC, the worker keeps
+                /Nimbus Mail/settings/settings.json fresh.  Used
+                for first-launch recovery on a new install. -->
+      <section class="space-y-6">
+        <header>
+          <h2 class="text-xl font-semibold">Backup &amp; Sync</h2>
+          <p class="text-sm text-surface-500 mt-1 max-w-2xl">
+            Save every preference, account metadata, folder→emoji
+            mapping, signature, theme, and locale to a portable
+            <code>settings.json</code>. Passwords stay in your
+            OS keychain — they're <em>not</em> in the bundle, so
+            restoring on a fresh install will still ask you to
+            re-authenticate each account on first connect.
+          </p>
+        </header>
+
+        <!-- Local backup -->
+        <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4 space-y-3">
+          <div>
+            <h3 class="font-medium leading-tight">Local backup</h3>
+            <p class="text-xs text-surface-500 leading-snug mt-1">
+              Save the bundle to a path of your choice. Re-import
+              it on this or another machine.
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button
+              class="btn preset-filled-primary-500"
+              disabled={backupStatus.kind === 'busy'}
+              onclick={() => void onDownloadClick()}
+            >Download settings.json</button>
+            <button
+              class="btn preset-outlined-surface-500"
+              disabled={backupStatus.kind === 'busy'}
+              onclick={() => void onUploadClick()}
+            >Import from file…</button>
+          </div>
+        </div>
+
+        <!-- Nextcloud recovery sync -->
+        <div class="rounded-md border border-surface-200 dark:border-surface-700 p-4 space-y-3">
+          <div>
+            <h3 class="font-medium leading-tight">Save to Nextcloud</h3>
+            <p class="text-xs text-surface-500 leading-snug mt-1">
+              Keep a copy on a connected Nextcloud at
+              <code>/Nimbus Mail/settings/settings.json</code>.
+              Pushed automatically on every settings change. If
+              the server is unreachable the push is queued and
+              retried — silently — the next time it's online or
+              the next time a setting changes.
+              {#if syncState.pending}
+                <br>
+                <span class="text-warning-600 dark:text-warning-400">
+                  A previous push is still pending — will retry shortly.
+                </span>
+              {/if}
+            </p>
+          </div>
+          {#if ncOptions.length === 0}
+            <p class="text-xs text-surface-500 italic">
+              Connect a Nextcloud first under <strong>Nextcloud</strong> to enable this.
+            </p>
+          {:else}
+            <div class="flex flex-wrap items-center gap-3">
+              <label class="text-sm text-surface-700 dark:text-surface-300" for="sync-target">
+                Sync target
+              </label>
+              <select
+                id="sync-target"
+                class="input w-72 max-w-full text-sm px-3 py-1.5 rounded-md"
+                value={syncState.targetNcId ?? ''}
+                onchange={(e) => {
+                  const v = (e.currentTarget as HTMLSelectElement).value
+                  void onSyncTargetChange(v ? v : null)
+                }}
+              >
+                <option value="">— Off —</option>
+                {#each ncOptions as opt (opt.id)}
+                  <option value={opt.id}>{opt.label}</option>
+                {/each}
+              </select>
+              {#if syncState.targetNcId}
+                <button
+                  class="btn btn-sm preset-outlined-surface-500"
+                  disabled={backupStatus.kind === 'busy'}
+                  onclick={() => void onRestoreFromNcClick()}
+                >Restore from Nextcloud</button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+
+        {#if backupStatus.kind !== 'idle'}
+          <p
+            class="text-sm wrap-break-word {backupStatus.kind === 'error'
+              ? 'text-red-500'
+              : backupStatus.kind === 'done'
+              ? 'text-success-600 dark:text-success-400'
+              : 'text-surface-500'}"
+          >{backupStatus.msg}</p>
+        {/if}
+      </section>
     {/if}
     </div>
   </div>

@@ -35,7 +35,10 @@ use nimbus_store::cache::{
     CalendarEventRow, CalendarEventServerHandle, CalendarRow, ContactRow, ContactServerHandle,
     SearchFilters, SearchHit, SearchScope, SyncState,
 };
-use nimbus_store::{Cache, account_store, app_settings, credentials, nextcloud_store};
+use nimbus_store::{
+    Cache, account_store, app_settings, credentials, nextcloud_store, settings_bundle,
+    settings_sync,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -278,9 +281,12 @@ fn add_account(
     account: Account,
     password: String,
     cache: State<'_, Cache>,
+    notify: State<'_, SettingsSyncNotify>,
 ) -> Result<(), NimbusError> {
     credentials::store_imap_password(&account.id, &password)?;
-    account_store::add_account(&cache, account)
+    account_store::add_account(&cache, account)?;
+    notify.0.notify_one();
+    Ok(())
 }
 
 /// Remove an account and its stored password.
@@ -291,20 +297,35 @@ fn add_account(
 /// is deleted last so the rest of the app's "this account exists"
 /// queries stay truthful right up until the cleanup completes.
 #[tauri::command]
-fn remove_account(id: String, cache: State<'_, Cache>) -> Result<(), NimbusError> {
+fn remove_account(
+    id: String,
+    cache: State<'_, Cache>,
+    notify: State<'_, SettingsSyncNotify>,
+) -> Result<(), NimbusError> {
     credentials::delete_imap_password(&id)?;
     // Best-effort: a failure here leaves orphaned cache rows but doesn't
     // block account removal. Log and continue.
     if let Err(e) = cache.wipe_account(&id) {
         tracing::warn!("failed to wipe cache for account '{id}': {e}");
     }
-    account_store::remove_account(&cache, &id)
+    account_store::remove_account(&cache, &id)?;
+    notify.0.notify_one();
+    Ok(())
 }
 
 /// Update an existing account's settings.
 #[tauri::command]
-fn update_account(account: Account, cache: State<'_, Cache>) -> Result<(), NimbusError> {
-    account_store::update_account(&cache, account)
+fn update_account(
+    account: Account,
+    cache: State<'_, Cache>,
+    notify: State<'_, SettingsSyncNotify>,
+) -> Result<(), NimbusError> {
+    account_store::update_account(&cache, account)?;
+    // #168: any account-metadata edit (signature, folder→emoji
+    // overrides, sort order, …) is part of the bundle, so wake
+    // the auto-sync worker.  No-ops cleanly when sync is off.
+    notify.0.notify_one();
+    Ok(())
 }
 
 /// Replace the IMAP/SMTP password stored in the OS keychain for
@@ -337,6 +358,7 @@ fn set_folder_icon(
     folder_name: String,
     icon: Option<String>,
     cache: State<'_, Cache>,
+    notify: State<'_, SettingsSyncNotify>,
 ) -> Result<(), NimbusError> {
     let mut account = load_account(&cache, &account_id)?;
     match icon {
@@ -349,7 +371,9 @@ fn set_folder_icon(
             account.folder_icon_overrides.remove(&folder_name);
         }
     }
-    account_store::update_account(&cache, account)
+    account_store::update_account(&cache, account)?;
+    notify.0.notify_one();
+    Ok(())
 }
 
 /// Probe Mozilla autoconfig and DNS SRV records for the email's
@@ -860,6 +884,17 @@ async fn save_bytes_to_path(path: String, data: Vec<u8>) -> Result<(), NimbusErr
     // don't need to spawn_blocking.
     std::fs::write(&path, &data)
         .map_err(|e| NimbusError::Other(format!("Failed to write {path}: {e}")))
+}
+
+/// Read a small text file (a settings bundle, typically ~kilobytes)
+/// from disk.  Used by the "Import settings" flow (#168): the
+/// frontend opens a file picker via `plugin-dialog`, gets back an
+/// absolute path, and hands it here for the actual read so we
+/// don't need a separate filesystem plugin in `package.json`.
+#[tauri::command]
+async fn read_text_from_path(path: String) -> Result<String, NimbusError> {
+    std::fs::read_to_string(&path)
+        .map_err(|e| NimbusError::Other(format!("Failed to read {path}: {e}")))
 }
 
 /// Upload raw bytes to a file in the user's Nextcloud.
@@ -8157,10 +8192,354 @@ async fn get_app_settings(settings: State<'_, SharedSettings>) -> Result<AppSett
 async fn update_app_settings(
     new_settings: AppSettings,
     settings: State<'_, SharedSettings>,
+    notify: State<'_, SettingsSyncNotify>,
 ) -> Result<(), NimbusError> {
     app_settings::save_settings(&new_settings)?;
     *settings.write().await = new_settings;
+    notify.0.notify_one();
     Ok(())
+}
+
+// ── Settings backup & sync (#168) ──────────────────────────────
+//
+// Lets the user save every preference (app-wide settings, account
+// metadata, folder→emoji mappings, signature, locale, theme, …)
+// to either a local `settings.json` or to a connected Nextcloud
+// under `/Nimbus Mail/settings/settings.json`.  Restoring is the
+// reverse: pick a file, or — on first NC connect — accept the
+// "found a backup, restore?" prompt.
+//
+// Architecture
+//
+//   • Bundle = { version, exported_at, app_settings, accounts,
+//                local_storage }.  Schema-versioned JSON; secrets
+//                (passwords, FIDO wraps, master key) deliberately
+//                excluded.  See `nimbus_store::settings_bundle`.
+//
+//   • NC sync runs in a background task.  Frontend calls
+//     `notify_settings_changed(local_storage)` after any UI
+//     mutation; the worker debounces 2 s, then PUTs the bundle
+//     to NC.  Failure flips `settings_sync::SettingsSyncState
+//     ::pending` to true so the next opportunity (next change OR
+//     the periodic 5-min retry) takes another shot.
+//
+//   • The worker is started once from `main()` after the cache
+//     unlocks (it needs `Cache` access for accounts).  On launch
+//     it consults `pending` from disk; if true, it attempts a
+//     push immediately so a quit-while-offline still recovers.
+//
+//   • Sync target (`target_nc_id`) is stored *outside* the
+//     bundle — it's a per-machine choice.  Restoring on a new
+//     device shouldn't silently start syncing back to the old
+//     server.
+
+/// Path inside a user's Nextcloud where the settings bundle
+/// lives.  Sits under the existing `/Nimbus Mail` root so it
+/// shares a folder with the temp area used by Office viewer.
+const NIMBUS_SETTINGS_DIR: &str = "/Nimbus Mail/settings";
+const NIMBUS_SETTINGS_FILE: &str = "/Nimbus Mail/settings/settings.json";
+
+/// Latest `localStorage` snapshot the frontend has shared with
+/// us.  The auto-sync worker reads from here so it can assemble
+/// a complete bundle without an additional IPC round-trip.
+type SharedLocalStorage = Arc<RwLock<std::collections::HashMap<String, String>>>;
+
+/// Notify channel used to wake the auto-sync worker.  Each
+/// `notify_one()` call coalesces with any already-pending wakeup,
+/// so a burst of settings changes still results in a single push
+/// once the debounce window expires.
+struct SettingsSyncNotify(Arc<tokio::sync::Notify>);
+
+/// Return the live `AppSettings` + accounts + the frontend's
+/// supplied `local_storage` map as one JSON-serialisable bundle.
+/// This is the single entry point the frontend uses for both
+/// "Download settings" (writes the JSON via `dialog.save` on the
+/// frontend) and the manual "Sync now" path.
+#[tauri::command]
+async fn build_settings_bundle(
+    local_storage: std::collections::HashMap<String, String>,
+    cache: State<'_, Cache>,
+) -> Result<String, NimbusError> {
+    let bundle = settings_bundle::build_bundle(&cache, local_storage)?;
+    settings_bundle::serialise(&bundle)
+}
+
+/// Apply a previously-exported bundle.  Replaces `app_settings`,
+/// upserts each account by id, and returns the bundle's
+/// `local_storage` map so the frontend can write each key back
+/// into its own `localStorage`.  The frontend reloads its UI
+/// after this returns — most preferences only re-apply on the
+/// next render pass.
+#[tauri::command]
+async fn apply_settings_bundle(
+    json: String,
+    cache: State<'_, Cache>,
+    settings: State<'_, SharedSettings>,
+) -> Result<std::collections::HashMap<String, String>, NimbusError> {
+    let bundle = settings_bundle::parse(&json)?;
+    let new_app_settings = bundle.app_settings.clone();
+    let local_storage = settings_bundle::apply(&cache, bundle)?;
+    *settings.write().await = new_app_settings;
+    Ok(local_storage)
+}
+
+/// Frontend-facing view of `settings_sync::SettingsSyncState`.
+/// camelCase for the JSON IPC convention used elsewhere in the
+/// file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsSyncStateView {
+    target_nc_id: Option<String>,
+    pending: bool,
+}
+
+#[tauri::command]
+fn get_settings_sync_state() -> Result<SettingsSyncStateView, NimbusError> {
+    let state = settings_sync::load_state()?;
+    Ok(SettingsSyncStateView {
+        target_nc_id: state.target_nc_id,
+        pending: state.pending,
+    })
+}
+
+/// Pick (or clear) the connected Nextcloud account that recovery
+/// pushes go to.  Passing `None` turns the feature off.  Setting
+/// it kicks off a sync immediately so the chosen NC has a fresh
+/// copy without waiting for the next settings change.
+#[tauri::command]
+async fn set_settings_sync_target(
+    target_nc_id: Option<String>,
+    notify: State<'_, SettingsSyncNotify>,
+) -> Result<(), NimbusError> {
+    let mut state = settings_sync::load_state()?;
+    if state.target_nc_id == target_nc_id {
+        return Ok(());
+    }
+    state.target_nc_id = target_nc_id;
+    // Flipping the target counts as a "settings changed" event —
+    // the new NC needs a fresh push so a future restore actually
+    // finds something there.
+    state.pending = state.target_nc_id.is_some();
+    settings_sync::save_state(&state)?;
+    notify.0.notify_one();
+    Ok(())
+}
+
+/// Frontend-side hook: call after any settings mutation that the
+/// user could plausibly want backed up.  Stores the latest
+/// `localStorage` snapshot in shared state and pings the auto-
+/// sync worker, which debounces and pushes to NC if a target is
+/// set.  No-ops cleanly when sync is off.
+#[tauri::command]
+async fn notify_settings_changed(
+    local_storage: std::collections::HashMap<String, String>,
+    storage: State<'_, SharedLocalStorage>,
+    notify: State<'_, SettingsSyncNotify>,
+) -> Result<(), NimbusError> {
+    *storage.write().await = local_storage;
+    notify.0.notify_one();
+    Ok(())
+}
+
+/// Probe a connected NC for a previously-uploaded settings
+/// bundle.  Returns `None` if no bundle exists at the canonical
+/// path, the parsed bundle's `exported_at` if one is found.
+/// Used by the "found a backup, restore?" prompt the frontend
+/// shows on a fresh NC connect.
+#[tauri::command]
+async fn nc_probe_settings_bundle(
+    nc_id: String,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    match nimbus_nextcloud::download_file(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        NIMBUS_SETTINGS_FILE,
+    )
+    .await
+    {
+        Ok(bytes) => {
+            let json = String::from_utf8(bytes).map_err(|e| {
+                NimbusError::Storage(format!("settings bundle on NC is not UTF-8: {e}"))
+            })?;
+            let bundle = settings_bundle::parse(&json)?;
+            Ok(Some(bundle.exported_at))
+        }
+        // 404 = no backup, that's the normal first-time path.
+        // We map it through to None so the UI can stay quiet
+        // instead of surfacing an error toast.
+        Err(NimbusError::Nextcloud(msg)) if msg.contains("not found") => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Download the bundle from NC and apply it.  Used by the
+/// "restore on first NC connect" prompt and by a manual "Restore
+/// from Nextcloud" button on the Backup & Sync settings page.
+#[tauri::command]
+async fn nc_restore_settings_bundle(
+    nc_id: String,
+    cache: State<'_, Cache>,
+    settings: State<'_, SharedSettings>,
+) -> Result<std::collections::HashMap<String, String>, NimbusError> {
+    let account = load_nextcloud_account(&nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let bytes = nimbus_nextcloud::download_file(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        NIMBUS_SETTINGS_FILE,
+    )
+    .await?;
+    let json = String::from_utf8(bytes)
+        .map_err(|e| NimbusError::Storage(format!("settings bundle on NC is not UTF-8: {e}")))?;
+    let bundle = settings_bundle::parse(&json)?;
+    let new_app_settings = bundle.app_settings.clone();
+    let local_storage = settings_bundle::apply(&cache, bundle)?;
+    *settings.write().await = new_app_settings;
+    Ok(local_storage)
+}
+
+/// One push attempt.  Best-effort folder creation, then PUT.
+/// Folder creates are intentionally swallowed because
+/// `create_directory` returns `NimbusError::Nextcloud` for the
+/// idempotent "folder already exists" case — it's not actually
+/// an error from our perspective.
+async fn push_settings_to_nc(
+    cache: &Cache,
+    local_storage: std::collections::HashMap<String, String>,
+    nc_id: &str,
+) -> Result<(), NimbusError> {
+    let bundle = settings_bundle::build_bundle(cache, local_storage)?;
+    let json = settings_bundle::serialise(&bundle)?;
+
+    let account = nextcloud_store::load_accounts(cache)?
+        .into_iter()
+        .find(|a| a.id == nc_id)
+        .ok_or_else(|| NimbusError::Other(format!("Nextcloud account '{nc_id}' not found")))?;
+    let app_password = credentials::get_nextcloud_password(nc_id)?;
+
+    // Idempotent folder creates.  The Office viewer code already
+    // ensures `/Nimbus Mail` for the temp area, but a user who
+    // hasn't opened any Office attachments won't have triggered
+    // that path yet — we make sure both rungs of the hierarchy
+    // exist before the PUT.
+    for dir in [NIMBUS_TEMP_ROOT, NIMBUS_SETTINGS_DIR] {
+        if let Err(e) = nimbus_nextcloud::create_directory(
+            &account.server_url,
+            &account.username,
+            &app_password,
+            dir,
+        )
+        .await
+        {
+            // 405 / "already exists" is the happy path; only the
+            // network/auth/quota classes need to bubble up.
+            let msg = e.to_string();
+            if !msg.contains("already") && !msg.contains("405") && !msg.contains("HTTP 405") {
+                return Err(e);
+            }
+        }
+    }
+
+    nimbus_nextcloud::upload_file(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        NIMBUS_SETTINGS_FILE,
+        json.into_bytes(),
+        Some("application/json"),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Auto-sync worker.  Wakes on either a `notify_one()` from a
+/// settings-changed event or a 5-minute periodic tick (the retry
+/// path for "user changed a setting while offline and never
+/// changed another"), and pushes the bundle to the configured NC
+/// account if one is set.  Failures keep `pending=true` so the
+/// next opportunity tries again.
+async fn settings_sync_worker(
+    cache: Cache,
+    local_storage: SharedLocalStorage,
+    notify: Arc<tokio::sync::Notify>,
+) {
+    use tokio::time::{Duration, MissedTickBehavior, interval, sleep};
+
+    let mut retry_tick = interval(Duration::from_secs(300));
+    retry_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // The first `tick()` returns immediately — burn it so the
+    // periodic path doesn't fire on launch.  The launch-time
+    // recovery happens via the explicit `notify_one()` call from
+    // `main()` instead.
+    retry_tick.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = notify.notified() => {
+                // Debounce: a burst of changes (e.g. dragging
+                // the UI scale slider) coalesces into one push.
+                sleep(Duration::from_secs(2)).await;
+            }
+            _ = retry_tick.tick() => {
+                // Periodic retry — only meaningful if we have
+                // something to flush, so peek the disk state.
+                let state = settings_sync::load_state().unwrap_or_default();
+                if !state.pending || state.target_nc_id.is_none() {
+                    continue;
+                }
+            }
+        }
+
+        // Read the disk state fresh; the user may have flipped
+        // the toggle off between the wake and now.
+        let state = match settings_sync::load_state() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("settings_sync load_state failed: {e}");
+                continue;
+            }
+        };
+        let Some(target) = state.target_nc_id.clone() else {
+            // Sync turned off — clear any stale pending flag so
+            // a re-enable doesn't immediately fire a stale push.
+            if state.pending {
+                let _ = settings_sync::save_state(&settings_sync::SettingsSyncState {
+                    target_nc_id: None,
+                    pending: false,
+                });
+            }
+            continue;
+        };
+
+        let snapshot = local_storage.read().await.clone();
+        match push_settings_to_nc(&cache, snapshot, &target).await {
+            Ok(()) => {
+                tracing::info!("Settings bundle synced to Nextcloud '{target}'");
+                if state.pending {
+                    let _ = settings_sync::save_state(&settings_sync::SettingsSyncState {
+                        target_nc_id: state.target_nc_id,
+                        pending: false,
+                    });
+                }
+            }
+            Err(e) => {
+                // Silent in the UI; warn-level in the log so a
+                // developer chasing "why isn't my NC backup
+                // updating" can see what went wrong.
+                tracing::warn!("Settings sync to '{target}' failed (will retry later): {e}");
+                if !state.pending {
+                    let _ = settings_sync::save_state(&settings_sync::SettingsSyncState {
+                        target_nc_id: state.target_nc_id,
+                        pending: true,
+                    });
+                }
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -8481,6 +8860,13 @@ fn main() {
         .manage(cache)
         .manage(shared_settings)
         .manage::<SystemFontsCache>(Arc::new(RwLock::new(Vec::new())))
+        // Settings backup & sync (#168).  Frontend pushes its
+        // localStorage snapshot on every settings change; the
+        // worker reads from this slot when it assembles a bundle
+        // for an NC push.  Starts empty — the first
+        // `notify_settings_changed` IPC fills it in.
+        .manage::<SharedLocalStorage>(Arc::new(RwLock::new(std::collections::HashMap::new())))
+        .manage(SettingsSyncNotify(Arc::new(tokio::sync::Notify::new())))
         .register_uri_scheme_protocol("contact-photo", contact_photo_protocol)
         .register_uri_scheme_protocol("nimbus-logo", logo_protocol)
         .setup(|app| {
@@ -8744,6 +9130,36 @@ fn main() {
                 prerender_inboxes_on_launch(&prerender_handle).await;
             });
 
+            // Settings auto-sync worker (#168).  Listens for
+            // notifications from the frontend via the
+            // `SettingsSyncNotify` state, debounces 2s, then
+            // pushes the bundle to whichever NC the user picked
+            // as their backup target.  Also retries a pending
+            // push every 5 minutes so a "user went offline,
+            // never changed another setting, came back online"
+            // flow eventually catches up without manual action.
+            //
+            // Pumps an immediate notification on startup so a
+            // pending=true flag from a previous session (set
+            // when a quit-while-offline left a push hanging)
+            // gets a fresh attempt as soon as we're up.
+            let sync_cache = app.state::<Cache>().inner().clone();
+            let sync_storage = app.state::<SharedLocalStorage>().inner().clone();
+            let sync_notify = app.state::<SettingsSyncNotify>().inner().0.clone();
+            let initial_kick = sync_notify.clone();
+            tauri::async_runtime::spawn(async move {
+                settings_sync_worker(sync_cache, sync_storage, sync_notify).await;
+            });
+            // Kick the worker once so a pending recovery push
+            // from a previous session retries on launch.  The
+            // worker no-ops cleanly if there's nothing to do.
+            if settings_sync::load_state()
+                .map(|s| s.pending && s.target_nc_id.is_some())
+                .unwrap_or(false)
+            {
+                initial_kick.notify_one();
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -8823,6 +9239,7 @@ fn main() {
             pdf_close_attachment,
             print_attachment,
             save_bytes_to_path,
+            read_text_from_path,
             sync_nextcloud_contacts,
             get_contacts_sync_status,
             get_calendars_sync_status,
@@ -8889,6 +9306,14 @@ fn main() {
             get_wipe_policy,
             set_wipe_policy,
             update_app_settings,
+            // Issue #168: settings backup & sync.
+            build_settings_bundle,
+            apply_settings_bundle,
+            get_settings_sync_state,
+            set_settings_sync_target,
+            notify_settings_changed,
+            nc_probe_settings_bundle,
+            nc_restore_settings_bundle,
             set_logo_style,
             import_custom_theme,
             remove_custom_theme,
