@@ -1236,6 +1236,24 @@
     return m ? m[1] : null
   }
 
+  /** Like `extractTalkToken`, but returns the *full* `https://…/call/<token>`
+      URL so we can hand it to `open_url`.  Used by the join-meeting
+      shortcut on the location row (#209): when LOCATION already
+      carries a Talk URL, the row's button switches from "Talk meeting"
+      (mint a new room) to "Join meeting" (open the existing one). */
+  function extractTalkUrl(s: string | null | undefined): string | null {
+    if (!s) return null
+    const m = s.match(/(https?:\/\/[^\s]*?\/call\/[A-Za-z0-9]{4,32})\b/)
+    return m ? m[1] : null
+  }
+
+  /** Live-derived from the `location` field — non-null whenever the
+      location text already contains a Talk join URL.  Drives the
+      Talk meeting / Join meeting button toggle on row 5 so the user
+      doesn't have to copy-paste the URL out of the location field
+      to join a meeting they've already scheduled. */
+  let joinMeetingUrl = $derived(extractTalkUrl(location))
+
   async function remove() {
     if (mode !== 'edit' || !event) return
     if (!confirm(`Delete "${event.summary || '(no title)'}"?`)) return
@@ -1477,12 +1495,18 @@
         </div>
       </div>
 
-      <!-- Row 5 — Location + Talk meeting shortcut.  Talk
-           button mints a Nextcloud Talk room and writes its
-           URL into LOCATION (matches NC Calendar's "Make it a
-           Talk conversation" flow); the URL replaces whatever
-           was typed when the field is empty, otherwise it
-           appends to DESCRIPTION (handled in `addTalkLink`). -->
+      <!-- Row 5 — Location + Talk meeting shortcut.  When LOCATION
+           does NOT already contain a Talk URL, the button mints a
+           fresh Nextcloud Talk room and writes its URL into
+           LOCATION (matches NC Calendar's "Make it a Talk
+           conversation" flow); the URL replaces whatever was
+           typed when the field is empty, otherwise it appends to
+           DESCRIPTION (handled in `addTalkLink`).
+           When LOCATION already contains a `/call/<token>` URL
+           (#209) the button flips to "Join meeting" and opens the
+           link via `open_url`, saving the user a copy-paste round
+           trip when they're attending a meeting they (or someone
+           else) scheduled. -->
       <div class="flex items-center gap-2">
         <input
           id="event-location"
@@ -1491,19 +1515,33 @@
           placeholder="Location"
           aria-label="Location"
         />
-        <button
-          type="button"
-          class="btn btn-sm preset-outlined-primary-500 whitespace-nowrap"
-          disabled={creatingTalkRoom || !calendarId}
-          title="Create a Nextcloud Talk room and use its link"
-          onclick={() => void addTalkLink()}
-        >
-          {#if creatingTalkRoom}
-            Creating…
-          {:else}
-            <Icon name="meetings" size={14} class="inline-block align-text-bottom mr-1.5" />Talk meeting
-          {/if}
-        </button>
+        {#if joinMeetingUrl}
+          <button
+            type="button"
+            class="btn btn-sm preset-filled-primary-500 whitespace-nowrap"
+            title="Open the Talk meeting in your browser"
+            onclick={() =>
+              void invoke('open_url', { url: joinMeetingUrl }).catch((err) =>
+                console.warn('open_url failed for Talk meeting', err),
+              )}
+          >
+            <Icon name="open-link" size={14} class="inline-block align-text-bottom mr-1.5" />Join meeting
+          </button>
+        {:else}
+          <button
+            type="button"
+            class="btn btn-sm preset-outlined-primary-500 whitespace-nowrap"
+            disabled={creatingTalkRoom || !calendarId}
+            title="Create a Nextcloud Talk room and use its link"
+            onclick={() => void addTalkLink()}
+          >
+            {#if creatingTalkRoom}
+              Creating…
+            {:else}
+              <Icon name="meetings" size={14} class="inline-block align-text-bottom mr-1.5" />Talk meeting
+            {/if}
+          </button>
+        {/if}
       </div>
 
       <!-- Row 6 — Description.  Tall by default — the mockup
