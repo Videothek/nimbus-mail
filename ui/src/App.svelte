@@ -58,6 +58,7 @@
     effectiveScale,
     UI_SCALE_STEP,
   } from './lib/uiScale'
+  import { setLocale, locales } from './paraglide/runtime'
 
   // ── View state ──────────────────────────────────────────────
   // Which view is currently shown. Starts as 'loading' until we
@@ -388,6 +389,13 @@
      *  every launch.  User actions that pick an explicit
      *  scale (slider, Ctrl+wheel) flip this to false. */
     ui_scale_auto?: boolean
+    /** #190: BCP-47 locale tag for the display language.  Empty
+     *  means "follow `navigator.language`".  Currently only
+     *  `"en"` and `"de"` are populated. */
+    ui_locale?: string
+    /** #190: when true, `ui_locale` is ignored and paraglide
+     *  picks from `navigator.language` on launch. */
+    ui_locale_auto?: boolean
   }
   type CustomTheme = {
     id: string
@@ -638,6 +646,27 @@
       applyUiScale(
         effectiveScale(appPrefs.ui_scale, appPrefs.ui_scale_auto),
       )
+      // Apply the chosen display locale (#190).  When auto is
+      // on we let paraglide's `preferredLanguage` strategy pick
+      // from `navigator.language`; when manual, we force the
+      // pinned tag.  `setLocale` is a paraglide runtime call —
+      // it persists to localStorage and re-renders any reactive
+      // text via the `m.*()` getters.
+      if (appPrefs.ui_locale_auto !== false) {
+        // Auto: don't override paraglide's resolved locale, but
+        // make sure any previously-pinned localStorage value
+        // gets cleared so navigator.language wins again.
+        try {
+          window.localStorage.removeItem('PARAGLIDE_LOCALE')
+        } catch {}
+      } else if (
+        appPrefs.ui_locale &&
+        (locales as readonly string[]).includes(appPrefs.ui_locale)
+      ) {
+        setLocale(appPrefs.ui_locale as (typeof locales)[number], {
+          reload: false,
+        })
+      }
     } catch (err) {
       console.warn('get_app_settings failed', err)
     }

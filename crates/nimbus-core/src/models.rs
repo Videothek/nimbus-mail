@@ -140,6 +140,21 @@ pub struct AppSettings {
     /// explicit choice.
     #[serde(default = "default_true")]
     pub ui_scale_auto: bool,
+    /// Display-language locale (#190).  One of the locales
+    /// declared in `ui/project.inlang/settings.json` (currently
+    /// `"en"` and `"de"`).  Empty string means "follow the
+    /// runtime preferred-language strategy" — paraglide picks
+    /// `navigator.language` when not pinned.  Stored as a string
+    /// rather than an enum so adding a new locale is purely an
+    /// `messages/<locale>.json` change with no migration.
+    #[serde(default)]
+    pub ui_locale: String,
+    /// When true, the frontend ignores `ui_locale` and lets
+    /// paraglide auto-pick from `navigator.language` on each
+    /// launch.  Flipping the manual locale picker off (or
+    /// picking an explicit language) sets this to false.
+    #[serde(default = "default_true")]
+    pub ui_locale_auto: bool,
 }
 
 fn default_logo_style() -> String {
@@ -226,6 +241,8 @@ impl Default for AppSettings {
             logo_style: default_logo_style(),
             ui_scale: default_ui_scale(),
             ui_scale_auto: true,
+            ui_locale: String::new(),
+            ui_locale_auto: true,
         }
     }
 }

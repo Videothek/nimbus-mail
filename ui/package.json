@@ -7,9 +7,11 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json"
+    "check": "npm run paraglide:compile && svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
+    "paraglide:compile": "paraglide-js compile --project ./project.inlang --outdir ./src/paraglide"
   },
   "devDependencies": {
+    "@inlang/paraglide-js": "^2.18.0",
     "@skeletonlabs/skeleton": "^4.15.1",
     "@skeletonlabs/skeleton-svelte": "^4.15.1",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",

@@ -26,6 +26,7 @@
   import { formatError } from './errors'
   import Toggle from './Toggle.svelte'
   import Icon, { type IconName } from './Icon.svelte'
+  import { m } from '../paraglide/messages'
 
   // ── Props ───────────────────────────────────────────────────
   interface Props {
@@ -86,25 +87,28 @@
   // Step metadata drives the numbered progress indicator + the
   // section headers.  Keep `icon` keys in sync with the Icon
   // component's name union.
-  const steps: ReadonlyArray<{ title: string; icon: IconName }> = [
-    { title: 'Your information', icon: 'address-book' },
-    { title: 'Incoming mail (IMAP)', icon: 'email-envelope' },
-    { title: 'Outgoing mail (SMTP)', icon: 'sent' },
+  // Step metadata: titles are *getters* so they re-resolve when
+  // the user switches locale at runtime — paraglide message
+  // calls re-run on every access, no cache to invalidate.
+  const steps: ReadonlyArray<{ title: () => string; icon: IconName }> = [
+    { title: () => m.account_setup_step_your_information(), icon: 'address-book' },
+    { title: () => m.account_setup_step_imap(), icon: 'email-envelope' },
+    { title: () => m.account_setup_step_smtp(), icon: 'sent' },
   ]
   const totalSteps = steps.length
 
   function nextStep() {
     error = ''
     if (step === 0 && (!displayName.trim() || !email.trim())) {
-      error = 'Please fill in the account name and email address.'
+      error = m.account_setup_validation_step0()
       return
     }
     if (step === 1 && (!imapHost.trim() || !password)) {
-      error = 'Please enter your IMAP server hostname and password.'
+      error = m.account_setup_validation_step1()
       return
     }
     if (step === 2 && !smtpHost.trim()) {
-      error = 'Please enter your SMTP server hostname.'
+      error = m.account_setup_validation_step2()
       return
     }
     step++
@@ -160,11 +164,11 @@
         smtpPort = found.smtp_port
         const label =
           found.source === 'autoconfig-domain'
-            ? 'your provider'
+            ? m.account_setup_discovery_label_provider()
             : found.source === 'autoconfig-ispdb'
-              ? "Mozilla's database"
-              : 'DNS records'
-        discoveryHint = `Server settings auto-discovered from ${label}.`
+              ? m.account_setup_discovery_label_ispdb()
+              : m.account_setup_discovery_label_srv()
+        discoveryHint = m.account_setup_discovery_hint_found({ source: label })
         return
       }
     } catch (e) {
@@ -176,7 +180,7 @@
     // Fallback heuristic when discovery returns nothing.
     if (!imapHost) imapHost = `imap.${domain}`
     if (!smtpHost) smtpHost = `smtp.${domain}`
-    discoveryHint = `Couldn't auto-discover ${domain} — best-guess hostnames filled in. Edit if needed.`
+    discoveryHint = m.account_setup_discovery_hint_fallback({ domain })
   }
 
   // ── TLS-trust prompt state ─────────────────────────────────
@@ -240,9 +244,9 @@
       })
       pendingCert = probed
     } catch (e: any) {
-      error =
-        'Could not retrieve the server certificate to display: ' +
-        (formatError(e) || 'unknown error')
+      error = m.account_setup_cert_probe_failed({
+        reason: formatError(e) || 'unknown error',
+      })
     }
   }
 
@@ -322,7 +326,7 @@
       // Success! Tell the parent component to switch to inbox
       oncomplete()
     } catch (e: any) {
-      const msg = formatError(e) || 'Failed to save account'
+      const msg = formatError(e) || m.account_setup_save_failed()
       if (looksLikeCertError(msg)) {
         // Don't surface the raw error — the prompt explains the
         // situation more clearly. Kick off the cert probe in the
@@ -355,8 +359,8 @@
   <div class="w-full max-w-xl mx-4">
     <!-- Header -->
     <div class="text-center mb-8">
-      <h1 class="text-3xl font-bold text-primary-500 mb-2">Welcome to Nimbus Mail</h1>
-      <p class="text-surface-600 dark:text-surface-400">Let's set up your email account</p>
+      <h1 class="text-3xl font-bold text-primary-500 mb-2">{m.account_setup_welcome_title()}</h1>
+      <p class="text-surface-600 dark:text-surface-400">{m.account_setup_welcome_subtitle()}</p>
     </div>
 
     <!-- Card.  When the wizard is closeable, we add extra top
@@ -370,8 +374,8 @@
           type="button"
           class="absolute top-1 right-1 p-1.5 rounded-md text-surface-500 hover:text-surface-900 hover:bg-surface-200 dark:hover:text-surface-100 dark:hover:bg-surface-700 transition-colors"
           onclick={handleCancel}
-          aria-label="Close setup wizard"
-          title="Close"
+          aria-label={m.account_setup_close_label()}
+          title={m.account_setup_close_title()}
         >
           <Icon name="close" size={18} />
         </button>
@@ -382,7 +386,7 @@
            step's circle is filled-primary, completed steps show the
            check icon, pending steps show the step number. -->
       <div class="flex items-center justify-center mb-6 px-2">
-        {#each steps as s, i (s.title)}
+        {#each steps as s, i (s.icon)}
           {#if i > 0}
             <div
               class="flex-1 h-px mx-2 transition-colors {i <= step
@@ -410,7 +414,7 @@
                 ? 'text-primary-600 dark:text-primary-400'
                 : 'text-surface-500'}"
             >
-              Step {i + 1}
+              {m.account_setup_step_label({ n: i + 1 })}
             </span>
           </div>
         {/each}
@@ -419,14 +423,14 @@
       <!-- Section header for the current step (icon + title). -->
       <div class="flex items-center gap-2 mb-4">
         <span class="text-primary-500"><Icon name={steps[step].icon} size={20} /></span>
-        <h2 class="text-lg font-semibold">{steps[step].title}</h2>
+        <h2 class="text-lg font-semibold">{steps[step].title()}</h2>
       </div>
 
       <!-- Step 0: Basic info -->
       {#if step === 0}
         <div>
           <label class="block mb-4">
-            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Account Name</span>
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_account_name_label()}</span>
             <div class="relative mt-1">
               <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
                 <Icon name="design-palette" size={14} />
@@ -434,16 +438,16 @@
               <input
                 type="text"
                 bind:value={displayName}
-                placeholder="e.g. Work, Personal"
+                placeholder={m.account_setup_account_name_placeholder()}
                 class="input w-full pl-8 pr-3 py-2 rounded-md"
               />
             </div>
             <span class="block text-xs text-surface-500 mt-1">
-              How this account is labelled inside Nimbus.
+              {m.account_setup_account_name_hint()}
             </span>
           </label>
           <label class="block mb-4">
-            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Your Name</span>
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_your_name_label()}</span>
             <div class="relative mt-1">
               <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
                 <Icon name="contacts" size={14} />
@@ -451,16 +455,16 @@
               <input
                 type="text"
                 bind:value={personName}
-                placeholder="e.g. Alex Morgan"
+                placeholder={m.account_setup_your_name_placeholder()}
                 class="input w-full pl-8 pr-3 py-2 rounded-md"
               />
             </div>
             <span class="block text-xs text-surface-500 mt-1">
-              Shown as the sender on outgoing mail. Defaults to the account name when empty.
+              {m.account_setup_your_name_hint()}
             </span>
           </label>
           <label class="block mb-4">
-            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Email Address</span>
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_email_label()}</span>
             <div class="relative mt-1">
               <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
                 <Icon name="email-envelope" size={14} />
@@ -468,7 +472,7 @@
               <input
                 type="email"
                 bind:value={email}
-                placeholder="e.g. you@example.com"
+                placeholder={m.account_setup_email_placeholder()}
                 class="input w-full pl-8 pr-3 py-2 rounded-md"
                 onblur={autoFillServers}
                 disabled={discovering}
@@ -477,7 +481,7 @@
             {#if discovering}
               <span class="text-xs text-surface-500 mt-1 flex items-center gap-1">
                 <Icon name="loading" size={12} />
-                Looking up server settings…
+                {m.account_setup_email_discovering()}
               </span>
             {:else if discoveryHint}
               <span class="text-xs text-surface-500 mt-1 flex items-center gap-1">
@@ -492,11 +496,10 @@
       {:else if step === 1}
         <div>
           <p class="text-sm text-surface-500 mb-4">
-            IMAP is the protocol used to <strong>receive</strong> your emails.
-            Port 993 uses TLS encryption (recommended).
+            {m.account_setup_imap_explainer()}
           </p>
           <label class="block mb-4">
-            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">IMAP Server</span>
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_imap_server_label()}</span>
             <div class="relative mt-1">
               <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
                 <Icon name="cloud" size={14} />
@@ -504,13 +507,13 @@
               <input
                 type="text"
                 bind:value={imapHost}
-                placeholder="e.g. imap.example.com"
+                placeholder={m.account_setup_imap_server_placeholder()}
                 class="input w-full pl-8 pr-3 py-2 rounded-md"
               />
             </div>
           </label>
           <label class="block mb-4">
-            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Port</span>
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_port_label()}</span>
             <input
               type="number"
               bind:value={imapPort}
@@ -518,7 +521,7 @@
             />
           </label>
           <label class="block mb-4">
-            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Password</span>
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_password_label()}</span>
             <div class="relative mt-1">
               <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
                 <Icon name="lock" size={14} />
@@ -526,13 +529,13 @@
               <input
                 type="password"
                 bind:value={password}
-                placeholder="Your IMAP/SMTP password"
+                placeholder={m.account_setup_password_placeholder()}
                 class="input w-full pl-8 pr-3 py-2 rounded-md"
                 autocomplete="current-password"
               />
             </div>
             <span class="block text-xs text-surface-500 mt-1">
-              Stored securely in your OS keychain — never written to disk in plain text.
+              {m.account_setup_password_hint()}
             </span>
           </label>
         </div>
@@ -541,11 +544,10 @@
       {:else if step === 2}
         <div>
           <p class="text-sm text-surface-500 mb-4">
-            SMTP is the protocol used to <strong>send</strong> your emails.
-            Port 587 uses STARTTLS encryption (recommended).
+            {m.account_setup_smtp_explainer()}
           </p>
           <label class="block mb-4">
-            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">SMTP Server</span>
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_smtp_server_label()}</span>
             <div class="relative mt-1">
               <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
                 <Icon name="cloud" size={14} />
@@ -553,13 +555,13 @@
               <input
                 type="text"
                 bind:value={smtpHost}
-                placeholder="e.g. smtp.example.com"
+                placeholder={m.account_setup_smtp_server_placeholder()}
                 class="input w-full pl-8 pr-3 py-2 rounded-md"
               />
             </div>
           </label>
           <label class="block mb-4">
-            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Port</span>
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_port_label()}</span>
             <input
               type="number"
               bind:value={smtpPort}
@@ -573,17 +575,17 @@
             <div class="flex items-start gap-2 min-w-0">
               <span class="text-primary-500 mt-0.5"><Icon name="sync" size={16} /></span>
               <div class="min-w-0">
-                <span class="block text-sm font-medium text-surface-700 dark:text-surface-200">Use JMAP instead of IMAP</span>
+                <span class="block text-sm font-medium text-surface-700 dark:text-surface-200">{m.account_setup_jmap_label()}</span>
                 <span class="block text-xs text-surface-500">
-                  Modern push-based mail protocol. Only enable if your provider supports it.
+                  {m.account_setup_jmap_hint()}
                 </span>
               </div>
             </div>
-            <Toggle bind:checked={useJmap} label="Use JMAP instead of IMAP" />
+            <Toggle bind:checked={useJmap} label={m.account_setup_jmap_label()} />
           </div>
 
           <label class="block mb-4">
-            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Signature (optional)</span>
+            <span class="text-sm font-medium text-surface-700 dark:text-surface-300">{m.account_setup_signature_label()}</span>
             <textarea
               bind:value={signature}
               rows="4"
@@ -591,7 +593,7 @@
               class="input w-full mt-1 px-3 py-2 rounded-md font-mono text-sm"
             ></textarea>
             <span class="block text-xs text-surface-500 mt-1">
-              Appended to new messages sent from this account. You can change it later in Settings.
+              {m.account_setup_signature_hint()}
             </span>
           </label>
         </div>
@@ -614,18 +616,21 @@
         <div class="mb-4 p-4 rounded-md border border-warning-500/40 bg-warning-500/5">
           <p class="text-sm font-medium mb-1 flex items-center gap-2">
             <Icon name="lock" size={16} />
-            The server's TLS certificate isn't trusted by default.
+            {m.account_setup_cert_title()}
           </p>
           <p class="text-xs text-surface-500 mb-3">
-            This is normal for self-hosted mail servers using a
-            self-signed certificate. Compare the fingerprint below
-            with your server's actual certificate before trusting.
+            {m.account_setup_cert_explainer()}
           </p>
-          <p class="text-xs mb-1"><span class="text-surface-500">Host:</span> <span class="font-mono">{pendingCert.host}</span></p>
+          <p class="text-xs mb-1"><span class="text-surface-500">{m.account_setup_cert_host_label()}</span> <span class="font-mono">{pendingCert.host}</span></p>
           <div class="text-xs mb-3">
             <p class="text-surface-500 mb-1">
-              SHA-256 fingerprint{pendingCert.chain.length === 1 ? '' : 's'}
-              ({pendingCert.chain.length === 1 ? 'leaf' : `leaf + ${pendingCert.chain.length - 1} intermediate${pendingCert.chain.length === 2 ? '' : 's'}`}):
+              {#if pendingCert.chain.length === 1}
+                {m.account_setup_cert_fingerprint_one()}
+              {:else if pendingCert.chain.length === 2}
+                {m.account_setup_cert_fingerprint_many({ n: 1 })}
+              {:else}
+                {m.account_setup_cert_fingerprint_many_plural({ n: pendingCert.chain.length - 1 })}
+              {/if}
             </p>
             <ul class="space-y-1">
               {#each pendingCert.chain as entry, i (entry.sha256)}
@@ -641,12 +646,12 @@
               type="button"
               class="btn btn-sm preset-filled-primary-500"
               onclick={trustPendingCert}
-            >Trust this server and continue</button>
+            >{m.account_setup_cert_button_trust()}</button>
             <button
               type="button"
               class="btn btn-sm preset-outlined-surface-500"
               onclick={dismissCertPrompt}
-            >Cancel</button>
+            >{m.account_setup_cert_button_cancel()}</button>
           </div>
         </div>
       {/if}
@@ -654,9 +659,11 @@
       {#if trustedCerts.length > 0 && !pendingCert}
         <div class="mb-4 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400 flex items-center gap-2">
           <Icon name="verified" size={14} />
-          Trusting {trustedCerts.length}
-          self-signed certificate{trustedCerts.length === 1 ? '' : 's'}
-          for this account.
+          {#if trustedCerts.length === 1}
+            {m.account_setup_cert_trusting_one()}
+          {:else}
+            {m.account_setup_cert_trusting_many({ n: trustedCerts.length })}
+          {/if}
         </div>
       {/if}
 
@@ -665,7 +672,7 @@
         {#if step > 0}
           <button class="btn preset-outlined-surface-500 flex items-center gap-1" onclick={prevStep}>
             <Icon name="arrow-left" size={14} />
-            Back
+            {m.account_setup_button_back()}
           </button>
         {:else}
           <div></div>
@@ -673,7 +680,7 @@
 
         {#if step < totalSteps - 1}
           <button class="btn preset-filled-primary-500 flex items-center gap-1" onclick={nextStep}>
-            Next
+            {m.account_setup_button_next()}
             <Icon name="arrow-right" size={14} />
           </button>
         {:else}
@@ -684,10 +691,10 @@
           >
             {#if saving}
               <Icon name="loading" size={14} />
-              Saving…
+              {m.account_setup_button_saving()}
             {:else}
               <Icon name="add-account" size={14} />
-              Add Account
+              {m.account_setup_button_add_account()}
             {/if}
           </button>
         {/if}
