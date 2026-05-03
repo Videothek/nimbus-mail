@@ -50,7 +50,7 @@ The following packages are distributed under the MIT License:
 `@tauri-apps/plugin-dialog`, `@tauri-apps/plugin-notification`,
 `@tiptap/core` and every `@tiptap/extension-*`, `@tiptap/pm`,
 `@tiptap/starter-kit`, `@tiptap/suggestion`, `emoji-picker-element`,
-`marked`, `svelte-tiptap`, `@skeletonlabs/skeleton`,
+`svelte-tiptap`, `@skeletonlabs/skeleton`,
 `@skeletonlabs/skeleton-svelte`, `@sveltejs/vite-plugin-svelte`,
 `@tailwindcss/typography`, `@tailwindcss/vite`, `@tsconfig/svelte`,
 `@types/dompurify`, `@types/node`, `@inlang/paraglide-js`,
