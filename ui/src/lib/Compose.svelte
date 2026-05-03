@@ -173,32 +173,40 @@
   /**
    * Esc handler for the modal (#192).
    *
-   * Wired in the template via `onkeydowncapture={…}` on the
-   * outer modal wrapper div.  Three earlier attempts failed
-   * before landing here:
+   * Triple-redundant after multiple attempts that should have
+   * worked but didn't.  Root cause: when Compose opens, focus
+   * stays on whichever button triggered it (compose button on
+   * the IconRail / context-menu item / etc.) — that element
+   * is *outside* Compose's wrapper, so the keydown event's
+   * propagation path never crosses the wrapper.  Wrapper-
+   * bound listeners (whether bubble or capture) silently
+   * never fire.  Global window-level listeners *should* fire
+   * for any focus location — and they do, except when
+   * something earlier in the page swallows the event before
+   * we get there (the suspect is some combination of Svelte
+   * 5 `$effect` timing and Tiptap's ProseMirror keymap).
    *
-   *   1. `document.addEventListener('keydown', …)` inside an
-   *      `$effect` — bubble phase, never fired for Compose.
-   *   2. `<svelte:window onkeydown={…}>` — same problem.
-   *   3. `window.addEventListener('keydown', …, { capture: true })`
-   *      inside an `$effect` — also didn't work.  The likely
-   *      culprit is some combination of Tiptap's ProseMirror
-   *      keymap and the modal's z-stacking that swallows the
-   *      key before any global listener can see it.
+   * Belt-and-suspenders fix:
+   *   1. `bind:this={wrapperEl}` + a focus-on-mount $effect
+   *      so the modal grabs focus immediately when it opens
+   *      (which both moves focus into the wrapper for the
+   *      onkeydown* handlers AND matches the conventional
+   *      modal UX of "focus follows the modal").
+   *   2. `onkeydowncapture={…}` on the wrapper itself, so
+   *      capture-phase keystrokes that pass through the
+   *      wrapper en-route to the focused element fire it
+   *      before any descendant (Tiptap included).
+   *   3. A separate global `window` capture listener via
+   *      `addEventListener` inside `$effect` as a final
+   *      fallback for anything we haven't anticipated.
    *
-   * Binding directly on the wrapper div with the explicit
-   * `onkeydowncapture` event name forces a capture-phase
-   * listener scoped to the wrapper.  When the user is typing
-   * inside Tiptap, the keystroke's capture path is
-   *   window → document → … → wrapper → … → contentEditable.
-   * Our listener fires when the event passes the wrapper, BEFORE
-   * the editor's own handler runs — so even if ProseMirror
-   * subsequently calls `stopPropagation()` we've already done
-   * our work.
-   *
-   * Routes through `cancel()` so the Talk-room (#86) and
-   * Nextcloud share-link (#193) cleanups both fire.
+   * Each layer is independently sufficient under common
+   * conditions; together they cover the corners.  Routes
+   * through `cancel()` so the Talk-room (#86) and Nextcloud
+   * share-link (#193) cleanups both fire.
    */
+  let wrapperEl = $state<HTMLDivElement | undefined>()
+
   function onComposeKeydownCapture(e: KeyboardEvent) {
     if (e.key !== 'Escape') return
     if (showNcPicker || showNcImagePicker || showTalkModal) return
@@ -206,6 +214,41 @@
     e.preventDefault()
     cancel()
   }
+
+  // Layer 1: focus the wrapper on mount so the modal owns
+  // focus from the start.  `tabindex={-1}` on the wrapper
+  // makes it programmatically focusable without showing up
+  // in the tab order.  We only do this when there's no
+  // explicit autofocus inside Compose (e.g. the To: field
+  // for a fresh draft) — defensive `setTimeout(0)` so any
+  // child autofocus runs first; if a child took focus we
+  // leave it alone.
+  $effect(() => {
+    if (!wrapperEl) return
+    const id = setTimeout(() => {
+      // If focus is already inside the wrapper, don't steal it.
+      if (wrapperEl?.contains(document.activeElement)) return
+      wrapperEl?.focus({ preventScroll: true })
+    }, 0)
+    return () => clearTimeout(id)
+  })
+
+  // Layer 3: global window-capture listener.  Fires regardless
+  // of where focus is — covers the path between Compose mount
+  // and our autofocus actually landing, plus any future
+  // refactor that keeps focus outside Compose.
+  $effect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      if (showNcPicker || showNcImagePicker || showTalkModal) return
+      if (document.querySelector('[role="listbox"]')) return
+      e.preventDefault()
+      cancel()
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () =>
+      window.removeEventListener('keydown', onKey, { capture: true })
+  })
 
   // ── From: picker state ──────────────────────────────────────
   // The id is the canonical handle (used for `send_email`); the rest
@@ -1418,18 +1461,22 @@
      several hundred lines of template across the two branches. -->
 {#if inStandaloneWindow}
   <div
-    class="h-full w-full flex flex-col bg-surface-50 dark:bg-surface-900"
+    bind:this={wrapperEl}
+    class="h-full w-full flex flex-col bg-surface-50 dark:bg-surface-900 outline-none"
     role="dialog"
     aria-modal="false"
+    tabindex="-1"
     onkeydowncapture={onComposeKeydownCapture}
   >
     {@render composeBody()}
   </div>
 {:else}
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    bind:this={wrapperEl}
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 outline-none"
     role="dialog"
     aria-modal="true"
+    tabindex="-1"
     onkeydowncapture={onComposeKeydownCapture}
   >
     <!-- Resizable via native CSS `resize: both`. We seed a comfortable
