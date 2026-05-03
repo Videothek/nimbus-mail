@@ -1050,13 +1050,8 @@ async fn office_open_attachment(
     )
     .await?;
 
-    // Route the URL through the `nc-auth://` proxy so the new
-    // webview window inherits our app-password auth without
-    // tripping NC's SSO / login flow.  The proxy handler sees
-    // the path verbatim and forwards it to the user's NC server
-    // with `Authorization: Basic <user>:<app_password>`.
-    let _ = account.server_url.trim_end_matches('/');
-    let url = format!("{NC_PROXY_SCHEME}://localhost/index.php/f/{file_id}");
+    let server = account.server_url.trim_end_matches('/');
+    let url = format!("{server}/index.php/f/{file_id}");
 
     Ok(OfficeOpenResult { url, temp_path })
 }
@@ -1134,13 +1129,8 @@ async fn pdf_open_attachment(
         &temp_path,
     )
     .await?;
-    // Route the URL through the `nc-auth://` proxy so the new
-    // webview window inherits our app-password auth without
-    // tripping NC's SSO / login flow.  The proxy handler sees
-    // the path verbatim and forwards it to the user's NC server
-    // with `Authorization: Basic <user>:<app_password>`.
-    let _ = account.server_url.trim_end_matches('/');
-    let url = format!("{NC_PROXY_SCHEME}://localhost/index.php/f/{file_id}");
+    let server = account.server_url.trim_end_matches('/');
+    let url = format!("{server}/index.php/f/{file_id}");
 
     Ok(PdfOpenResult { url, temp_path })
 }
@@ -8966,279 +8956,6 @@ fn logo_protocol(
         .expect("build logo response")
 }
 
-// ── Authenticated NC reverse proxy (#162 follow-up) ────────────
-//
-// The "open Office / PDF / Markdown attachment in NC" flow opens
-// a fresh Tauri WebviewWindow pointed at NC's Files page.  That
-// window has no session cookies, so NC redirects to the login
-// form — and if the user's NC has SSO in front, the login form
-// is on a different origin entirely (the IdP) which means our
-// app password can't be auto-filled at all.
-//
-// Solution: don't let the webview talk to NC directly.  Instead
-// register a `nc-auth://localhost/...` URI scheme; every request
-// the webview makes to that scheme is intercepted by Rust,
-// forwarded to the user's NC server with `Authorization: Basic
-// <user>:<app_password>` attached, and returned to the webview
-// unchanged.  App-password Basic Auth bypasses SSO entirely (NC
-// validates app passwords internally without consulting the
-// IdP), so the user never sees a login page at all.
-//
-// **Limitations:**
-//
-// - **Single-NC.**  We forward to the *first* connected NC, the
-//   same convention Office / PDF already use elsewhere.  Multi-NC
-//   support would mean encoding the nc_id in the URL path and
-//   rewriting it back out of every NC response, which is a
-//   substantially larger lift.
-// - **No WebSockets.**  Tauri's URI scheme handlers are HTTP-
-//   request based; they can't proxy WebSocket upgrades.  This
-//   means Collabora's real-time collaborative editing
-//   (multi-cursor, operational transforms) won't work over the
-//   proxy — the document loads and renders, but live edits
-//   through WebSocket fail.  Acceptable for the "preview /
-//   verify what I'm attaching" use case the embedded viewer is
-//   for; if a user wants to actively collaborate on a document
-//   they should open it in NC's web UI directly.
-// - **Memory-bound responses.**  We read each response into a
-//   `Vec<u8>` before returning, so a 100 MB asset would briefly
-//   sit in memory.  In practice Office / PDF assets are kBs to
-//   single-digit MBs; if this ever bites we can switch to the
-//   async streaming variant.
-
-const NC_PROXY_SCHEME: &str = "nc-auth";
-
-/// Convert the webview-side request URL (`nc-auth://localhost/...`)
-/// into the NC-server URL we should forward to.  The NC server
-/// is whichever connection the user has configured — currently
-/// "first connected" matches the rest of the codebase.
-fn nc_proxy_target(request_path_and_query: &str) -> Result<(String, String, String), NimbusError> {
-    let cache = global_cache()?;
-    let accounts = nextcloud_store::load_accounts(cache)?;
-    let acct = accounts
-        .into_iter()
-        .next()
-        .ok_or_else(|| NimbusError::Other("no Nextcloud connection configured".into()))?;
-    let app_password = credentials::get_nextcloud_password(&acct.id)?;
-    let server = acct.server_url.trim_end_matches('/').to_string();
-    let target = format!("{server}{request_path_and_query}");
-    Ok((target, acct.username, app_password))
-}
-
-fn nc_proxy_protocol(
-    _ctx: UriSchemeContext<'_, tauri::Wry>,
-    request: tauri::http::Request<Vec<u8>>,
-    responder: tauri::UriSchemeResponder,
-) {
-    // Compose the NC URL the webview is asking for.  We preserve
-    // the full path + query verbatim so NC sees the same request
-    // it would have if the webview talked to it directly.
-    let path_and_query = request
-        .uri()
-        .path_and_query()
-        .map(|pq| pq.as_str().to_string())
-        .unwrap_or_else(|| request.uri().path().to_string());
-
-    let method = request.method().clone();
-    let headers = request.headers().clone();
-    let body_bytes = request.body().clone();
-
-    tauri::async_runtime::spawn(async move {
-        let response = match nc_proxy_forward(&path_and_query, method, headers, body_bytes).await {
-            Ok(r) => r,
-            Err(e) => proxy_error_response(&e),
-        };
-        responder.respond(response);
-    });
-}
-
-async fn nc_proxy_forward(
-    path_and_query: &str,
-    method: tauri::http::Method,
-    headers: tauri::http::HeaderMap,
-    body_bytes: Vec<u8>,
-) -> Result<tauri::http::Response<std::borrow::Cow<'static, [u8]>>, String> {
-    let (target_url, username, app_password) =
-        nc_proxy_target(path_and_query).map_err(|e| format!("target lookup: {e}"))?;
-    // Capture the NC server URL (without path) so we can rewrite
-    // any absolute references to it in HTML / JS / CSS responses
-    // — see the rewrite step below.
-    let nc_origin = nc_proxy_origin().map_err(|e| format!("origin lookup: {e}"))?;
-
-    let client = reqwest::Client::builder()
-        .build()
-        .map_err(|e| format!("build proxy client: {e}"))?;
-    let mut req = client.request(
-        method
-            .as_str()
-            .parse::<reqwest::Method>()
-            .unwrap_or(reqwest::Method::GET),
-        &target_url,
-    );
-    // Forward most request headers verbatim — but drop the ones
-    // that would mislead NC about who's calling (host / origin /
-    // referer point at nc-auth://... which would confuse NC's
-    // CSRF / origin checks; we re-set Authorization ourselves
-    // below).
-    for (name, value) in headers.iter() {
-        let name_lower = name.as_str().to_ascii_lowercase();
-        if matches!(
-            name_lower.as_str(),
-            "host" | "origin" | "referer" | "authorization" | "content-length"
-        ) {
-            continue;
-        }
-        if let Ok(value_str) = value.to_str() {
-            req = req.header(name.as_str(), value_str);
-        }
-    }
-    req = req.basic_auth(&username, Some(&app_password));
-    req = req.header("OCS-APIRequest", "true");
-    if !body_bytes.is_empty() {
-        req = req.body(body_bytes);
-    }
-    let resp = req.send().await.map_err(|e| format!("proxy fetch: {e}"))?;
-
-    let status = resp.status().as_u16();
-    // Snapshot the upstream Content-Type so we can decide whether
-    // a body rewrite is safe — only text/html, JS, CSS, and JSON
-    // get string-substituted; binary bodies (images, fonts, PDFs)
-    // pass through unchanged.
-    let upstream_content_type = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let mut builder = tauri::http::Response::builder().status(status);
-    let response_headers: Vec<(String, String)> = resp
-        .headers()
-        .iter()
-        .filter_map(|(name, value)| {
-            let name_lower = name.as_str().to_ascii_lowercase();
-            // Strip headers that would mislead the webview about
-            // the response's origin / framing — the webview
-            // thinks it's talking to nc-auth://, not NC, so a
-            // CSP or HSTS scoped to NC's domain would either be
-            // misapplied or just ignored.  Also strip
-            // content-length / encoding / transfer-encoding —
-            // we may rewrite the body and reqwest already
-            // decoded any compression so the original lengths
-            // don't apply.
-            if matches!(
-                name_lower.as_str(),
-                "content-security-policy"
-                    | "content-security-policy-report-only"
-                    | "strict-transport-security"
-                    | "x-frame-options"
-                    | "transfer-encoding"
-                    | "content-length"
-                    | "content-encoding"
-                    | "connection"
-            ) {
-                return None;
-            }
-            // `Location` (302/301) needs the same NC-origin →
-            // nc-auth-origin rewrite the body gets, otherwise
-            // the webview chases the redirect to the original
-            // NC URL and falls right back into the SSO login
-            // page we're trying to avoid.
-            if name_lower == "location" {
-                if let Ok(v) = value.to_str() {
-                    let rewritten = rewrite_nc_origin(v, &nc_origin);
-                    return Some((name.as_str().to_string(), rewritten));
-                }
-            }
-            // `Set-Cookie` uses Domain=server.example.com
-            // attributes that wouldn't apply to nc-auth:// — the
-            // proxy already adds Basic Auth on every request so
-            // we don't actually need NC's cookies in the
-            // webview.  Drop them.
-            if name_lower == "set-cookie" {
-                return None;
-            }
-            value
-                .to_str()
-                .ok()
-                .map(|v: &str| (name.as_str().to_string(), v.to_string()))
-        })
-        .collect();
-    for (name, value) in &response_headers {
-        builder = builder.header(name, value);
-    }
-    let body_bytes: Vec<u8> = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("read proxy body: {e}"))?
-        .to_vec();
-
-    // Body rewrite — replace every absolute reference to the NC
-    // server URL with the proxy's nc-auth://localhost so links,
-    // <script src>, fetch / XHR targets, redirects encoded in JS,
-    // etc. all stay inside the proxy.  Only applies to text-ish
-    // content types; binary payloads pass through unchanged.
-    let body = if is_rewritable_content_type(&upstream_content_type) {
-        match std::str::from_utf8(&body_bytes) {
-            Ok(text) => rewrite_nc_origin(text, &nc_origin).into_bytes(),
-            Err(_) => body_bytes,
-        }
-    } else {
-        body_bytes
-    };
-
-    builder
-        .body(std::borrow::Cow::Owned(body))
-        .map_err(|e| format!("build proxy response: {e}"))
-}
-
-/// Resolve the canonical NC server origin (`https://host[:port]`)
-/// so we can rewrite absolute URL references in upstream
-/// responses.  Single-NC, same as `nc_proxy_target`.
-fn nc_proxy_origin() -> Result<String, NimbusError> {
-    let cache = global_cache()?;
-    let accounts = nextcloud_store::load_accounts(cache)?;
-    let acct = accounts
-        .into_iter()
-        .next()
-        .ok_or_else(|| NimbusError::Other("no Nextcloud connection configured".into()))?;
-    let server = acct.server_url.trim_end_matches('/').to_string();
-    Ok(server)
-}
-
-fn is_rewritable_content_type(ct: &str) -> bool {
-    ct.starts_with("text/")
-        || ct.contains("javascript")
-        || ct.contains("json")
-        || ct.contains("xml")
-        || ct.contains("svg")
-}
-
-/// Replace every absolute URL pointing at the NC server with the
-/// proxy origin.  Naive string replace, but the URL is highly
-/// distinctive (full https://host[:port]) so accidental matches
-/// in unrelated text are vanishingly unlikely.
-fn rewrite_nc_origin(input: &str, nc_origin: &str) -> String {
-    let proxy_origin = format!("{NC_PROXY_SCHEME}://localhost");
-    // Catch the bare origin and the trailing-slash variant in one
-    // pass — string::replace on the bare form covers both because
-    // every appearance is followed by either a path or a quote.
-    input.replace(nc_origin, &proxy_origin)
-}
-
-fn proxy_error_response(msg: &str) -> tauri::http::Response<std::borrow::Cow<'static, [u8]>> {
-    tracing::warn!("nc-auth proxy: {msg}");
-    let body = format!(
-        "<!doctype html><meta charset=utf-8><title>Nextcloud proxy error</title>\
-         <body style='font-family:sans-serif;padding:2rem'>\
-         <h2>Nextcloud proxy error</h2><pre>{msg}</pre></body>"
-    );
-    tauri::http::Response::builder()
-        .status(502)
-        .header("Content-Type", "text/html; charset=utf-8")
-        .body(std::borrow::Cow::Owned(body.into_bytes()))
-        .expect("build proxy error response")
-}
-
 // ── Custom themes (#132 tier 2) ────────────────────────────────
 //
 // User picks a Skeleton-shape CSS file in the Settings → Design
@@ -9490,7 +9207,6 @@ fn main() {
         .manage(SettingsSyncNotify(Arc::new(tokio::sync::Notify::new())))
         .register_uri_scheme_protocol("contact-photo", contact_photo_protocol)
         .register_uri_scheme_protocol("nimbus-logo", logo_protocol)
-        .register_asynchronous_uri_scheme_protocol(NC_PROXY_SCHEME, nc_proxy_protocol)
         .setup(|app| {
             // Windows toast attribution.  Without an explicit
             // AppUserModelID the OS falls back to the launching
