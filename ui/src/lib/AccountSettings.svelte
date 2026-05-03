@@ -983,6 +983,31 @@
                 if (wouldBe && wouldBe !== initialLocale) {
                   restartPromptOpen = true
                 }
+              } else {
+                // Switching FROM auto TO manual — pre-fill
+                // `ui_locale` (and the localStorage pin) with
+                // the locale that's actually running, so the
+                // dropdown that's about to appear reflects
+                // reality.  Without this the dropdown
+                // defaulted to `locales[0]` (English), which
+                // matched what was selected only by accident
+                // — a German user clicking "English" to
+                // confirm wouldn't trigger an `onchange`
+                // (browser elides "selected the already-
+                // selected option") and the restart prompt
+                // never fired.  Pre-filling means picking the
+                // same locale is a no-op (correct) and
+                // picking a different one always fires the
+                // change handler.
+                if (!appSettings.ui_locale) {
+                  appSettings.ui_locale = initialLocale
+                  try {
+                    window.localStorage.setItem(
+                      'PARAGLIDE_LOCALE',
+                      initialLocale,
+                    )
+                  } catch {}
+                }
               }
               scheduleSave()
             }}
