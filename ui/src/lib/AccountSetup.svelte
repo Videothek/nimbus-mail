@@ -352,7 +352,7 @@
       {#if canCancel}
         <button
           type="button"
-          class="absolute top-2 right-2 p-1.5 rounded-md text-surface-500 hover:text-surface-900 hover:bg-surface-200 dark:hover:text-surface-100 dark:hover:bg-surface-700 transition-colors"
+          class="absolute top-1 right-1 p-1.5 rounded-md text-surface-500 hover:text-surface-900 hover:bg-surface-200 dark:hover:text-surface-100 dark:hover:bg-surface-700 transition-colors"
           onclick={handleCancel}
           aria-label="Close setup wizard"
           title="Close"
