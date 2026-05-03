@@ -1,0 +1,31 @@
+# CodeQL scan configuration.
+#
+# Referenced from `.github/workflows/codeql.yml` via the `config-file`
+# input.  The default analysis scans every source file in the repo;
+# we narrow that here so test fixtures don't generate
+# `hard-coded-cryptographic-value` alerts on obvious test passwords
+# like `"password123"`, and so vendored / generated assets don't
+# pollute the Security tab.
+
+paths-ignore:
+  # Test code carries its own conventions — fake creds in mock
+  # servers, hard-coded fixtures, deliberately unsafe call patterns
+  # to test error paths.  CodeQL scans `src/` for the real code.
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/*_test.rs"
+  - "**/*_tests.rs"
+  # Frontend test surfaces (vitest / jest / playwright) likewise.
+  - "**/*.spec.ts"
+  - "**/*.test.ts"
+  - "**/*.spec.js"
+  - "**/*.test.js"
+  # Generated / vendored assets that are not our code to fix.
+  - "ui/dist/**"
+  - "target/**"
+  - "node_modules/**"
+
+# Use the same query packs as the workflow does — `security-extended`
+# for the higher-precision security pack on top of the default set.
+queries:
+  - uses: security-extended

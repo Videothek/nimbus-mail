@@ -10,6 +10,7 @@ use reqwest::{Client, Method, Response};
 use std::time::Duration;
 
 use nimbus_core::NimbusError;
+use nimbus_core::url::ensure_https;
 
 /// Build the shared HTTP client.
 pub fn build() -> Result<Client, NimbusError> {
@@ -34,6 +35,7 @@ pub async fn propfind(
     depth: u32,
     body: &str,
 ) -> Result<Response, NimbusError> {
+    ensure_https(url)?;
     let method = Method::from_bytes(b"PROPFIND")
         .map_err(|e| NimbusError::Other(format!("PROPFIND method: {e}")))?;
     http.request(method, url)
@@ -56,6 +58,7 @@ pub async fn report(
     app_password: &str,
     body: &str,
 ) -> Result<Response, NimbusError> {
+    ensure_https(url)?;
     let method = Method::from_bytes(b"REPORT")
         .map_err(|e| NimbusError::Other(format!("REPORT method: {e}")))?;
     http.request(method, url)
@@ -83,6 +86,7 @@ pub async fn put_ics(
     if_match: Option<&str>,
     if_none_match_star: bool,
 ) -> Result<Response, NimbusError> {
+    ensure_https(url)?;
     let mut req = http
         .put(url)
         .basic_auth(username, Some(app_password))
@@ -145,6 +149,7 @@ async fn delete_resource_inner(
     if_match: Option<&str>,
     suppress_itip: bool,
 ) -> Result<Response, NimbusError> {
+    ensure_https(url)?;
     let mut req = http.delete(url).basic_auth(username, Some(app_password));
     if let Some(etag) = if_match {
         let v = if etag.starts_with('"') {
