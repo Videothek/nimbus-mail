@@ -623,12 +623,43 @@
 
   // Recompute whenever the email body, per-message toggle, or trust state changes.
   let processedHtml = $derived.by(() => {
-    if (!email?.body_html) return { html: '', hadBlocked: false }
-    return processEmailHtml(
-      email.body_html,
-      showImagesForMessage || trustedSender || autoLoadRemoteImages,
-    )
+    if (email?.body_html) {
+      return processEmailHtml(
+        email.body_html,
+        showImagesForMessage || trustedSender || autoLoadRemoteImages,
+      )
+    }
+    // Plain-text-only message — synthesize a minimal HTML
+    // wrapper so the same DOMPurify → auto-link → URLhaus
+    // check → click-handler pipeline applies.  Without this
+    // path, plain-text URLs would render unchecked and clicks
+    // would bypass the unsafe-link confirm modal entirely
+    // (#165 follow-up).  We HTML-escape first so any literal
+    // `<` / `&` in the user's body stays as text rather than
+    // being interpreted as markup.
+    if (email?.body_text) {
+      const wrapped = `<pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">${escapeHtmlForPre(email.body_text)}</pre>`
+      return processEmailHtml(
+        wrapped,
+        showImagesForMessage || trustedSender || autoLoadRemoteImages,
+      )
+    }
+    return { html: '', hadBlocked: false }
   })
+
+  /** Minimal HTML escape for the plain-text → HTML wrapper.
+   *  We don't run user-supplied HTML through this — the body
+   *  goes straight to DOMPurify after wrapping — but we still
+   *  need to escape `<`, `>`, `&`, `"` so a plain-text body
+   *  containing the literal sequence "<script>" doesn't get
+   *  interpreted as markup before DOMPurify can sanitise it. */
+  function escapeHtmlForPre(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+  }
 
   // ── URLhaus link safety (#165) ───────────────────────────────────────
   //
@@ -1769,7 +1800,7 @@
          brand styles). DOMPurify + remote-image blocking make this
          safe; we fall back to plain text only when no HTML part exists. -->
     <div class="flex-1 overflow-y-auto">
-      {#if email.body_html}
+      {#if processedHtml.html}
         <!-- Image-blocking banner — only visible when at least one remote
              image was replaced with a placeholder and the user hasn't opted
              in for this message or trusted this sender. -->
@@ -1807,7 +1838,13 @@
           {@html annotatedHtml}
         </div>
       {:else if email.body_text}
-        <!-- Plain-text fallback for messages without an HTML part. -->
+        <!-- This branch is now reachable only when the
+             plain-text body fed through processEmailHtml above
+             produced an empty result for some reason (e.g.
+             DOMPurify nuked a particularly weird wrapper).
+             Falls back to the raw text so the message still
+             reads — at the cost of skipping the URLhaus check
+             for that specific malformed case. -->
         <pre class="whitespace-pre-wrap font-sans text-sm p-6">{email.body_text}</pre>
       {:else}
         <p class="text-sm text-surface-500 p-6">(This message has no visible body.)</p>
