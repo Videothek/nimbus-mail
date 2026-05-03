@@ -1321,7 +1321,7 @@
                 · {linkCheckStatus.totalUrls.toLocaleString()} URLs in local snapshot
                 <button
                   type="button"
-                  class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5 ml-2"
+                  class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5 ml-2 text-white!"
                   disabled={linkCheckRefreshing}
                   onclick={() => void onRefreshUrlhausNow()}
                 >
