@@ -155,6 +155,20 @@ pub struct AppSettings {
     /// picking an explicit language) sets this to false.
     #[serde(default = "default_true")]
     pub ui_locale_auto: bool,
+    /// Master toggle for the URLhaus link-safety check (#165).
+    /// When on (default), every link in a rendered email is
+    /// looked up against the local URLhaus snapshot and rendered
+    /// with a green "Safe" or red "Unsafe" pill; clicks on
+    /// unsafe links go through a confirm modal.  When off, the
+    /// pills are suppressed, links open without interception,
+    /// and the background refresh worker sleeps.  Default-on
+    /// matches the project's privacy-first defaults — the
+    /// URLhaus list is fetched once an hour over plain HTTPS
+    /// with no per-user identifiers, so the privacy cost is
+    /// negligible compared to the value of catching malware
+    /// links before the user clicks them.
+    #[serde(default = "default_true")]
+    pub link_check_enabled: bool,
 }
 
 fn default_logo_style() -> String {
@@ -243,6 +257,7 @@ impl Default for AppSettings {
             ui_scale_auto: true,
             ui_locale: String::new(),
             ui_locale_auto: true,
+            link_check_enabled: true,
         }
     }
 }

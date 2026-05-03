@@ -788,6 +788,41 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE messages ADD COLUMN pending_action TEXT;
     "#,
+    // ─────────────────────────────────────────────────────────────
+    // vN → vN+1: URLhaus link-safety table (#165)
+    //
+    // Local snapshot of abuse.ch's URLhaus "online malicious URLs"
+    // dump.  Refreshed every ~hour by a background task; the
+    // mail-render path looks up each <a href> against this table
+    // and renders a Safe / Unsafe pill next to the link.
+    //
+    // We store both the full URL and a derived `host` so we can
+    // ask either question (exact match → "this link is on
+    // URLhaus", or just-host match → "this domain has hosted
+    // malware before").  v1 only renders the binary safe/unsafe
+    // pill, but we keep the host index in case a future tier of
+    // "caution" is wanted without another migration.
+    //
+    // `meta` is the small key/value table for sync state — last
+    // refresh timestamp, source ETag, etc.  One row per key.
+    // ─────────────────────────────────────────────────────────────
+    r#"
+    CREATE TABLE urlhaus_urls (
+        url            TEXT PRIMARY KEY,
+        host           TEXT NOT NULL,
+        threat         TEXT NOT NULL DEFAULT '',
+        tags           TEXT NOT NULL DEFAULT '',  -- comma-separated tag list
+        date_added     INTEGER NOT NULL,           -- unix epoch seconds
+        last_refreshed INTEGER NOT NULL            -- unix epoch seconds
+    );
+
+    CREATE INDEX urlhaus_by_host ON urlhaus_urls (host);
+
+    CREATE TABLE urlhaus_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    "#,
 ];
 
 const SCHEMA_VERSION_SQL: &str = r#"

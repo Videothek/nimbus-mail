@@ -103,6 +103,12 @@
         the "Remote images are blocked" banner doesn't appear.
         Trades the privacy default for convenience. */
     autoLoadRemoteImages?: boolean
+    /** App-wide master toggle (#165) for the URLhaus link
+     *  checker.  When true, every link in the rendered body
+     *  gets a green "Safe" / red "Unsafe" pill, and clicks on
+     *  unsafe links go through a confirm modal.  When false,
+     *  links open without interception. */
+    linkCheckEnabled?: boolean
     /** True when this `MailView` is the root of a popped-out
         standalone window (#104).  Hides the "Open in window"
         button (no point inside the window it would open) and
@@ -136,6 +142,7 @@
     inStandaloneWindow = false,
     forceWhiteBackground = true,
     autoLoadRemoteImages = false,
+    linkCheckEnabled = true,
     onmailto,
     refreshing = $bindable(false),
   }: Props = $props()
@@ -542,6 +549,175 @@
     )
   })
 
+  // ── URLhaus link safety (#165) ───────────────────────────────────────
+  //
+  // Two-pass render.  Pass 1 (`processedHtml` above) is synchronous and
+  // gives us the sanitised HTML immediately.  Pass 2 walks that HTML for
+  // <a href> nodes, batches them into one `check_urls` IPC, and produces
+  // an annotated HTML string with green / red pills inserted next to
+  // each link.  Until pass 2 completes the user sees the sanitised body
+  // *without* pills — never with a flash of the wrong colour.
+  //
+  // Verdicts are cached per message-id so re-opening the same message
+  // doesn't re-run the lookup; the cache is cleared whenever `email`
+  // changes to a different id.
+
+  interface LinkVerdict {
+    url: string
+    /** `'safe'` | `'unsafe'` | `'off'` (the master toggle is off). */
+    verdict: 'safe' | 'unsafe' | 'off'
+    threat: string | null
+    tags: string | null
+    exact: boolean
+  }
+  let linkVerdicts = $state<Record<string, LinkVerdict>>({})
+  let lastCheckedEmailId = $state<string | null>(null)
+
+  /** Walk the processed HTML, harvest every distinct http(s) URL,
+   *  and ask the backend for a verdict per URL.  Skips when the
+   *  master toggle is off (the IPC short-circuits but we save a
+   *  round-trip anyway). */
+  $effect(() => {
+    if (!email || !processedHtml.html) {
+      linkVerdicts = {}
+      lastCheckedEmailId = null
+      return
+    }
+    if (!linkCheckEnabled) {
+      linkVerdicts = {}
+      return
+    }
+    if (lastCheckedEmailId === email.id) return
+    const urls = extractCheckableUrls(processedHtml.html)
+    if (urls.length === 0) {
+      linkVerdicts = {}
+      lastCheckedEmailId = email.id
+      return
+    }
+    const expectedId = email.id
+    void invoke<LinkVerdict[]>('check_urls', { urls })
+      .then((rows) => {
+        // Drop the response if the user moved on to a different
+        // message before it landed — annotating a stale email
+        // would paint pills on the wrong body.
+        if (email?.id !== expectedId) return
+        const map: Record<string, LinkVerdict> = {}
+        for (const r of rows) map[r.url] = r
+        linkVerdicts = map
+        lastCheckedEmailId = expectedId
+      })
+      .catch((e) => {
+        console.warn('check_urls failed', e)
+      })
+  })
+
+  function extractCheckableUrls(html: string): string[] {
+    const seen = new Set<string>()
+    const out: string[] = []
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+    doc.querySelectorAll('a[href]').forEach((a) => {
+      const href = (a.getAttribute('href') ?? '').trim()
+      const lower = href.toLowerCase()
+      if (!lower.startsWith('http://') && !lower.startsWith('https://')) return
+      if (seen.has(href)) return
+      seen.add(href)
+      out.push(href)
+    })
+    return out
+  }
+
+  /** Inject pill spans next to each <a href> based on the verdict
+   *  map.  When the master toggle is off (or no verdicts have
+   *  arrived yet) returns the input verbatim — no pills. */
+  function annotateLinkPills(
+    html: string,
+    verdicts: Record<string, LinkVerdict>,
+  ): string {
+    if (Object.keys(verdicts).length === 0) return html
+    try {
+      const doc = new DOMParser().parseFromString(html, 'text/html')
+      doc.querySelectorAll('a[href]').forEach((a) => {
+        const href = (a.getAttribute('href') ?? '').trim()
+        const v = verdicts[href]
+        if (!v || v.verdict === 'off') return
+        // Style is intentionally inline so it survives a future
+        // Tailwind purge of class names that don't appear in any
+        // .svelte file directly.  Pills sit immediately before
+        // the link, separated by a thin no-break space so they
+        // visually attach to the URL they describe.
+        const pill = doc.createElement('span')
+        pill.setAttribute('data-nimbus-link-pill', v.verdict)
+        if (v.verdict === 'unsafe') {
+          pill.style.cssText =
+            'display:inline-block;font-size:0.7rem;font-weight:600;' +
+            'padding:0.1rem 0.4rem;margin-right:0.25rem;border-radius:9999px;' +
+            'background:#dc2626;color:#fff;vertical-align:middle;'
+          pill.textContent = 'Unsafe'
+          if (v.threat) {
+            pill.title = v.exact
+              ? `URLhaus flagged this URL — threat: ${v.threat}`
+              : `URLhaus has flagged other URLs on this domain — threat: ${v.threat}`
+          }
+          // Mark the anchor so the click handler knows to
+          // intercept and show the confirm modal.
+          a.setAttribute('data-nimbus-unsafe-link', '1')
+          if (v.threat) a.setAttribute('data-nimbus-threat', v.threat)
+          if (v.exact) a.setAttribute('data-nimbus-link-exact', '1')
+        } else {
+          // Safe pill stays understated — a green dot pill so it
+          // doesn't draw the eye away from the actual content.
+          pill.style.cssText =
+            'display:inline-block;font-size:0.7rem;font-weight:600;' +
+            'padding:0.1rem 0.4rem;margin-right:0.25rem;border-radius:9999px;' +
+            'background:#16a34a;color:#fff;vertical-align:middle;'
+          pill.textContent = 'Safe'
+          pill.title = 'No known threat indicators on URLhaus'
+        }
+        a.parentNode?.insertBefore(pill, a)
+      })
+      return doc.body.innerHTML
+    } catch (e) {
+      console.warn('annotateLinkPills failed', e)
+      return html
+    }
+  }
+
+  let annotatedHtml = $derived(
+    !linkCheckEnabled || Object.keys(linkVerdicts).length === 0
+      ? processedHtml.html
+      : annotateLinkPills(processedHtml.html, linkVerdicts),
+  )
+
+  /** State for the "Unsafe link clicked" confirm modal.  When
+   *  non-null, MailView paints the modal over the reading pane
+   *  with two actions: Delete mail (move to Trash) and Open link
+   *  anyway.  Esc / outside-click cancel. */
+  let unsafeLinkPrompt = $state<
+    { url: string; threat: string | null; exact: boolean } | null
+  >(null)
+
+  async function onUnsafeLinkOpenAnyway() {
+    if (!unsafeLinkPrompt) return
+    const url = unsafeLinkPrompt.url
+    unsafeLinkPrompt = null
+    try {
+      await invoke('open_url', { url })
+    } catch (e) {
+      console.warn('open_url failed', e)
+    }
+  }
+  async function onUnsafeLinkDeleteMail() {
+    unsafeLinkPrompt = null
+    if (!email) return
+    // Soft delete via the existing toolbar path — moves the
+    // message to Trash so a misclick is recoverable.
+    try {
+      await deleteMessage()
+    } catch (e) {
+      console.warn('delete after unsafe-link prompt failed', e)
+    }
+  }
+
   // ── Click handling for the inline HTML body div ───────────────────────
   //
   // cid: links open the matching attachment (same as before).
@@ -633,6 +809,23 @@
       e.stopPropagation()
       const init = parseMailtoUrl(href)
       onmailto?.(init)
+      return
+    }
+    // #165 — URLhaus-flagged links go through a confirm modal
+    // instead of opening straight to the system browser.  The
+    // anchor is tagged with `data-nimbus-unsafe-link` by
+    // `annotateLinkPills` only when the verdict came back
+    // 'unsafe' (and the master toggle is on), so a missing
+    // attribute is the safe / off path that keeps the original
+    // open-in-browser behaviour.
+    if (anchor.hasAttribute('data-nimbus-unsafe-link')) {
+      e.preventDefault()
+      e.stopPropagation()
+      unsafeLinkPrompt = {
+        url: href,
+        threat: anchor.getAttribute('data-nimbus-threat'),
+        exact: anchor.hasAttribute('data-nimbus-link-exact'),
+      }
       return
     }
     e.preventDefault()
@@ -1530,7 +1723,7 @@
           aria-label="Email body"
           onclick={onBodyClick}
         >
-          {@html processedHtml.html}
+          {@html annotatedHtml}
         </div>
       {:else if email.body_text}
         <!-- Plain-text fallback for messages without an HTML part. -->
@@ -1562,5 +1755,63 @@
       onpicked={(name) => void moveToFolder(name)}
       onclose={() => (moveMenuOpen = false)}
     />
+  {/if}
+
+  <!-- #165 — confirm modal shown when the user clicks an
+       URLhaus-flagged link.  Two primary actions, plus an
+       implicit Cancel via Escape / outside-click.  Soft delete
+       (move to Trash) so a misclick is recoverable. -->
+  {#if unsafeLinkPrompt}
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      onmousedown={(e) => {
+        if (e.target === e.currentTarget) unsafeLinkPrompt = null
+      }}
+      onkeydown={(e) => {
+        if (e.key === 'Escape') unsafeLinkPrompt = null
+      }}
+    >
+      <div class="bg-surface-50 dark:bg-surface-900 rounded-lg shadow-xl w-md max-w-full mx-4 p-6 space-y-4">
+        <div class="flex items-start gap-3">
+          <span class="text-2xl" aria-hidden="true">⚠️</span>
+          <div class="flex-1 min-w-0">
+            <h3 class="text-base font-semibold">This link is on URLhaus</h3>
+            <p class="text-sm text-surface-600 dark:text-surface-300 mt-1">
+              {#if unsafeLinkPrompt.exact}
+                The exact URL has been flagged as malicious.
+              {:else}
+                Other URLs on this domain have been flagged as malicious — this specific URL isn't on the list, but the domain has hosted malware before.
+              {/if}
+              {#if unsafeLinkPrompt.threat}
+                <br>Threat: <code>{unsafeLinkPrompt.threat}</code>
+              {/if}
+            </p>
+            <p class="text-xs text-surface-500 mt-2 break-all">
+              <strong>URL:</strong> {unsafeLinkPrompt.url}
+            </p>
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-2 justify-end">
+          <button
+            type="button"
+            class="btn preset-outlined-surface-500"
+            onclick={() => (unsafeLinkPrompt = null)}
+          >Cancel</button>
+          <button
+            type="button"
+            class="btn preset-outlined-error-500"
+            onclick={() => void onUnsafeLinkDeleteMail()}
+          >Delete mail</button>
+          <button
+            type="button"
+            class="btn preset-filled-warning-500"
+            onclick={() => void onUnsafeLinkOpenAnyway()}
+          >Open link anyway</button>
+        </div>
+      </div>
+    </div>
   {/if}
 </main>
