@@ -282,9 +282,14 @@
         {reminder.summary || 'Event'}
       </h1>
 
-      <!-- Time-slot row.  Always present. -->
+      <!-- Time-slot row.  Always present.
+           Icon vertical alignment: text-sm has a 20 px
+           line-height, so the first line of text is centred 10 px
+           down from the row's top edge.  A 14 px icon centred on
+           that line wants its top at 3 px (≈ Tailwind `mt-0.75`).
+           Same offset on every row below. -->
       <div class="flex items-start gap-2 text-sm text-surface-700 dark:text-surface-300">
-        <span class="text-surface-500 mt-0.5 shrink-0"><Icon name="time" size={14} /></span>
+        <span class="text-surface-500 mt-0.75 shrink-0"><Icon name="time" size={14} /></span>
         <span class="font-mono min-w-0">
           {formatLocalTime(reminder.start)}–{formatLocalTime(reminder.end)}
         </span>
@@ -293,7 +298,7 @@
       <!-- Location.  Hidden when the event has none. -->
       {#if reminder.location}
         <div class="flex items-start gap-2 text-sm text-surface-700 dark:text-surface-300">
-          <span class="text-surface-500 mt-0.5 shrink-0"><Icon name="location" size={14} /></span>
+          <span class="text-surface-500 mt-0.75 shrink-0"><Icon name="location" size={14} /></span>
           <span class="wrap-break-word min-w-0">{reminder.location}</span>
         </div>
       {/if}
@@ -301,7 +306,7 @@
       <!-- Attendees.  First three + "+N more". -->
       {#if reminder.attendees.length > 0}
         <div class="flex items-start gap-2 text-sm text-surface-700 dark:text-surface-300">
-          <span class="text-surface-500 mt-0.5 shrink-0"><Icon name="contacts" size={14} /></span>
+          <span class="text-surface-500 mt-0.75 shrink-0"><Icon name="contacts" size={14} /></span>
           <span class="wrap-break-word min-w-0">{formatAttendees(reminder.attendees)}</span>
         </div>
       {/if}
@@ -309,7 +314,10 @@
       <!-- Snooze dropdown + button.  Each preset is hidden when
            its target moment isn't usefully far in the future.
            Snooze icon sits in the same column as the row icons
-           above so the dropdown lines up under the labels. -->
+           above so the dropdown lines up under the labels.
+           `items-center` here because the dropdown / button row
+           is taller than a single line of text — the icon
+           centres against the row's vertical midline. -->
       <div class="flex items-center gap-2 mt-1">
         <span class="text-surface-500 shrink-0"><Icon name="snooze" size={14} /></span>
         <select
