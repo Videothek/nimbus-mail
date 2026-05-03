@@ -8601,6 +8601,32 @@ struct LinkVerdict {
 }
 
 #[tauri::command]
+fn debug_link_check(
+    url: String,
+    cache: State<'_, Cache>,
+) -> Result<serde_json::Value, NimbusError> {
+    let status = link_check::status(&cache).map_err(NimbusError::from)?;
+    let lookup = link_check::lookup(&cache, &url).map_err(NimbusError::from)?;
+    let host_count = link_check::host_count_for_url(&cache, &url).map_err(NimbusError::from)?;
+    let host = url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(&url)
+        .split(['/', '?', '#', ':'])
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    Ok(serde_json::json!({
+        "url": url,
+        "extractedHost": host,
+        "snapshotTotal": status.total_urls,
+        "lastRefreshedAt": status.last_refreshed_at,
+        "hostUrlCount": host_count,
+        "lookupResult": lookup,
+    }))
+}
+
+#[tauri::command]
 fn check_urls(
     urls: Vec<String>,
     cache: State<'_, Cache>,
@@ -9624,6 +9650,7 @@ fn main() {
             nc_restore_settings_bundle,
             // Issue #165: URLhaus link safety.
             check_urls,
+            debug_link_check,
             get_link_check_status,
             refresh_urlhaus_now,
             set_logo_style,

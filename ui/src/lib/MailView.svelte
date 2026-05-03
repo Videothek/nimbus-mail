@@ -718,7 +718,7 @@
     }
     const expectedId = email.id
     void invoke<LinkVerdict[]>('check_urls', { urls })
-      .then((rows) => {
+      .then(async (rows) => {
         // Drop the response if the user moved on to a different
         // message before it landed — annotating a stale email
         // would paint pills on the wrong body.
@@ -728,6 +728,19 @@
         for (const r of rows) map[r.url] = r
         linkVerdicts = map
         lastCheckedEmailId = expectedId
+        // Diagnostic: when the verdict is 'safe' but the user
+        // has reason to suspect otherwise, dump the snapshot
+        // total + per-host count so we can tell "URLhaus has
+        // no entry for this URL" apart from "the snapshot is
+        // empty / our matching is broken".
+        for (const r of rows.filter((x) => x.verdict === 'safe')) {
+          try {
+            const detail = await invoke('debug_link_check', { url: r.url })
+            console.log('[link-check] debug for', r.url, detail)
+          } catch (e) {
+            console.warn('[link-check] debug_link_check failed', e)
+          }
+        }
       })
       .catch((e) => {
         console.warn('[link-check] check_urls failed', e)
