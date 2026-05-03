@@ -799,6 +799,7 @@
   // event came in with (we keep `originalReminders` for that case).
   type ReminderChoice =
     | 'none'
+    | '0'
     | '5'
     | '10'
     | '15'
@@ -817,6 +818,7 @@
     if (list.length > 1) return 'custom'
     const m = list[0].trigger_minutes_before
     if (
+      m === 0 ||
       m === 5 ||
       m === 10 ||
       m === 15 ||
@@ -1433,6 +1435,7 @@
             bind:value={reminderChoice}
             options={[
               { value: 'none', label: 'No reminder' },
+              { value: '0', label: 'At event start' },
               { value: '5', label: '5 minutes before' },
               { value: '10', label: '10 minutes before' },
               { value: '15', label: '15 minutes before' },

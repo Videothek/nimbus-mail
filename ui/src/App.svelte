@@ -327,6 +327,11 @@
     meeting_reminders_enabled: boolean
     /** #203: gates reminders for events without a meeting URL. */
     calendar_reminders_enabled: boolean
+    /** #203 follow-up: when true, a meeting reminder firing at
+     *  "now" (≤1 min lead) opens the meeting URL in the
+     *  browser straight away instead of showing the popup.
+     *  Off by default. */
+    auto_open_meetings: boolean
     autostart_enabled: boolean
     /** User-imported Skeleton themes (#132 tier 2). */
     custom_themes?: CustomTheme[]
@@ -492,12 +497,19 @@
       void fireToast(title, bodyLines.join('\n'))
     }
 
-    // For an *imminent* meeting (≤1 min lead), keep the old
-    // auto-join shortcut: open the URL straight away so the
-    // user lands in the room without an extra click.  Skip
-    // popping the standalone window in this case — the user
-    // is already heading into the meeting.
-    if (isMeeting && payload.minutesBefore <= 1 && payload.meetingUrl) {
+    // Auto-open shortcut (opt-in via Settings → Calendar):
+    // for an *imminent* meeting (≤1 min lead — typically the
+    // "At event start" preset on the snooze dropdown) the URL
+    // opens straight away in the user's browser instead of
+    // surfacing the popup.  Off by default — the popup is the
+    // consistent default surface, and users who want the old
+    // auto-join shortcut explicitly opt in.
+    if (
+      isMeeting &&
+      payload.minutesBefore <= 1 &&
+      payload.meetingUrl &&
+      appPrefs?.auto_open_meetings
+    ) {
       void invoke('open_url', { url: payload.meetingUrl }).catch((err) =>
         console.warn('open_url for event reminder failed', err),
       )
