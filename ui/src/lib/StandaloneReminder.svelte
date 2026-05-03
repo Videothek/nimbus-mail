@@ -253,9 +253,6 @@
           class="w-5 h-5 shrink-0 object-contain"
           draggable="false"
         />
-        <span class="text-primary-500 shrink-0">
-          <Icon name={reminder.meetingUrl ? 'meetings' : 'calendar'} size={16} />
-        </span>
         <span class="text-xs uppercase tracking-wide text-surface-500 truncate">
           Reminder · {formatLeadTime(reminder.minutesBefore)}
         </span>
