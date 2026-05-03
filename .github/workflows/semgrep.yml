@@ -1,0 +1,58 @@
+name: Semgrep
+
+# Semgrep is a fast pattern-based static analyser that complements
+# CodeQL.  Where CodeQL does deep dataflow analysis, Semgrep is
+# good for pattern-style rules: "no `eval` here", "every call to
+# this function must pass through `validate()` first", etc.
+#
+# We run the official `p/security-audit` ruleset (curated security
+# patterns), plus the Rust- and TypeScript-specific packs.  These
+# are public rule packs distributed by Semgrep — no account or
+# token required.  The Semgrep CLI itself is LGPL-2.1, free for
+# any usage including commercial / sold downstream apps.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly cron so newly-published rule patterns hit our codebase
+    # even when we're not pushing.
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+  # SARIF upload to the Security tab.
+  security-events: write
+
+jobs:
+  semgrep:
+    name: Semgrep scan
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    # Skip the scheduled run on forks to save CI minutes — the
+    # Security tab on the upstream repo is the authoritative view.
+    if: (github.actor != 'dependabot[bot]')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Semgrep
+        # `--config p/security-audit` is the cross-language default
+        # security pack.  We add the Rust + TS-specific packs on
+        # top.  `--sarif` writes findings in the GitHub-Code-Scanning
+        # format so they appear in the Security tab.
+        run: |
+          semgrep scan \
+            --config p/security-audit \
+            --config p/rust \
+            --config p/typescript \
+            --sarif --output=semgrep.sarif \
+            --error \
+            --metrics=off
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
