@@ -425,6 +425,81 @@ pub async fn update_share_label(
     Ok(())
 }
 
+/// Delete an existing public share by id (#193).
+///
+/// Used by the Compose flow when the user cancels a draft after
+/// having minted share links via the Nextcloud file picker —
+/// otherwise those shares dangle in the user's "Shared with
+/// others" list with no associated mail.
+///
+/// Endpoint:
+/// ```text
+///   DELETE  /ocs/v2.php/apps/files_sharing/api/v1/shares/{id}?format=json
+///   OCS-APIRequest: true
+/// ```
+///
+/// The OCS DELETE returns 200 + `meta.statuscode = 200` on
+/// success.  A `meta.statuscode = 404` (share already gone — race
+/// with another deleter, manual cleanup, etc.) is treated as a
+/// non-error: the caller wanted the share gone and it is.
+pub async fn delete_share(
+    server_url: &str,
+    username: &str,
+    app_password: &str,
+    share_id: &str,
+) -> Result<(), NimbusError> {
+    if share_id.is_empty() {
+        return Err(NimbusError::Other("share_id is empty".into()));
+    }
+    let server = client::normalize_server_url(server_url);
+    let url =
+        format!("{server}/ocs/v2.php/apps/files_sharing/api/v1/shares/{share_id}?format=json");
+
+    tracing::debug!("DELETE {url} for share {share_id}");
+
+    let http = client::build()?;
+    let resp = http
+        .delete(&url)
+        .header("OCS-APIRequest", "true")
+        .header("Accept", "application/json")
+        .basic_auth(username, Some(app_password))
+        .send()
+        .await
+        .map_err(|e| NimbusError::Network(format!("share delete failed: {e}")))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(NimbusError::Auth(
+            "Nextcloud rejected app password (revoked or expired)".into(),
+        ));
+    }
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| NimbusError::Network(format!("share delete body read failed: {e}")))?;
+
+    if !status.is_success() {
+        return Err(NimbusError::Nextcloud(
+            ocs_message(&body)
+                .map(|m| friendly_share_error(&m))
+                .unwrap_or_else(|| body.trim().to_string()),
+        ));
+    }
+
+    if let Ok(raw) = serde_json::from_str::<OcsRaw>(&body)
+        && raw.ocs.meta.status != "ok"
+        && raw.ocs.meta.statuscode != 404
+    {
+        return Err(NimbusError::Nextcloud(format!(
+            "share delete failed (OCS {}): {}",
+            raw.ocs.meta.statuscode,
+            raw.ocs.meta.message.unwrap_or_default()
+        )));
+    }
+    Ok(())
+}
+
 // ── Tests ──────────────────────────────────────────────────────
 
 #[cfg(test)]
