@@ -467,6 +467,75 @@
   const BLOCKED_IMG_PLACEHOLDER =
     'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
+  /** Walk the body's text nodes and replace any naked http(s)
+   *  URL with an `<a href>` so the link-check pass picks it up
+   *  and so the user gets a clickable target (matches the
+   *  behaviour of every modern mail client).  Skips text inside
+   *  existing `<a>`, `<script>`, or `<style>` so we never
+   *  nest anchors or rewrite code samples.  Trailing common
+   *  punctuation (`.`, `,`, `)`, etc.) is stripped from the
+   *  match so "see https://example.com." doesn't promote the
+   *  sentence-final period into part of the URL. */
+  function autolinkPlainTextUrls(doc: Document) {
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        let p: Node | null = node.parentNode
+        while (p) {
+          if (p.nodeType === Node.ELEMENT_NODE) {
+            const tag = (p as Element).tagName.toLowerCase()
+            if (tag === 'a' || tag === 'script' || tag === 'style') {
+              return NodeFilter.FILTER_REJECT
+            }
+          }
+          p = p.parentNode
+        }
+        // `RegExp.test` mutates `lastIndex` on /g regexes, so
+        // build a non-global probe just for the filter.
+        return /https?:\/\/[^\s<>"]/i.test(node.textContent ?? '')
+          ? NodeFilter.FILTER_ACCEPT
+          : NodeFilter.FILTER_REJECT
+      },
+    })
+    const targets: Text[] = []
+    let n: Node | null
+    while ((n = walker.nextNode())) targets.push(n as Text)
+    if (targets.length === 0) return
+
+    const urlRe = /(https?:\/\/[^\s<>"]+)/g
+    for (const text of targets) {
+      const content = text.textContent ?? ''
+      urlRe.lastIndex = 0
+      const fragment = doc.createDocumentFragment()
+      let lastIndex = 0
+      let match: RegExpExecArray | null
+      while ((match = urlRe.exec(content)) !== null) {
+        let url = match[0]
+        let trailing = ''
+        while (url.length > 0 && /[.,;:!?)\]]/.test(url[url.length - 1])) {
+          trailing = url[url.length - 1] + trailing
+          url = url.slice(0, -1)
+        }
+        if (url.length === 0) continue
+        const start = match.index
+        if (start > lastIndex) {
+          fragment.appendChild(doc.createTextNode(content.slice(lastIndex, start)))
+        }
+        const a = doc.createElement('a')
+        a.setAttribute('href', url)
+        a.setAttribute('target', '_blank')
+        a.setAttribute('rel', 'noopener noreferrer')
+        a.textContent = url
+        fragment.appendChild(a)
+        if (trailing) fragment.appendChild(doc.createTextNode(trailing))
+        lastIndex = start + url.length + trailing.length
+      }
+      if (lastIndex < content.length) {
+        fragment.appendChild(doc.createTextNode(content.slice(lastIndex)))
+      }
+      text.parentNode?.replaceChild(fragment, text)
+    }
+  }
+
   function processEmailHtml(
     html: string,
     showImages: boolean,
@@ -497,6 +566,18 @@
       })
 
       const doc = new DOMParser().parseFromString(clean, 'text/html')
+
+      // Auto-link plain-text URLs (#165 follow-up).  Many
+      // senders put a URL straight into their message body as
+      // plain text — Tiptap before its `autolink` config, most
+      // CLI mailers, and any hand-written HTML that just embeds
+      // the URL without wrapping it in <a>.  Without this pass
+      // those URLs render as text and bypass the URLhaus link
+      // check entirely (the extractor only walks `<a[href]>`).
+      // We also annotate cid: / mailto: text-URLs?  No — only
+      // http(s), since those are what URLhaus catalogues and
+      // what the open-in-browser path handles.
+      autolinkPlainTextUrls(doc)
 
       // Annotate links with tooltip + handle cid: anchors
       doc.querySelectorAll('a[href]').forEach((a) => {
