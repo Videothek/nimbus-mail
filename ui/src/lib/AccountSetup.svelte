@@ -11,20 +11,35 @@
    * On submit it calls the `add_account` Tauri command, which persists
    * the account to disk via nimbus-store.
    *
-   * The component fires an `oncomplete` event when setup succeeds,
-   * so the parent (App.svelte) can switch to the inbox view.
+   * The component fires an `oncomplete` callback when setup succeeds
+   * so the parent (App.svelte) can switch to the inbox view.  When
+   * the wizard is invoked from somewhere the user can back out of
+   * (e.g. the "Add account" button in Settings, or the IconRail's
+   * add-account affordance — both cases where they already have at
+   * least one account configured) the parent passes `canCancel=true`
+   * and an `oncancel` callback so the wizard can render a close (×)
+   * button in the top-right.  On true first launch (zero accounts),
+   * `canCancel` defaults to `false` and the button is hidden.
    */
 
   import { invoke } from '@tauri-apps/api/core'
   import { formatError } from './errors'
   import Toggle from './Toggle.svelte'
+  import Icon, { type IconName } from './Icon.svelte'
 
   // ── Props ───────────────────────────────────────────────────
-  // Called when account setup completes successfully
   interface Props {
+    /** Called when account setup completes successfully. */
     oncomplete: () => void
+    /** When true, the wizard renders an "X" close button.  Set by
+     *  the parent only when the user has at least one account
+     *  configured already — first-launch must finish the wizard. */
+    canCancel?: boolean
+    /** Called when the user clicks the close button.  Required when
+     *  `canCancel` is true. */
+    oncancel?: () => void
   }
-  let { oncomplete }: Props = $props()
+  let { oncomplete, canCancel = false, oncancel }: Props = $props()
 
   // ── Wizard state ────────────────────────────────────────────
   // Which step of the wizard we're on (0-indexed)
@@ -53,7 +68,15 @@
   let signature = $state('')
 
   // ── Step navigation ─────────────────────────────────────────
-  const totalSteps = 3
+  // Step metadata drives the numbered progress indicator + the
+  // section headers.  Keep `icon` keys in sync with the Icon
+  // component's name union.
+  const steps: ReadonlyArray<{ title: string; icon: IconName }> = [
+    { title: 'Your information', icon: 'address-book' },
+    { title: 'Incoming mail (IMAP)', icon: 'email-envelope' },
+    { title: 'Outgoing mail (SMTP)', icon: 'sent' },
+  ]
+  const totalSteps = steps.length
 
   function nextStep() {
     error = ''
@@ -75,6 +98,11 @@
   function prevStep() {
     error = ''
     step--
+  }
+
+  function handleCancel() {
+    if (!canCancel) return
+    oncancel?.()
   }
 
   // ── Auto-fill server settings from email domain ─────────────
@@ -296,12 +324,19 @@
 </script>
 
 <!--
-  The wizard is a centered card with a step indicator at the top.
-  Each step shows different form fields. Navigation buttons at
-  the bottom move between steps.
+  The wizard is a centered card.  Layout from top to bottom:
+    * brand title + tagline
+    * the card, with:
+        - top-right "×" button (only when `canCancel`)
+        - numbered step indicator (1 ── 2 ── 3, completed steps
+          show a check mark, the active one is filled-primary)
+        - icon-prefixed section header for the current step
+        - the form fields for the current step
+        - error / cert-trust prompts
+        - Back / Next | Add Account buttons
 -->
 <div class="h-full flex items-center justify-center bg-surface-50 dark:bg-surface-900">
-  <div class="w-full max-w-lg mx-4">
+  <div class="w-full max-w-xl mx-4">
     <!-- Header -->
     <div class="text-center mb-8">
       <h1 class="text-3xl font-bold text-primary-500 mb-2">Welcome to Nimbus Mail</h1>
@@ -309,62 +344,126 @@
     </div>
 
     <!-- Card -->
-    <div class="card p-6 bg-surface-100 dark:bg-surface-800 rounded-xl shadow-lg">
-      <!-- Step indicator -->
-      <div class="flex items-center justify-center gap-2 mb-6">
-        {#each Array(totalSteps) as _, i}
-          <div
-            class="w-3 h-3 rounded-full transition-colors {i === step
-              ? 'bg-primary-500'
-              : i < step
-                ? 'bg-primary-300'
+    <div class="card relative p-6 bg-surface-100 dark:bg-surface-800 rounded-xl shadow-lg">
+      {#if canCancel}
+        <button
+          type="button"
+          class="absolute top-3 right-3 p-1.5 rounded-md text-surface-500 hover:text-surface-900 hover:bg-surface-200 dark:hover:text-surface-100 dark:hover:bg-surface-700 transition-colors"
+          onclick={handleCancel}
+          aria-label="Close setup wizard"
+          title="Close"
+        >
+          <Icon name="clear" size={18} />
+        </button>
+      {/if}
+
+      <!-- Numbered step indicator.  Each step is a circle (active /
+           completed / pending) connected by a thin line.  The active
+           step's circle is filled-primary, completed steps show the
+           check icon, pending steps show the step number. -->
+      <div class="flex items-center justify-center mb-6 px-2">
+        {#each steps as s, i (s.title)}
+          {#if i > 0}
+            <div
+              class="flex-1 h-px mx-2 transition-colors {i <= step
+                ? 'bg-primary-500'
                 : 'bg-surface-300 dark:bg-surface-600'}"
-          ></div>
+            ></div>
+          {/if}
+          <div class="flex flex-col items-center gap-1">
+            <div
+              class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold transition-colors {i ===
+              step
+                ? 'bg-primary-500 text-white'
+                : i < step
+                  ? 'bg-primary-500/20 text-primary-700 dark:text-primary-300'
+                  : 'bg-surface-200 dark:bg-surface-700 text-surface-500'}"
+            >
+              {#if i < step}
+                <Icon name="success" size={14} />
+              {:else}
+                {i + 1}
+              {/if}
+            </div>
+            <span
+              class="text-[10px] uppercase tracking-wide font-medium {i === step
+                ? 'text-primary-600 dark:text-primary-400'
+                : 'text-surface-500'}"
+            >
+              Step {i + 1}
+            </span>
+          </div>
         {/each}
+      </div>
+
+      <!-- Section header for the current step (icon + title). -->
+      <div class="flex items-center gap-2 mb-4">
+        <span class="text-primary-500"><Icon name={steps[step].icon} size={20} /></span>
+        <h2 class="text-lg font-semibold">{steps[step].title}</h2>
       </div>
 
       <!-- Step 0: Basic info -->
       {#if step === 0}
         <div>
-          <h2 class="text-lg font-semibold mb-4">Your Information</h2>
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Account Name</span>
-            <input
-              type="text"
-              bind:value={displayName}
-              placeholder="e.g. Work, Personal"
-              class="input w-full mt-1 px-3 py-2 rounded-md"
-            />
+            <div class="relative mt-1">
+              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
+                <Icon name="design-palette" size={14} />
+              </span>
+              <input
+                type="text"
+                bind:value={displayName}
+                placeholder="e.g. Work, Personal"
+                class="input w-full pl-8 pr-3 py-2 rounded-md"
+              />
+            </div>
             <span class="block text-xs text-surface-500 mt-1">
               How this account is labelled inside Nimbus.
             </span>
           </label>
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Your Name</span>
-            <input
-              type="text"
-              bind:value={personName}
-              placeholder="e.g. Alex Morgan"
-              class="input w-full mt-1 px-3 py-2 rounded-md"
-            />
+            <div class="relative mt-1">
+              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
+                <Icon name="contacts" size={14} />
+              </span>
+              <input
+                type="text"
+                bind:value={personName}
+                placeholder="e.g. Alex Morgan"
+                class="input w-full pl-8 pr-3 py-2 rounded-md"
+              />
+            </div>
             <span class="block text-xs text-surface-500 mt-1">
               Shown as the sender on outgoing mail. Defaults to the account name when empty.
             </span>
           </label>
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Email Address</span>
-            <input
-              type="email"
-              bind:value={email}
-              placeholder="e.g. you@example.com"
-              class="input w-full mt-1 px-3 py-2 rounded-md"
-              onblur={autoFillServers}
-              disabled={discovering}
-            />
+            <div class="relative mt-1">
+              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
+                <Icon name="email-envelope" size={14} />
+              </span>
+              <input
+                type="email"
+                bind:value={email}
+                placeholder="e.g. you@example.com"
+                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                onblur={autoFillServers}
+                disabled={discovering}
+              />
+            </div>
             {#if discovering}
-              <span class="block text-xs text-surface-500 mt-1">Looking up server settings…</span>
+              <span class="text-xs text-surface-500 mt-1 flex items-center gap-1">
+                <Icon name="loading" size={12} />
+                Looking up server settings…
+              </span>
             {:else if discoveryHint}
-              <span class="block text-xs text-surface-500 mt-1">{discoveryHint}</span>
+              <span class="text-xs text-surface-500 mt-1 flex items-center gap-1">
+                <Icon name="info" size={12} />
+                {discoveryHint}
+              </span>
             {/if}
           </label>
         </div>
@@ -372,19 +471,23 @@
       <!-- Step 1: IMAP settings -->
       {:else if step === 1}
         <div>
-          <h2 class="text-lg font-semibold mb-1">Incoming Mail (IMAP)</h2>
           <p class="text-sm text-surface-500 mb-4">
             IMAP is the protocol used to <strong>receive</strong> your emails.
             Port 993 uses TLS encryption (recommended).
           </p>
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">IMAP Server</span>
-            <input
-              type="text"
-              bind:value={imapHost}
-              placeholder="e.g. imap.example.com"
-              class="input w-full mt-1 px-3 py-2 rounded-md"
-            />
+            <div class="relative mt-1">
+              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
+                <Icon name="cloud" size={14} />
+              </span>
+              <input
+                type="text"
+                bind:value={imapHost}
+                placeholder="e.g. imap.example.com"
+                class="input w-full pl-8 pr-3 py-2 rounded-md"
+              />
+            </div>
           </label>
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Port</span>
@@ -396,13 +499,18 @@
           </label>
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Password</span>
-            <input
-              type="password"
-              bind:value={password}
-              placeholder="Your IMAP/SMTP password"
-              class="input w-full mt-1 px-3 py-2 rounded-md"
-              autocomplete="current-password"
-            />
+            <div class="relative mt-1">
+              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
+                <Icon name="lock" size={14} />
+              </span>
+              <input
+                type="password"
+                bind:value={password}
+                placeholder="Your IMAP/SMTP password"
+                class="input w-full pl-8 pr-3 py-2 rounded-md"
+                autocomplete="current-password"
+              />
+            </div>
             <span class="block text-xs text-surface-500 mt-1">
               Stored securely in your OS keychain — never written to disk in plain text.
             </span>
@@ -412,19 +520,23 @@
       <!-- Step 2: SMTP settings -->
       {:else if step === 2}
         <div>
-          <h2 class="text-lg font-semibold mb-1">Outgoing Mail (SMTP)</h2>
           <p class="text-sm text-surface-500 mb-4">
             SMTP is the protocol used to <strong>send</strong> your emails.
             Port 587 uses STARTTLS encryption (recommended).
           </p>
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">SMTP Server</span>
-            <input
-              type="text"
-              bind:value={smtpHost}
-              placeholder="e.g. smtp.example.com"
-              class="input w-full mt-1 px-3 py-2 rounded-md"
-            />
+            <div class="relative mt-1">
+              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none flex items-center" aria-hidden="true">
+                <Icon name="cloud" size={14} />
+              </span>
+              <input
+                type="text"
+                bind:value={smtpHost}
+                placeholder="e.g. smtp.example.com"
+                class="input w-full pl-8 pr-3 py-2 rounded-md"
+              />
+            </div>
           </label>
           <label class="block mb-4">
             <span class="text-sm font-medium text-surface-700 dark:text-surface-300">Port</span>
@@ -434,11 +546,20 @@
               class="input w-full mt-1 px-3 py-2 rounded-md"
             />
           </label>
-          <div class="flex items-center gap-3 mb-4">
+
+          <!-- JMAP toggle.  A modern protocol some servers offer
+               in addition to (or instead of) IMAP/SMTP. -->
+          <div class="flex items-center justify-between gap-3 mb-4 p-3 rounded-md bg-surface-200/50 dark:bg-surface-700/40">
+            <div class="flex items-start gap-2 min-w-0">
+              <span class="text-primary-500 mt-0.5"><Icon name="sync" size={16} /></span>
+              <div class="min-w-0">
+                <span class="block text-sm font-medium text-surface-700 dark:text-surface-200">Use JMAP instead of IMAP</span>
+                <span class="block text-xs text-surface-500">
+                  Modern push-based mail protocol. Only enable if your provider supports it.
+                </span>
+              </div>
+            </div>
             <Toggle bind:checked={useJmap} label="Use JMAP instead of IMAP" />
-            <span class="text-sm text-surface-700 dark:text-surface-300">
-              Use JMAP instead of IMAP (if supported by your provider)
-            </span>
           </div>
 
           <label class="block mb-4">
@@ -458,8 +579,9 @@
 
       <!-- Error message -->
       {#if error}
-        <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-md">
-          {error}
+        <div class="text-sm text-red-500 mb-4 p-3 bg-red-500/10 rounded-md flex items-start gap-2">
+          <span class="mt-0.5"><Icon name="error" size={16} /></span>
+          <span>{error}</span>
         </div>
       {/if}
 
@@ -470,7 +592,8 @@
            trust it for this account. -->
       {#if pendingCert}
         <div class="mb-4 p-4 rounded-md border border-warning-500/40 bg-warning-500/5">
-          <p class="text-sm font-medium mb-1">
+          <p class="text-sm font-medium mb-1 flex items-center gap-2">
+            <Icon name="lock" size={16} />
             The server's TLS certificate isn't trusted by default.
           </p>
           <p class="text-xs text-surface-500 mb-3">
@@ -509,7 +632,8 @@
       {/if}
 
       {#if trustedCerts.length > 0 && !pendingCert}
-        <div class="mb-4 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400">
+        <div class="mb-4 p-3 rounded-md border border-success-500/30 bg-success-500/5 text-xs text-surface-600 dark:text-surface-400 flex items-center gap-2">
+          <Icon name="verified" size={14} />
           Trusting {trustedCerts.length}
           self-signed certificate{trustedCerts.length === 1 ? '' : 's'}
           for this account.
@@ -519,10 +643,8 @@
       <!-- Navigation buttons -->
       <div class="flex justify-between mt-6">
         {#if step > 0}
-          <button
-            class="btn preset-outlined-surface-500"
-            onclick={prevStep}
-          >
+          <button class="btn preset-outlined-surface-500 flex items-center gap-1" onclick={prevStep}>
+            <Icon name="arrow-left" size={14} />
             Back
           </button>
         {:else}
@@ -530,19 +652,23 @@
         {/if}
 
         {#if step < totalSteps - 1}
-          <button
-            class="btn preset-filled-primary-500"
-            onclick={nextStep}
-          >
+          <button class="btn preset-filled-primary-500 flex items-center gap-1" onclick={nextStep}>
             Next
+            <Icon name="arrow-right" size={14} />
           </button>
         {:else}
           <button
-            class="btn preset-filled-primary-500"
+            class="btn preset-filled-primary-500 flex items-center gap-1"
             onclick={submit}
             disabled={saving}
           >
-            {saving ? 'Saving...' : 'Add Account'}
+            {#if saving}
+              <Icon name="loading" size={14} />
+              Saving…
+            {:else}
+              <Icon name="add-account" size={14} />
+              Add Account
+            {/if}
           </button>
         {/if}
       </div>

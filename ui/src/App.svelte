@@ -1372,7 +1372,16 @@
     <p class="text-surface-500">Loading...</p>
   </div>
 {:else if currentView === 'setup'}
-  <AccountSetup oncomplete={onSetupComplete} />
+  <!-- The wizard is closeable when the user already has at least
+       one account configured (i.e. they reached setup via "Add
+       account" from Settings or the IconRail).  On true first
+       launch (no accounts) the close affordance is hidden so the
+       user has to finish the wizard before they get into the app. -->
+  <AccountSetup
+    oncomplete={onSetupComplete}
+    canCancel={accounts.length > 0}
+    oncancel={goToInbox}
+  />
 {:else}
   <!-- Post-setup shell: IconRail is mounted *once* outside the
        currentView branches, so switching between Mail, Contacts,
