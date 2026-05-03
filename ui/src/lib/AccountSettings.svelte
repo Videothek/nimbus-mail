@@ -1931,7 +1931,7 @@
               </label>
               <select
                 id="sync-target"
-                class="input w-72 max-w-full text-sm px-3 py-1.5 rounded-md"
+                class="select w-72 max-w-full text-sm px-3 py-1.5 rounded-md"
                 value={syncState.targetNcId ?? ''}
                 onchange={(e) => {
                   const v = (e.currentTarget as HTMLSelectElement).value
