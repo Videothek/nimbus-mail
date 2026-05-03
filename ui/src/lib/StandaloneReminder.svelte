@@ -23,7 +23,7 @@
    *   * Dismiss — call `dismiss_event_reminder`, close.
    */
 
-  import { invoke } from '@tauri-apps/api/core'
+  import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { emit } from '@tauri-apps/api/event'
   import { onMount, onDestroy } from 'svelte'
   import Icon from './Icon.svelte'
@@ -41,6 +41,14 @@
   let reminder = $state<EventReminderPayload | null>(null)
   let snoozeChoice = $state<SnoozeChoice>('')
   let unlistenSystemMode: (() => void) | null = null
+  /** Slug of the user's chosen app-icon style (`storm`, `dawn`,
+   *  `mint`, …).  Read from `get_app_settings` on mount and
+   *  rendered in the popup header so the user can tell at a
+   *  glance that the toast is from Nimbus, in their picked
+   *  colour.  Defaults to `storm` (the same default the
+   *  backend's `default_logo_style` returns) so the header
+   *  isn't blank during the brief settings-fetch window. */
+  let logoStyle = $state('storm')
 
   // Snooze options.  Each label maps to a callback that returns
   // the `snooze_until` UTC date (computed when the user clicks
@@ -180,12 +188,14 @@
         const prefs = await invoke<{
           theme_name: string
           theme_mode: ThemeMode
+          logo_style?: string
         }>('get_app_settings')
         applyTheme(prefs.theme_name, prefs.theme_mode)
         unlistenSystemMode = installSystemModeListener(
           prefs.theme_mode,
           prefs.theme_name,
         )
+        if (prefs.logo_style) logoStyle = prefs.logo_style
       } catch (e) {
         console.warn('get_app_settings failed in standalone reminder', e)
       }
@@ -228,6 +238,21 @@
       class="flex items-center justify-between px-3 py-2 border-b border-surface-300/60 dark:border-surface-700/60 bg-surface-100 dark:bg-surface-800 cursor-move select-none"
     >
       <div class="flex items-center gap-2 min-w-0" data-tauri-drag-region>
+        <!-- Nimbus brand mark.  Sourced from the same
+             `nimbus-logo://localhost/<style>` custom URI scheme
+             the AccountSettings logo picker uses, so whichever
+             icon style the user picks (storm / dawn / mint /
+             monochrome / etc.) is what shows up here too.
+             Re-fetched on every popup spawn via the
+             `get_app_settings` call above, so a settings change
+             ripples on the next reminder without any extra
+             plumbing. -->
+        <img
+          src={convertFileSrc(logoStyle, 'nimbus-logo')}
+          alt="Nimbus Mail"
+          class="w-5 h-5 shrink-0 object-contain"
+          draggable="false"
+        />
         <span class="text-primary-500 shrink-0">
           <Icon name={reminder.meetingUrl ? 'meetings' : 'calendar'} size={16} />
         </span>
