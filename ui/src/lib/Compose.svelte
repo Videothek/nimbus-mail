@@ -19,6 +19,7 @@
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import { untrack } from 'svelte'
   import { formatError } from './errors'
+  import { extractManagedShares } from './managedShares'
   import {
     meetingInviteHtml,
     talkInviteHtml,
@@ -1317,17 +1318,34 @@
     // we delete them here.  Fire-and-forget — a failure leaves a
     // stray share in the user's "Shared with others" list, which
     // they can clean up manually but isn't worth blocking on.
-    if (createdShares.length > 0) {
-      const shares = createdShares.slice()
-      createdShares = []
-      for (const s of shares) {
-        invoke('delete_nextcloud_share', {
-          ncId: s.ncId,
-          shareId: s.id,
-        }).catch((e) => {
-          console.warn('delete_nextcloud_share on cancel failed for', s.id, e)
-        })
-      }
+    //
+    // We dedupe two sources:
+    //   * `createdShares` — minted *this* Compose session.
+    //   * `extractManagedShares(bodyHtml)` — markers stamped into
+    //     anchors by previous sessions (the user opened an
+    //     existing draft and is now cancelling it).
+    const shareKeys = new Set<string>()
+    const sharesToDelete: { ncId: string; shareId: string }[] = []
+    for (const s of createdShares) {
+      const key = `${s.ncId}::${s.id}`
+      if (shareKeys.has(key)) continue
+      shareKeys.add(key)
+      sharesToDelete.push({ ncId: s.ncId, shareId: s.id })
+    }
+    for (const m of extractManagedShares(bodyHtml)) {
+      const key = `${m.ncId}::${m.shareId}`
+      if (shareKeys.has(key)) continue
+      shareKeys.add(key)
+      sharesToDelete.push(m)
+    }
+    createdShares = []
+    for (const s of sharesToDelete) {
+      invoke('delete_nextcloud_share', {
+        ncId: s.ncId,
+        shareId: s.shareId,
+      }).catch((e) => {
+        console.warn('delete_nextcloud_share on cancel failed for', s.shareId, e)
+      })
     }
     onclose()
   }
@@ -1626,10 +1644,17 @@
       // (URLs themselves only need href-quoting, not body-escaping).
       const esc = (s: string) =>
         s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      // Tag each anchor with the share's id + owning Nextcloud
+      // account id (#193).  When the draft is later deleted (from
+      // the mail list, or via the explicit Cancel after reopen)
+      // the cleanup pass scans the body for these markers and
+      // calls `delete_nextcloud_share` for each one — without the
+      // markers there'd be no way to map a `https://…/s/<token>`
+      // URL back to the share record we need to delete.
       const items = links
         .map(
           (l) =>
-            `<p>🔗 <a href="${l.url}">${esc(l.filename)}</a></p>`,
+            `<p>🔗 <a href="${l.url}" data-nimbus-share-id="${esc(l.id)}" data-nimbus-share-nc="${esc(l.ncId)}">${esc(l.filename)}</a></p>`,
         )
         .join('')
       const block = `<p><strong>Shared via Nextcloud:</strong></p>${items}`

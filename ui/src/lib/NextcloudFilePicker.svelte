@@ -519,7 +519,7 @@
       <label class="block text-xs text-surface-500 mb-1" for="share-perms">Permissions</label>
       <select
         id="share-perms"
-        class="input w-full text-sm px-2 py-1.5 rounded-md mb-1"
+        class="select w-full text-sm px-2 py-1.5 rounded-md mb-1"
         bind:value={sharePrompt.permissions}
         disabled={sharing}
       >
