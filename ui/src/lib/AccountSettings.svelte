@@ -1316,19 +1316,29 @@
               HTTPS once an hour with no per-user identifiers.
             </p>
             {#if appSettings.link_check_enabled}
-              <p class="text-xs text-surface-500 mt-2">
-                Last refreshed: <strong>{formatRefreshAge(linkCheckStatus.lastRefreshedAt)}</strong>
-                · {linkCheckStatus.totalUrls.toLocaleString()} URLs in local snapshot
+              <!-- Wrapping <div> instead of <p> so the
+                   `text-surface-500` on the status line stays
+                   on the status line and doesn't cascade into
+                   the button via `currentColor` — Skeleton's
+                   outlined preset paints the label in
+                   `currentColor`, so a parent `text-*` class
+                   would otherwise override the theme's
+                   primary-on colour and give us grey text. -->
+              <div class="flex flex-wrap items-center gap-2 mt-2">
+                <span class="text-xs text-surface-500">
+                  Last refreshed: <strong>{formatRefreshAge(linkCheckStatus.lastRefreshedAt)}</strong>
+                  · {linkCheckStatus.totalUrls.toLocaleString()} URLs in local snapshot
+                </span>
                 <button
                   type="button"
-                  class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5 ml-2"
+                  class="btn btn-sm preset-outlined-primary-500 inline-flex items-center gap-1.5"
                   disabled={linkCheckRefreshing}
                   onclick={() => void onRefreshUrlhausNow()}
                 >
                   <Icon name={linkCheckRefreshing ? 'loading' : 'sync'} size={14} />
                   {linkCheckRefreshing ? 'Refreshing…' : 'Refresh now'}
                 </button>
-              </p>
+              </div>
             {/if}
           </div>
         </div>
