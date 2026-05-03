@@ -132,6 +132,10 @@
      *  Independent toggle so the two streams can be muted
      *  separately. */
     calendar_reminders_enabled: boolean
+    /** When true, a meeting reminder firing at "now" (≤1 min
+     *  lead) opens the meeting URL straight away instead of
+     *  showing the popup.  Off by default (#203 follow-up). */
+    auto_open_meetings: boolean
     autostart_enabled: boolean
     /** User-imported Skeleton themes (#132 tier 2). */
     custom_themes?: CustomThemeRow[]
@@ -160,6 +164,7 @@
     default_calendar_id: null,
     meeting_reminders_enabled: true,
     calendar_reminders_enabled: true,
+    auto_open_meetings: false,
     autostart_enabled: false,
     custom_themes: [],
     logo_style: 'storm',
@@ -1037,6 +1042,30 @@
               Notify me before any other calendar event that has
               a reminder set.  Lead time follows the event's own
               reminder.
+            </span>
+          </span>
+        </div>
+
+        <!-- Auto-open meetings (#203 follow-up): when ON, a
+             meeting reminder firing at "now" (≤1 min lead, e.g.
+             the snooze "At event start" preset) opens the
+             meeting URL in the user's default browser straight
+             away instead of surfacing the reminder popup.  Off
+             by default — the popup is the consistent default
+             surface; this is the express-lane shortcut for
+             users who'd rather skip the click. -->
+        <div class="flex items-start gap-3">
+          <Toggle
+            bind:checked={appSettings.auto_open_meetings}
+            label="Auto-open meetings at the event start"
+            onchange={() => scheduleSave()}
+          />
+          <span>
+            Auto-open meetings at the event start
+            <span class="block text-xs text-surface-500">
+              When a meeting's reminder fires at the event start,
+              open the meeting URL in your browser straight away
+              instead of showing the reminder popup.
             </span>
           </span>
         </div>

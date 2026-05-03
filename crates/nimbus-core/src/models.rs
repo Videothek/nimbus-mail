@@ -90,6 +90,15 @@ pub struct AppSettings {
     /// from the event's own `VALARM` triggers.
     #[serde(default = "default_true")]
     pub calendar_reminders_enabled: bool,
+    /// When true, a meeting reminder firing at "now" (≤1 min
+    /// lead — typically the "At event start" preset) opens the
+    /// meeting URL in the user's browser straight away instead
+    /// of surfacing the popup window with Join / Show event /
+    /// Snooze actions.  Off by default (#203 follow-up): the
+    /// popup is the consistent default surface, and users who
+    /// want the old auto-join shortcut explicitly opt in.
+    #[serde(default)]
+    pub auto_open_meetings: bool,
     /// Launch Nimbus automatically when the user logs in (#131
     /// follow-up).  Backed by `tauri-plugin-autostart`, which
     /// registers an XDG autostart entry on Linux, a LaunchAgent
@@ -191,6 +200,7 @@ impl Default for AppSettings {
             default_calendar_id: None,
             meeting_reminders_enabled: true,
             calendar_reminders_enabled: true,
+            auto_open_meetings: false,
             autostart_enabled: false,
             custom_themes: Vec::new(),
             logo_style: default_logo_style(),
