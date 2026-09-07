@@ -50,6 +50,8 @@
     notes?: boolean
     /** Nextcloud Tasks app installed + enabled.  Chip-only signal. */
     tasks?: boolean
+    /** Nextcloud Forms app installed (#572). */
+    forms?: boolean
   }
   interface NextcloudAccount {
     id: string
@@ -577,6 +579,9 @@
                     {/if}
                     {#if acct.capabilities.tasks}
                       <Badge label="Tasks" tone="primary" />
+                    {/if}
+                    {#if acct.capabilities.forms}
+                      <Badge label="Forms" tone="primary" />
                     {/if}
                   </div>
                 {/if}

@@ -79,6 +79,9 @@
     // v14 — disclosure carets + window minimize (#568): replace raw
     // ▸/▾/– glyphs so these affordances share the stroke vocabulary.
     | 'caret-right' | 'caret-down' | 'minimize'
+    // v15 — Nextcloud Forms (#572): a sheet with short field
+    // rows; the rail entry and Compose's "Form" insert button.
+    | 'forms'
 </script>
 
 <script lang="ts">
@@ -223,6 +226,7 @@
   import CaretRight from './icons/CaretRight.svelte'
   import CaretDown from './icons/CaretDown.svelte'
   import Minimize from './icons/Minimize.svelte'
+  import Forms from './icons/Forms.svelte'
   import type { Component } from 'svelte'
 
   interface Props {
@@ -367,6 +371,7 @@
     'caret-right': CaretRight,
     'caret-down': CaretDown,
     'minimize': Minimize,
+    'forms': Forms,
   }
   const Cmp = $derived(map[name])
 </script>

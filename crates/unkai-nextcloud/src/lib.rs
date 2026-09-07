@@ -11,6 +11,8 @@
 //!   show or hide features accordingly.
 //! - **Files** (`files`) — WebDAV browse / download for "attach from
 //!   Nextcloud". Public shares (`shares`) for "send as link".
+//! - **Forms** (`forms`) — list / create / share / delete Nextcloud Forms
+//!   so a questionnaire link can go out with a mail (#572).
 //! - **Talk** (`talk`) — list, create, and add participants to Talk
 //!   rooms. The "create Talk room from email thread" flow lives here.
 
@@ -18,6 +20,7 @@ pub mod auth;
 pub mod capabilities;
 pub mod client;
 pub mod files;
+pub mod forms;
 pub mod notes;
 pub mod shares;
 pub mod talk;
@@ -28,6 +31,10 @@ pub use capabilities::fetch_capabilities;
 pub use files::{
     FileEntry, create_directory, delete_path, download_file, fetch_preview, list_directory,
     propfind_fileid, upload_file,
+};
+pub use forms::{
+    FormDetails, FormShare, FormSummary, create_form, create_link_share, delete_form,
+    form_editor_url, form_public_url, form_results_url, get_form, list_forms, update_form_title,
 };
 pub use notes::{
     NewNote, Note, NoteUpdate, create_note, delete_note, get_note, list_notes, update_note,

@@ -21,9 +21,11 @@
   import { untrack } from 'svelte'
   import { formatError } from './errors'
   import { extractManagedShares } from './managedShares'
+  import { openExternalPopout } from './standalonePopoutWindow'
   import {
     meetingInviteHtml,
     talkInviteHtml,
+    formInviteHtml,
     type MeetingInvite,
   } from './inviteHtml'
   import RichTextEditor, {
@@ -117,6 +119,11 @@
         action — the latter creates the room first and then opens
         Compose to invite the participants. */
     talkLink?: { name: string; url: string }
+    /** Nextcloud Forms public link to render as a "Please fill out
+        this form" card (#572).  Set by `FormsView`'s "Share in mail"
+        action; the in-Compose "Form" button injects the same card
+        through the editor instead. */
+    formLink?: { title: string; url: string }
     /** Calendar-meeting invitation block (#195).  Set by
         App.svelte's "Respond with meeting" flow once the user
         saves the event in EventEditor — Compose then opens with
@@ -365,7 +372,7 @@
 
   function onComposeKeydownCapture(e: KeyboardEvent) {
     if (e.key !== 'Escape') return
-    if (showNcPicker || showNcImagePicker || showTalkModal) return
+    if (showNcPicker || showNcImagePicker || showTalkModal || showFormModal) return
     if (document.querySelector('[role="listbox"]')) return
     e.preventDefault()
     cancel()
@@ -422,7 +429,7 @@
     if (minimized) return
     function onKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return
-      if (showNcPicker || showNcImagePicker || showTalkModal) return
+      if (showNcPicker || showNcImagePicker || showTalkModal || showFormModal) return
       if (document.querySelector('[role="listbox"]')) return
       e.preventDefault()
       cancel()
@@ -821,6 +828,7 @@
     // (the signature is the bottom of the user's content).
     if (initial?.meetingInvite) lead += meetingInviteHtml(initial.meetingInvite)
     if (initial?.talkLink) lead += talkInviteHtml(initial.talkLink)
+    if (initial?.formLink) lead += formInviteHtml(initial.formLink)
     if (initial?.nextcloudLinks && initial.nextcloudLinks.length > 0) {
       const items = initial.nextcloudLinks
         .map((l) => `<p>🔗 <a href="${l.url}">${esc(l.filename)}</a></p>`)
@@ -1359,6 +1367,7 @@
         return null
       }
       ncAccountId = accounts[0].id
+      ncHasForms = accounts[0].capabilities?.forms === true
       return ncAccountId
     } catch (e) {
       error = formatError(e) || 'Failed to load Nextcloud accounts'
@@ -1370,6 +1379,85 @@
     error = ''
     const id = await ensureNextcloudAccount()
     if (id) showTalkModal = true
+  }
+
+  // ── Nextcloud Forms from Compose (#572) ─────────────────────
+  // The "Form" button mints a form shell (title + public link) on
+  // the server, drops a "Please fill out this form" card into the
+  // body right away, and opens the Nextcloud Forms editor in an
+  // in-app window so the user adds the questions.  The link goes in
+  // *before* the questions exist because the public hash is minted
+  // with the share, not with the questions — the recipient only
+  // opens it once the mail is sent, by which time the form is
+  // built.  A discarded draft deletes the form again (same
+  // lifecycle as the Talk room above); Send / Save-draft disarm
+  // that cleanup because the mail then carries the link.
+  let showFormModal = $state(false)
+  /** Capability snapshot of the account `ensureNextcloudAccount`
+      picked — the Forms app is optional on a Nextcloud server, so
+      the button explains itself instead of failing on the create
+      call.  Same gate the IconRail applies to the Forms view. */
+  let ncHasForms = false
+  let formTitle = $state('')
+  let creatingForm = $state(false)
+  let formError = $state('')
+  /** Form minted during this compose session, for cancel cleanup.
+      Nulled out on send / save-draft. */
+  let createdFormId: number | null = null
+
+  async function openFormModal() {
+    error = ''
+    const id = await ensureNextcloudAccount()
+    if (!id) return
+    if (!ncHasForms) {
+      error = m.compose_form_not_installed()
+      return
+    }
+    formTitle = subject.trim()
+    formError = ''
+    showFormModal = true
+  }
+
+  async function createFormFromCompose() {
+    if (!ncAccountId || creatingForm) return
+    creatingForm = true
+    formError = ''
+    try {
+      const row = await api.nextcloud.createNextcloudForm({
+        ncId: ncAccountId,
+        title: formTitle.trim(),
+      })
+      createdFormId = row.id
+      const title = row.title.trim() || m.compose_form_untitled()
+      // Subject ↔ form-title sync, same rule as the Talk modal:
+      // fill an empty subject, never overwrite a typed one.
+      if (!subject.trim() && row.title.trim()) subject = row.title
+      if (row.public_url) {
+        editorApi?.insertAboveSignature(
+          formInviteHtml({ title, url: row.public_url }),
+        )
+      }
+      showFormModal = false
+      openExternalPopout('form', row.edit_url, {
+        title,
+        width: 1200,
+        height: 800,
+      })
+    } catch (e) {
+      formError = formatError(e) || m.compose_form_create_error()
+    } finally {
+      creatingForm = false
+    }
+  }
+
+  function onFormModalKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && !creatingForm) {
+      e.preventDefault()
+      showFormModal = false
+    } else if (e.key === 'Enter' && !creatingForm) {
+      e.preventDefault()
+      void createFormFromCompose()
+    }
   }
 
   // ── Stage-on-send meeting event (#152) ──────────────────────
@@ -1650,6 +1738,7 @@
       // direct here, but matching the send() pattern keeps the
       // disarm idiom consistent in case the close path changes).
       createdShares = []
+      createdFormId = null
       onclose()
     } catch (e: any) {
       error = formatError(e) || 'Failed to save draft'
@@ -1683,6 +1772,7 @@
       // references any minted shares, so a later cancel() must
       // not nuke them.
       createdShares = []
+      createdFormId = null
     } catch (e: any) {
       console.warn(
         'save_draft on minimize failed (in-memory draft preserved):',
@@ -2145,6 +2235,7 @@
     // tracking list so cancel()'s cleanup branch is a no-op.
     talkRoomToken = null
     pendingTalkParticipants = []
+    createdFormId = null
     createdShares = []
     // #152 — disarm any cancel-time rollback for the staged
     // event; the background pipeline will create it on
@@ -2359,6 +2450,7 @@
           repliedTo: snap.initialAtSend?.repliedTo,
           nextcloudLinks: snap.initialAtSend?.nextcloudLinks,
           talkLink: snap.initialAtSend?.talkLink,
+          formLink: snap.initialAtSend?.formLink,
           draftSource: snap.draftSource ?? undefined,
         },
         fromAccountId: snap.fromAccountId,
@@ -2510,6 +2602,7 @@
           in_reply_to: initial?.in_reply_to ?? null,
           nextcloudLinks: initial?.nextcloudLinks,
           talkLink: initial?.talkLink,
+          formLink: initial?.formLink,
           // Use the live `currentDraftSource` so a popout after a
           // minimize-save points at the post-APPEND UID, not the
           // mount-time pointer (which is null for a brand-new
@@ -2581,6 +2674,17 @@
         console.warn('delete_talk_room on cancel failed', e)
       })
       talkRoomToken = null
+    }
+    // Same for a form minted from the "Form" button (#572): the
+    // link only makes sense once the mail goes out, so a discarded
+    // draft takes the form with it.  Fire-and-forget like the room.
+    if (createdFormId !== null && ncAccountId) {
+      const ncId = ncAccountId
+      const formId = createdFormId
+      api.nextcloud.deleteNextcloudForm({ ncId, formId }).catch((e) => {
+        console.warn('delete_nextcloud_form on cancel failed', e)
+      })
+      createdFormId = null
     }
     // Clean up any Nextcloud share links the user minted during this
     // draft (#193).  Same rationale as the Talk-room cleanup above:
@@ -2967,6 +3071,18 @@
     <span class="rt-btn-icon"><Icon name="cloud" size={20} /></span>
     <span class="rt-btn-label">NC Files</span>
   </button>
+  <!-- #572 — Nextcloud Forms: mint a form + public link, drop the
+       invite card into the body, and open the Forms editor in an
+       in-app window for the questions. -->
+  <button
+    type="button"
+    class="rt-btn"
+    title={m.compose_form_button_title()}
+    onclick={() => void openFormModal()}
+  >
+    <span class="rt-btn-icon"><Icon name="forms" size={20} /></span>
+    <span class="rt-btn-label">{m.compose_form_button()}</span>
+  </button>
 {/snippet}
 
 <!-- Meetings tab panel — Nextcloud Talk + calendar-event creation.
@@ -3300,6 +3416,54 @@
     }}
     onclose={() => (showNcImagePicker = false)}
   />
+{/if}
+
+{#if showFormModal && ncAccountId}
+  <!-- Form title prompt (#572).  Title only — the questions belong
+       to the Nextcloud editor that opens right after. -->
+  <div
+    class="fixed inset-0 flex items-center justify-center bg-black/50"
+    style="z-index: 60"
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+    onkeydown={onFormModalKeydown}
+    onmousedown={(e) => {
+      if (e.target === e.currentTarget && !creatingForm) showFormModal = false
+    }}
+  >
+    <div class="glass-float rounded-2xl w-[28rem] max-w-full p-5">
+      <h3 class="text-base font-semibold mb-1">{m.compose_form_modal_title()}</h3>
+      <p class="text-xs text-on-glass-muted mb-3">{m.compose_form_modal_hint()}</p>
+      <label class="block text-xs text-on-glass-muted mb-1" for="compose-form-title">
+        {m.compose_form_name_label()}
+      </label>
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        id="compose-form-title"
+        class="input w-full text-sm px-2 py-1.5 rounded-lg mb-3"
+        placeholder={m.compose_form_name_placeholder()}
+        bind:value={formTitle}
+        disabled={creatingForm}
+        autofocus
+      />
+      {#if formError}
+        <p class="text-xs text-error-500 mb-3 wrap-break-word">{formError}</p>
+      {/if}
+      <div class="flex justify-end gap-2">
+        <button
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          disabled={creatingForm}
+          onclick={() => (showFormModal = false)}
+        ><Icon name="close" size={14} />{m.compose_form_cancel()}</button>
+        <button
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center gap-1.5"
+          disabled={creatingForm}
+          onclick={() => void createFormFromCompose()}
+        ><Icon name={creatingForm ? 'loading' : 'plus'} size={14} />{m.compose_form_submit()}</button>
+      </div>
+    </div>
+  </div>
 {/if}
 
 {#if showTalkModal && ncAccountId}

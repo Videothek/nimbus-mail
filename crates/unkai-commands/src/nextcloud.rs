@@ -1,4 +1,4 @@
-//! Nextcloud account linking, Files, and public shares.
+//! Nextcloud account linking, Files, public shares, and Forms (#572).
 //!
 //! Mirrors `ui/src/lib/api/nextcloud.ts`.
 
@@ -269,6 +269,7 @@ pub fn dav_capabilities(use_contacts: bool, use_calendars: bool) -> NextcloudCap
         office: false,
         notes: false,
         tasks: false,
+        forms: false,
     }
 }
 
@@ -1036,4 +1037,224 @@ pub async fn resolve_member_profiles(
             }
         })
         .collect()
+}
+
+// ── Nextcloud Forms (#572) ──────────────────────────────────────
+//
+// The Forms integration mirrors the share manager: a rail view that
+// lists / copies / opens / deletes, and a Compose gesture that mints
+// a form shell + public link so the questionnaire can go out with the
+// mail.  Question authoring stays in the Nextcloud web editor (opened
+// in an in-app popout) — see `unkai_nextcloud::forms` for the scope
+// rationale.
+
+/// Snapshot of one form for the UI.  Carries every URL the frontend
+/// needs pre-built so no component has to know the Forms app's route
+/// layout; `public_url` is `None` until a link share exists.
+#[derive(Serialize)]
+pub struct NextcloudFormRow {
+    pub nc_id: String,
+    pub id: i64,
+    pub hash: String,
+    pub title: String,
+    pub description: String,
+    /// `0` active, `1` closed, `2` archived (Forms' `FORM_STATE_*`).
+    pub state: u8,
+    /// Unix timestamp; `0` = never.
+    pub expires: i64,
+    /// Unix timestamp of creation (`0` when the server didn't say —
+    /// the condensed list doesn't carry it).
+    pub created: i64,
+    pub last_updated: i64,
+    pub submission_count: Option<i64>,
+    /// Recipient-facing URL (`/apps/forms/s/<hash>`) — set once a
+    /// link share exists.
+    pub public_url: Option<String>,
+    /// Owner-side editor (`/apps/forms/<hash>`).
+    pub edit_url: String,
+    /// Owner-side results page.
+    pub results_url: String,
+}
+
+fn form_row(nc_id: &str, server_url: &str, form: unkai_nextcloud::FormDetails) -> NextcloudFormRow {
+    let public_url = form
+        .link_share()
+        .map(|s| unkai_nextcloud::form_public_url(server_url, &s.share_with));
+    NextcloudFormRow {
+        nc_id: nc_id.to_string(),
+        id: form.id,
+        hash: form.hash.clone(),
+        title: form.title,
+        description: form.description,
+        state: form.state,
+        expires: form.expires,
+        created: form.created,
+        last_updated: form.last_updated,
+        submission_count: form.submission_count,
+        public_url,
+        edit_url: unkai_nextcloud::form_editor_url(server_url, &form.hash),
+        results_url: unkai_nextcloud::form_results_url(server_url, &form.hash),
+    }
+}
+
+/// List every form the account owns, with its public link resolved.
+///
+/// The condensed `GET /forms` listing doesn't include shares, so we
+/// follow up with one `GET /forms/{id}` per row (concurrently — the
+/// reqwest client pools the connection).  A user's owned-form list is
+/// short, and the link status is the single most useful thing the
+/// view shows, so the extra round-trips are worth it.  A row whose
+/// detail fetch fails degrades to the condensed data rather than
+/// failing the whole list.
+pub async fn list_nextcloud_forms(
+    nc_id: String,
+    cache: &Cache,
+) -> Result<Vec<NextcloudFormRow>, UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let summaries = unkai_nextcloud::list_forms(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &account.trusted_certs,
+    )
+    .await?;
+
+    let details = futures::future::join_all(summaries.iter().map(|s| {
+        unkai_nextcloud::get_form(
+            &account.server_url,
+            &account.username,
+            &app_password,
+            s.id,
+            &account.trusted_certs,
+        )
+    }))
+    .await;
+
+    Ok(summaries
+        .into_iter()
+        .zip(details)
+        .map(|(summary, detail)| match detail {
+            Ok(mut d) => {
+                // The partial row is the only place `lastUpdated`
+                // is reported; keep it.
+                d.last_updated = summary.last_updated;
+                if d.submission_count.is_none() {
+                    d.submission_count = summary.submission_count;
+                }
+                form_row(&nc_id, &account.server_url, d)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "form {} detail fetch failed, using summary: {e}",
+                    summary.id
+                );
+                form_row(
+                    &nc_id,
+                    &account.server_url,
+                    unkai_nextcloud::FormDetails {
+                        id: summary.id,
+                        hash: summary.hash,
+                        title: summary.title,
+                        description: String::new(),
+                        created: 0,
+                        expires: summary.expires,
+                        last_updated: summary.last_updated,
+                        state: summary.state,
+                        submission_count: summary.submission_count,
+                        shares: Vec::new(),
+                    },
+                )
+            }
+        })
+        .collect())
+}
+
+/// Create a form shell with the given title and a public link share,
+/// ready to drop into a mail.  Compose's "Form" button calls this and
+/// then opens the editor popout on `edit_url` so the user adds the
+/// questions in Nextcloud's own editor.
+pub async fn create_nextcloud_form(
+    nc_id: String,
+    title: String,
+    cache: &Cache,
+) -> Result<NextcloudFormRow, UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let mut form = unkai_nextcloud::create_form(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &title,
+        &account.trusted_certs,
+    )
+    .await?;
+    let share = unkai_nextcloud::create_link_share(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        form.id,
+        &account.trusted_certs,
+    )
+    .await?;
+    form.shares.push(share);
+    Ok(form_row(&nc_id, &account.server_url, form))
+}
+
+/// Return the form's public URL, minting a link share first when the
+/// form doesn't have one yet.  Backs the "Copy link" / "Share in
+/// mail" actions on forms created in the web UI without a link.
+pub async fn ensure_nextcloud_form_link(
+    nc_id: String,
+    form_id: i64,
+    cache: &Cache,
+) -> Result<String, UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let form = unkai_nextcloud::get_form(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        form_id,
+        &account.trusted_certs,
+    )
+    .await?;
+    if let Some(existing) = form.link_share() {
+        return Ok(unkai_nextcloud::form_public_url(
+            &account.server_url,
+            &existing.share_with,
+        ));
+    }
+    let share = unkai_nextcloud::create_link_share(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        form_id,
+        &account.trusted_certs,
+    )
+    .await?;
+    Ok(unkai_nextcloud::form_public_url(
+        &account.server_url,
+        &share.share_with,
+    ))
+}
+
+/// Delete a form (questions, submissions and shares included).
+/// Compose calls this when a draft that minted a form is discarded,
+/// the Forms view when the user explicitly deletes one.
+pub async fn delete_nextcloud_form(
+    nc_id: String,
+    form_id: i64,
+    cache: &Cache,
+) -> Result<(), UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    unkai_nextcloud::delete_form(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        form_id,
+        &account.trusted_certs,
+    )
+    .await
 }

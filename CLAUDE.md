@@ -31,7 +31,7 @@ unkai-mail/
 │   ├── unkai-jmap/        # JMAP modern mail access
 │   ├── unkai-caldav/      # CalDAV calendar sync
 │   ├── unkai-carddav/     # CardDAV contact sync
-│   ├── unkai-nextcloud/   # Nextcloud API (Talk, Files, OCS)
+│   ├── unkai-nextcloud/   # Nextcloud API (Talk, Files, Forms, OCS)
 │   ├── unkai-store/       # Local storage, caching, keychain
 │   ├── unkai-discovery/   # Account autoconfiguration (SRV, autoconfig)
 │   ├── unkai-crypto/      # OpenPGP + S/MIME primitives
@@ -56,7 +56,7 @@ unkai-mail/
 | JMAP | Modern mail access (where supported) | `unkai-jmap` |
 | CalDAV | Calendar sync (Nextcloud + others) | `unkai-caldav` |
 | CardDAV | Contact sync (Nextcloud + others) | `unkai-carddav` |
-| Nextcloud OCS/API | Talk rooms, file sharing, app integrations | `unkai-nextcloud` |
+| Nextcloud OCS/API | Talk rooms, file sharing, Forms, app integrations | `unkai-nextcloud` |
 
 ## Architecture Principles
 
@@ -137,6 +137,7 @@ These are project-wide affordances we expect Claude to apply automatically when 
   - `sync` → **sync with the server** (semantically heavier than `refresh` — pushes / pulls state, drives a long-running task; surface with the `loading` swap below)
   - `close` → **dismiss / cancel** (X glyph — inline-form cancel buttons, modal close, etc.)
   - `share-links` → **share a public link** (chain-link glyph; the rail entry for the share manager and the row chip for "this share has a link")
+  - `forms` → **Nextcloud Forms** (sheet-with-field-rows glyph; the rail entry for the Forms manager and Compose's "Form" insert button)
   - `loading` → **action is in flight** — swap the leading icon to `loading` on stateful buttons (Refresh, Sync, Save, Sharing…, Downloading…) instead of replacing the whole label with text. Keeps the button width stable mid-action and removes a layout flicker; canonical refs are the SharesView / TalkView / FilesView header refresh buttons.
 - **Status badges pair `success` with a short label, not descriptive prose.** When a toggle or setting has a saved/active confirmation, render an inline badge: `<div class="inline-flex items-center gap-1 mt-1 text-xs text-success-500" aria-live="polite"><Icon name="success" size={14} /><span>{label}</span></div>`. The badge replaces the on-state hint copy — don't render both, the badge IS the confirmation. Off-state hint copy is still useful (it explains what the toggle *would* do). Canonical ref: Encryption Settings "Passphrase saved" badge.
 - **Settings panels share one button + input + dropdown vocabulary — never invent a panel-specific shape.** Every control in `AccountSettings`, `SecuritySettings`, `EncryptionSettings`, `NextcloudSettings`, and any future settings sub-panel must match an existing control in another settings panel rather than introducing a new style. Before adding a button / `<input>` / `<select>`, search the other settings files for the closest analogous control and copy its class string exactly. The Settings menu should read as one design language; a panel that uses tonal-filled buttons when its neighbours use outlined-icon, or a `border-2 border-surface-400` input when its neighbours use the default `input` shape, breaks the visual rhythm and ages the panel out of the system.
@@ -149,7 +150,7 @@ When in doubt, look at how `ContactsView` (mailing-list rows) and `Sidebar` (mai
 
 ## Sidebar-routed integration view shell
 
-These conventions apply to every full-pane view the `IconRail` routes to — `FilesView`, `CalendarView`, `TalkView`, `NotesView`, `ContactsView`, `SharesView`. They emerged from the #117 redesign that unified those views into one design language; future integration views should follow the same shape from day one rather than re-inventing.
+These conventions apply to every full-pane view the `IconRail` routes to — `FilesView`, `CalendarView`, `TalkView`, `NotesView`, `ContactsView`, `SharesView`, `FormsView`. They emerged from the #117 redesign that unified those views into one design language; future integration views should follow the same shape from day one rather than re-inventing.
 
 - **No Close button in the header.** The `IconRail` owns navigation back to the inbox — every Close button in an integration view duplicates the rail's job. Drop the button *and* the `onclose` prop entirely; don't leave a dead prop behind. (Settings is the one exception: it's reached via the rail but uses its own shell.)
 - **Stacked header: title above its action buttons, docked LEFT (#522).** The left slot stacks the view title on top of the icon-only action-button row. Rationale: every integration view's interactive content (nav sidebar, list columns) hugs the left edge, so right-pinned actions drift out of the user's viewing angle on wide monitors — the left-docked stack keeps the actions directly above the columns they act on. When the view has a search bar it stays horizontally centered, with an empty `flex-1` right spacer mirroring the left slot so the search doesn't drift as the title/actions width changes (German vs. English):
@@ -204,6 +205,7 @@ The Talk + meeting invite cards we drop into outgoing mail (`ui/src/lib/inviteHt
   - **Remote URL** (`raw.githubusercontent.com/...`): hit "block remote images by default" in Gmail / Apple Mail / Outlook and the recipient saw a broken-icon until they trusted the sender. (Also: the original path I picked pointed at the v2 set, but storm is a v1 style — easy mistake to repeat. v2 ships `copper / forest / midnight / ocean / rose / slate / sunset`; storm lives at `logos/unkai-logo/png/storm/...`.)
   - **Inline `data:image/png;base64,…` URI**: many corporate / hardened mail filters (Outlook in particular) strip `<img src="data:…">` for security, again leaving a broken-icon.
   Both paths ate the logo. Don't reintroduce an `<img>` in the chrome unless you've solved this for the worst client your users will receive mail in. The `PUBLIC_UNKAI_LOGO_URL` export is now an empty-string compatibility stub for any leftover importers.
+- **Nextcloud Forms (#572) ships the shell, not the editor.** `FormsView` (rail) and Compose's "Form" button (Attach tab) both go through `unkai_nextcloud::forms` (OCS API v3, JSON bodies — unlike the form-encoded Files Sharing API). Creating a form = `POST /forms` + `PATCH` title + a `shareType: 3` link share; the public URL is `/apps/forms/s/<shareWith>` and only exists once that share does, so the list command resolves each form's detail to know whether a link exists (`ensure_nextcloud_form_link` mints one lazily for "Copy link" / "Share in mail"). Question authoring stays in the Nextcloud web editor, opened via `openExternalPopout('form', edit_url)` (window label pattern `form-*` in `src-tauri/capabilities/default.json`). Compose inserts the `form-invite` card *before* the questions exist (the link doesn't change) and deletes the form on discard — same lifecycle as the Talk room (`createdFormId`, disarmed by send / save-draft). The rail entry and the Compose button are gated on `capabilities.forms` (Forms publishes a capability block; navigation-list fallback).
 - **The editor's `UnkaiBlock` extension** (`ui/src/lib/RichTextEditor.svelte`) recognises `<div data-unkai-block="…">` wrappers as atom nodes so the styled cards survive Tiptap's schema. If you add a new card kind, stamp the wrapper with that data attribute and the editor will render it via the existing NodeView path — no new extension needed.
 
 When in doubt, render the card to a local HTML file and open it in `outlook.com`, `mail.google.com`, and Apple Mail — those three are the dominant surfaces and have the strictest sanitisers.
