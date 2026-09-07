@@ -3450,17 +3450,23 @@
       {#if formError}
         <p class="text-xs text-error-500 mb-3 wrap-break-word">{formError}</p>
       {/if}
+      <!-- Icon-only footer (project button vocabulary): `close`
+           cancels, `plus` (filled primary) creates + inserts. -->
       <div class="flex justify-end gap-2">
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
           disabled={creatingForm}
           onclick={() => (showFormModal = false)}
-        ><Icon name="close" size={14} />{m.compose_form_cancel()}</button>
+          title={m.compose_form_cancel()}
+          aria-label={m.compose_form_cancel()}
+        ><Icon name="close" size={14} /></button>
         <button
-          class="btn btn-sm preset-filled-primary-500 inline-flex items-center gap-1.5"
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
           disabled={creatingForm}
           onclick={() => void createFormFromCompose()}
-        ><Icon name={creatingForm ? 'loading' : 'plus'} size={14} />{m.compose_form_submit()}</button>
+          title={m.compose_form_submit()}
+          aria-label={m.compose_form_submit()}
+        ><Icon name={creatingForm ? 'loading' : 'plus'} size={14} /></button>
       </div>
     </div>
   </div>
