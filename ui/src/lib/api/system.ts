@@ -59,6 +59,20 @@ export function openDefaultAppsSettings(): Promise<void> {
   return call('open_default_apps_settings')
 }
 
+/* ── login item ─────────────────────────────────────────────────
+ * Routed through Rust rather than `@tauri-apps/plugin-autostart`
+ * so debug builds can refuse to register a console binary as the
+ * OS autostart entry (#577); release builds delegate to the
+ * plugin unchanged. */
+
+export function setAutostart(enabled: boolean): Promise<void> {
+  return call('set_autostart', { enabled })
+}
+
+export function isAutostartEnabled(): Promise<boolean> {
+  return call('is_autostart_enabled')
+}
+
 export function takePendingMailtoUrls(): Promise<string[]> {
   return call('take_pending_mailto_urls')
 }

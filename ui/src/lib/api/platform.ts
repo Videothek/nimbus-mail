@@ -1,7 +1,7 @@
 /**
  * Desktop-platform affordances that aren't backend commands (#473):
- * native file dialogs, OS notifications via the plugin, login-item
- * autostart, and the custom-protocol asset URLs (`contact-photo://`,
+ * native file dialogs, OS notifications via the plugin, and the
+ * custom-protocol asset URLs (`contact-photo://`,
  * `unkai-logo://`) that `convertFileSrc` turns into webview-loadable
  * URLs.
  *
@@ -19,11 +19,6 @@ import {
   sendNotification,
   type Options as NotificationOptions,
 } from '@tauri-apps/plugin-notification'
-import {
-  enable as autostartEnable,
-  disable as autostartDisable,
-  isEnabled as autostartIsEnabled,
-} from '@tauri-apps/plugin-autostart'
 
 /* ── file dialogs ──────────────────────────────────────────────── */
 //
@@ -50,20 +45,6 @@ export function requestNotificationsPermission(): Promise<NotificationPermission
 
 export function showNotification(options: NotificationOptions | string): void {
   sendNotification(options)
-}
-
-/* ── autostart ─────────────────────────────────────────────────── */
-
-export function enableAutostart(): Promise<void> {
-  return autostartEnable()
-}
-
-export function disableAutostart(): Promise<void> {
-  return autostartDisable()
-}
-
-export function isAutostartEnabled(): Promise<boolean> {
-  return autostartIsEnabled()
 }
 
 /* ── custom-protocol asset URLs ────────────────────────────────── */

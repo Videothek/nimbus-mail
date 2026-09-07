@@ -641,18 +641,17 @@
     }, 400)
   }
 
-  /** Toggle "launch on login" via the autostart plugin and
-   *  persist the user's choice.  We talk to the OS first
-   *  because the plugin call is the cross-platform side-effect
-   *  (XDG entry / LaunchAgent / registry key); only on its
-   *  success do we commit the new bit to AppSettings.  That
-   *  way a misconfigured environment (e.g. read-only
-   *  ~/.config) can't leave us with a checked box that doesn't
-   *  actually autostart. */
+  /** Toggle "launch on login" and persist the user's choice.
+   *  We talk to the OS first because the backend call is the
+   *  cross-platform side-effect (XDG entry / LaunchAgent /
+   *  registry key); only on its success do we commit the new
+   *  bit to AppSettings.  That way a misconfigured environment
+   *  (e.g. read-only ~/.config) can't leave us with a checked
+   *  box that doesn't actually autostart.  Debug builds skip
+   *  the OS write entirely (#577). */
   async function onAutostartToggle(next: boolean) {
     try {
-      if (next) await api.platform.enableAutostart()
-      else await api.platform.disableAutostart()
+      await api.system.setAutostart(next)
       appSettings.autostart_enabled = next
       scheduleSave()
     } catch (e) {
@@ -686,7 +685,7 @@
    *  manually (e.g. via system settings) since the last
    *  launch. */
   $effect(() => {
-    void api.platform.isAutostartEnabled()
+    void api.system.isAutostartEnabled()
       .then((enabled) => {
         if (enabled !== appSettings.autostart_enabled) {
           appSettings.autostart_enabled = enabled
