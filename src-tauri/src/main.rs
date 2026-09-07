@@ -33,6 +33,7 @@ use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, UriSchemeContext, WindowEvent};
+use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::RwLock;
 use tray::{TrayBaseIcon, decode_logo_png, logo_assets, logo_bytes_for};
@@ -802,6 +803,91 @@ fn set_window_identity(
     icon_png: Option<Vec<u8>>,
 ) -> Result<(), UnkaiError> {
     windows::set_window_identity(&window, &reg, &title, icon_png.as_deref())
+}
+
+/// "Launch on login" toggle (#131 follow-up, #577).
+///
+/// The autostart plugin registers *whichever executable is currently
+/// running* — `current_exe()` at plugin init — as the OS login item.
+/// Flipping the switch from a `cargo tauri dev` session therefore
+/// used to point the HKCU `Run` value / XDG entry / LaunchAgent at
+/// `target/debug/unkai-app.exe`, a console-subsystem binary that
+/// greets the user with a terminal full of debug logs at every login
+/// (#577).  Debug builds now never touch the OS entry: the switch only
+/// records the preference, and [`reconcile_autostart_entry`] removes
+/// any entry a debug build finds on boot.  Release builds register
+/// for real, exactly as before.
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), UnkaiError> {
+    if cfg!(debug_assertions) {
+        tracing::info!(
+            "autostart: debug build — recording enabled={enabled} without              touching the OS login item (#577)"
+        );
+        return Ok(());
+    }
+    let launcher = app.autolaunch();
+    let result = if enabled {
+        launcher.enable()
+    } else {
+        launcher.disable()
+    };
+    result.map_err(|e| UnkaiError::Other(format!("autostart toggle failed: {e}")))
+}
+
+/// Whether the OS currently has a login item for Unkai.  In debug
+/// builds there never is one (see [`set_autostart`]), so the answer is
+/// simply the stored preference — that keeps the settings page's
+/// mount-time reconcile from unchecking the box under a developer.
+#[tauri::command]
+async fn is_autostart_enabled(
+    app: AppHandle,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<bool, UnkaiError> {
+    if cfg!(debug_assertions) {
+        let h = profile_ctx(&window, &reg)?;
+        return Ok(h.ctx.settings.read().await.autostart_enabled);
+    }
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|e| UnkaiError::Other(format!("autostart query failed: {e}")))
+}
+
+/// Boot-time self-heal for the OS login item (#577).
+///
+/// * Release builds re-register the entry whenever the preference is
+///   on.  The plugin writes the *current* executable path, so this
+///   repairs an entry left behind by a dev session (pointing at a
+///   console build) and follows the binary if the install location
+///   ever moves (e.g. the per-user → per-machine install change in
+///   #564).  `enable()` is idempotent, so this is one cheap registry
+///   / plist / .desktop write per launch.
+/// * Debug builds do the opposite: if an entry exists at all, remove
+///   it, so a developer's machine never autostarts a console binary.
+///   The stored preference is left alone — it's honoured again by the
+///   next release build.
+fn reconcile_autostart_entry(app: &AppHandle, autostart_enabled: bool) {
+    let launcher = app.autolaunch();
+    if cfg!(debug_assertions) {
+        match launcher.is_enabled() {
+            Ok(true) => match launcher.disable() {
+                Ok(()) => tracing::info!(
+                    "autostart: removed OS login item — debug builds never autostart (#577)"
+                ),
+                Err(e) => tracing::warn!("autostart: could not remove OS login item: {e}"),
+            },
+            Ok(false) => {}
+            Err(e) => tracing::debug!("autostart: query failed: {e}"),
+        }
+        return;
+    }
+    if !autostart_enabled {
+        return;
+    }
+    match launcher.enable() {
+        Ok(()) => tracing::debug!("autostart: login item refreshed to the current executable"),
+        Err(e) => tracing::warn!("autostart: could not refresh OS login item: {e}"),
+    }
 }
 
 /// Cross-platform "open the OS Default Apps panel" — used by the
@@ -4178,6 +4264,16 @@ fn main() {
             //     boots straight into the tray.
             //   - otherwise → show the window with the correct
             //     icon already painted in the titlebar / taskbar.
+            // ── Login-item self-heal (#577) ─────────────────────
+            //
+            // Done before the first show so a stale entry pointing at
+            // a dev console binary is corrected on the very first
+            // release launch, not after the user re-toggles the switch.
+            {
+                let autostart_enabled = ctx.settings.blocking_read().autostart_enabled;
+                reconcile_autostart_entry(app.handle(), autostart_enabled);
+            }
+
             if let Some(main_window) = app.get_webview_window("main") {
                 let should_hide_on_start = ctx.settings.blocking_read().start_minimized;
                 if !should_hide_on_start {
@@ -4507,6 +4603,8 @@ fn main() {
             parse_eml_file_inline_images,
             parse_ics_file,
             open_default_apps_settings,
+            set_autostart,
+            is_autostart_enabled,
             // #294 — OS-level mailto handler cold-start drain
             take_pending_mailto_urls,
             // #536 — per-window profile identity (title + icon)
