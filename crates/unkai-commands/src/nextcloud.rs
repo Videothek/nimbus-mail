@@ -605,6 +605,11 @@ pub struct NextcloudShareRow {
     pub expiration: Option<String>,
     pub stime: i64,
     pub mimetype: String,
+    /// Nextcloud file id of the shared node — the in-app viewer
+    /// deep link `index.php/f/<id>` (#574).  `None` when the
+    /// server didn't report one; the UI then falls back to the
+    /// public URL.
+    pub file_id: Option<String>,
 }
 
 /// List every public share link the given Nextcloud account owns
@@ -637,6 +642,7 @@ pub async fn list_nextcloud_shares(
             expiration: s.expiration,
             stime: s.stime,
             mimetype: s.mimetype,
+            file_id: s.file_id,
         })
         .collect())
 }

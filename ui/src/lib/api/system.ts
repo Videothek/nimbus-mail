@@ -103,6 +103,19 @@ export function printAttachment(args: { fileName: string; bytes: number[] }): Pr
   return call('print_attachment', args)
 }
 
+/**
+ * #574 — "desktop" share-open mode: the backend downloads the
+ * Nextcloud file at `path` into a temp folder and hands it to the
+ * OS default app for its type. Bytes and the temp path both stay
+ * on the Rust side.
+ */
+export function openNextcloudFileInDesktopApp(args: {
+  ncId: string
+  path: string
+}): Promise<void> {
+  return call('open_nextcloud_file_in_desktop_app', args)
+}
+
 export function officeOpenAttachment(args: {
   ncId: string
   filename: string

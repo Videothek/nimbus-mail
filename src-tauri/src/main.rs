@@ -2793,6 +2793,17 @@ async fn print_attachment(file_name: String, bytes: Vec<u8>) -> Result<(), Unkai
 }
 
 #[tauri::command]
+async fn open_nextcloud_file_in_desktop_app(
+    nc_id: String,
+    path: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::system::open_nextcloud_file_in_desktop_app(nc_id, path, &h.ctx.cache).await
+}
+
+#[tauri::command]
 async fn probe_server_certificate(host: String, port: u16) -> Result<ProbedCert, UnkaiError> {
     cmds::accounts::probe_server_certificate(host, port).await
 }
@@ -4491,6 +4502,7 @@ fn main() {
             pdf_open_attachment,
             pdf_close_attachment,
             print_attachment,
+            open_nextcloud_file_in_desktop_app,
             save_attachment_as,
             sync_nextcloud_contacts,
             get_contacts_sync_status,

@@ -9,6 +9,7 @@
    *
    *   - copy the public URL to the clipboard
    *   - open the share in their browser
+   *   - open the shared document itself (#574) — click the name
    *   - edit password / permissions / expiry
    *   - revoke the share entirely
    *
@@ -35,6 +36,7 @@
 
   import * as api from './api'
   import { isNextcloudSource } from './ncSources'
+  import { openExternalPopout } from './standalonePopoutWindow'
   import { onDestroy, onMount } from 'svelte'
   import DateField from './DateField.svelte'
   import { formatError } from './errors'
@@ -65,6 +67,9 @@
     expiration: string | null
     stime: number
     mimetype: string
+    /** Nextcloud file id — powers the owner-side viewer deep
+     *  link (#574).  `null` when the server didn't report one. */
+    file_id: string | null
   }
 
   // No props — navigation back to the inbox is owned by the
@@ -255,6 +260,69 @@
 
   function openInBrowser(row: ShareRow) {
     void api.system.openUrl({ url: row.url })
+  }
+
+  // ── Open the shared document (#574) ─────────────────────────
+  // Clicking a row's name opens the *file itself*, not the public
+  // share page.  Two modes, chosen in Settings → General:
+  //
+  //   - `popout` (default): an in-app window on the Nextcloud
+  //     viewer for the node — `index.php/f/<fileid>` routes to
+  //     whatever the server has registered for that type
+  //     (Collabora, PDF viewer, Text, the Files app for folders).
+  //     Same surface the attachment-open flow uses, so the user's
+  //     NC login in the webview carries over.
+  //   - `desktop`: the backend downloads a copy to a temp folder
+  //     and hands it to the OS default app for the type.  Files
+  //     only — folders fall back to the popout.
+  //
+  // The setting is read per click rather than cached on mount:
+  // one cheap IPC, and a change made in Settings while this view
+  // is open takes effect immediately.
+  type ShareOpenMode = 'popout' | 'desktop'
+  let openingId = $state<string | null>(null)
+
+  function viewerUrl(row: ShareRow): string {
+    const account = accounts.find((a) => a.id === row.nc_id)
+    if (row.file_id && account) {
+      const server = account.server_url.replace(/\/+$/, '')
+      return `${server}/index.php/f/${row.file_id}`
+    }
+    // No file id (older server) or the account list is stale —
+    // the public link is still a truthful place to land.
+    return row.url
+  }
+
+  async function openDocument(row: ShareRow) {
+    if (openingId) return
+    openingId = row.id
+    error = ''
+    try {
+      let mode: ShareOpenMode = 'popout'
+      try {
+        const settings = await api.settings.getAppSettings()
+        if (settings?.share_open_mode === 'desktop') mode = 'desktop'
+      } catch (e) {
+        console.warn('get_app_settings failed, using in-app viewer:', e)
+      }
+
+      if (mode === 'desktop' && row.item_type !== 'folder') {
+        await api.system.openNextcloudFileInDesktopApp({
+          ncId: row.nc_id,
+          path: row.path,
+        })
+        return
+      }
+      openExternalPopout('share', viewerUrl(row), {
+        title: basename(row.path),
+        width: 1200,
+        height: 800,
+      })
+    } catch (e) {
+      error = formatError(e) || m.shares_view_open_document_error()
+    } finally {
+      openingId = null
+    }
   }
 
   // ── Delete ──────────────────────────────────────────────────
@@ -496,7 +564,24 @@
 
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
-                  <span class="font-medium truncate">{basename(row.path)}</span>
+                  <!-- The name is the open affordance (#574): a
+                       text-shaped button so the row still reads
+                       as a list entry, with the primary tint on
+                       hover so it's discoverable as clickable. -->
+                  <button
+                    type="button"
+                    class="font-medium truncate min-w-0 text-left hover:text-primary-500 transition-colors duration-150 ease-out disabled:opacity-60"
+                    disabled={openingId === row.id}
+                    onclick={() => void openDocument(row)}
+                    title={openingId === row.id
+                      ? m.shares_view_opening()
+                      : isFolder
+                        ? m.shares_view_open_folder_title()
+                        : m.shares_view_open_document_title()}
+                  >{basename(row.path)}</button>
+                  {#if openingId === row.id}
+                    <span class="flex-shrink-0 text-surface-500"><Icon name="loading" size={12} /></span>
+                  {/if}
                   {#if row.label}
                     <span
                       class="badge text-xs flex-shrink-0 preset-tonal-surface"

@@ -303,6 +303,29 @@ pub struct AppSettings {
     /// skipped.  A manual "Check for updates" click ignores it.
     #[serde(default)]
     pub update_skipped_version: String,
+    /// What a click on a document in the Share Links view does
+    /// (#574).  `Popout` (default) opens the file in an in-app
+    /// window pointed at the Nextcloud viewer for its type
+    /// (Collabora for Office docs, the PDF viewer, Text for
+    /// markdown, …) — the same path attachments take.  `Desktop`
+    /// downloads the file to a temp folder and hands it to the OS
+    /// default app for that type instead.  Folders always open in
+    /// the popout: there's no desktop-app equivalent for them.
+    #[serde(default)]
+    pub share_open_mode: ShareOpenMode,
+}
+
+/// Where a document clicked in the Share Links view opens (#574).
+/// Lowercase on the wire (`"popout"` / `"desktop"`), matching the
+/// JSON-over-IPC convention `ThemeMode` and `MdnResponseMode` set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ShareOpenMode {
+    /// In-app window on the Nextcloud viewer (`index.php/f/<id>`).
+    #[default]
+    Popout,
+    /// Download to a temp folder + open with the OS default app.
+    Desktop,
 }
 
 fn default_logo_style() -> String {
@@ -456,6 +479,9 @@ impl Default for AppSettings {
             update_auto_download: false,
             update_channel: default_update_channel(),
             update_skipped_version: String::new(),
+            // In-app viewer by default (#574) — no local temp
+            // file, and the same surface attachments already use.
+            share_open_mode: ShareOpenMode::Popout,
         }
     }
 }
