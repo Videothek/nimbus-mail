@@ -478,17 +478,24 @@
         <p class="text-xs text-error-500 mb-3 wrap-break-word">{createError}</p>
       {/if}
 
+      <!-- Icon-only footer, same vocabulary as the per-row buttons:
+           `close` cancels, `plus` (filled primary) creates; the
+           icon swaps to `loading` mid-action so the width holds. -->
       <div class="flex justify-end gap-2">
         <button
-          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center gap-1.5"
+          class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
           disabled={creating}
           onclick={cancelCreate}
-        ><Icon name="close" size={14} />{m.forms_create_cancel()}</button>
+          title={m.forms_create_cancel()}
+          aria-label={m.forms_create_cancel()}
+        ><Icon name="close" size={14} /></button>
         <button
-          class="btn btn-sm preset-filled-primary-500 inline-flex items-center gap-1.5"
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
           disabled={creating}
           onclick={() => void commitCreate()}
-        ><Icon name={creating ? 'loading' : 'plus'} size={14} />{m.forms_create_submit()}</button>
+          title={m.forms_create_submit()}
+          aria-label={m.forms_create_submit()}
+        ><Icon name={creating ? 'loading' : 'plus'} size={14} /></button>
       </div>
     </div>
   </div>
