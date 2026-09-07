@@ -119,6 +119,27 @@ export type MailingListView = any
 export type McpServerStatus = any
 export type McpToolView = any
 export type NextcloudAccount = any
+/** One Nextcloud form as the Forms view / Compose see it — mirrors
+ *  the Rust `NextcloudFormRow` (#572). */
+export interface NextcloudFormRow {
+  nc_id: string
+  id: number
+  hash: string
+  title: string
+  description: string
+  /** `0` active, `1` closed, `2` archived. */
+  state: number
+  /** Unix seconds; `0` = never expires. */
+  expires: number
+  /** Unix seconds; `0` when unknown. */
+  created: number
+  last_updated: number
+  submission_count: number | null
+  /** Recipient-facing link; `null` until a link share exists. */
+  public_url: string | null
+  edit_url: string
+  results_url: string
+}
 export type NextcloudGroupView = any
 export type NextcloudMapsCapability = any
 export type NextcloudShareResult = any

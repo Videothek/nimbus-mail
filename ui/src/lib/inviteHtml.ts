@@ -216,6 +216,42 @@ ${nextcloudFooter("You'll also be added as a participant in Nextcloud Talk.")}
   return chrome(inner, 'talk-invite')
 }
 
+export interface FormInvite {
+  /** Form title as shown in Nextcloud Forms. */
+  title: string
+  /** Public link (`/apps/forms/s/<hash>`) the recipient opens. */
+  url: string
+}
+
+/** Render a Nextcloud Forms invitation card (#572).  Used by
+ *  Compose's "Form" button (after the form shell is minted) and
+ *  by FormsView's "Share in mail" action.  Same chrome as the
+ *  Talk card so a mail carrying both reads as one invitation. */
+export function formInviteHtml(invite: FormInvite, _opts: InviteRenderOptions = {}): string {
+  const inner = `
+<h1 style="${T.title}">Please fill out this form</h1>
+<p style="${T.subtitle}">Open the link below to answer in your browser — no account or install needed.</p>
+
+<hr style="${T.divider}" />
+
+${detailRow(
+  '📋',
+  'Form',
+  `<strong style="font-weight:600;">${esc(invite.title)}</strong>`,
+)}
+${detailRow(
+  '🔗',
+  'Link',
+  `<a href="${esc(invite.url)}" style="color:#3b82f6;text-decoration:none;word-break:break-all;">${esc(invite.url)}</a>`,
+)}
+
+<div style="${T.ctaRow}">
+  <a href="${esc(invite.url)}" style="${T.ctaButton}">Open form →</a>
+</div>
+`.trim()
+  return chrome(inner, 'form-invite')
+}
+
 export interface MeetingInvite {
   /** Event title / summary line. */
   summary: string

@@ -76,6 +76,11 @@ struct Capabilities {
     /// the user the server has Tasks installed alongside its
     /// calendars.
     tasks: Option<serde_json::Value>,
+    /// Nextcloud Forms app id (#572).  Forms publishes a capability
+    /// block (`version` + `apiVersions`), so presence is the primary
+    /// signal; the navigation list is the fallback for servers that
+    /// prune capability blocks.
+    forms: Option<serde_json::Value>,
 }
 
 /// Query `/ocs/v2.php/cloud/capabilities` and map it to our flat
@@ -159,6 +164,8 @@ pub async fn fetch_capabilities(
             .await
             .unwrap_or(false);
 
+    let forms_present = env.ocs.data.capabilities.forms.is_some() || nav_match("forms");
+
     let dav_present = env.ocs.data.capabilities.dav.is_some();
     let caps = NextcloudCapabilities {
         version: env.ocs.data.version.and_then(|v| v.string),
@@ -169,9 +176,10 @@ pub async fn fetch_capabilities(
         office: env.ocs.data.capabilities.richdocuments.is_some(),
         notes: notes_present,
         tasks: tasks_present,
+        forms: forms_present,
     };
     tracing::info!(
-        "Nextcloud capabilities: version={:?} talk={} files={} dav={} office={} notes={} tasks={}",
+        "Nextcloud capabilities: version={:?} talk={} files={} dav={} office={} notes={} tasks={} forms={}",
         caps.version,
         caps.talk,
         caps.files,
@@ -179,6 +187,7 @@ pub async fn fetch_capabilities(
         caps.office,
         caps.notes,
         caps.tasks,
+        caps.forms,
     );
     Ok(caps)
 }
@@ -267,7 +276,8 @@ mod tests {
             "files":  { "bigfilechunking": true },
             "dav":    { "chunking": "1.0" },
             "notes":  { "api_version": ["1.3"] },
-            "tasks":  {}
+            "tasks":  {},
+            "forms":  { "version": "5.0.0", "apiVersions": ["v3"] }
           }
         }
       }
@@ -281,6 +291,7 @@ mod tests {
         assert!(env.ocs.data.capabilities.dav.is_some());
         assert!(env.ocs.data.capabilities.notes.is_some());
         assert!(env.ocs.data.capabilities.tasks.is_some());
+        assert!(env.ocs.data.capabilities.forms.is_some());
     }
 
     #[test]
@@ -294,5 +305,6 @@ mod tests {
         assert!(env.ocs.data.capabilities.dav.is_none());
         assert!(env.ocs.data.capabilities.notes.is_none());
         assert!(env.ocs.data.capabilities.tasks.is_none());
+        assert!(env.ocs.data.capabilities.forms.is_none());
     }
 }

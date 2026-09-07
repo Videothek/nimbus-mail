@@ -66,6 +66,7 @@
     | 'calendar'
     | 'files'
     | 'shares'
+    | 'forms'
     | 'talk'
     | 'notes'
     | 'tasks'
@@ -108,6 +109,7 @@
       talk: boolean
       notes: boolean
       tasks: boolean
+      forms: boolean
     }
     /** Switch THIS window to the given profile in place (#535).
      *  App owns the sequence (backend remap + state reset). */
@@ -137,6 +139,7 @@
       talk: true,
       notes: true,
       tasks: true,
+      forms: true,
     },
   }: Props = $props()
 
@@ -330,6 +333,7 @@
     { match: 'calendar', label: 'Calendar', icon: 'calendar' },
     { match: 'files', label: 'Files', icon: 'files' },
     { match: 'shares', label: 'Share links', icon: 'share-links' },
+    { match: 'forms', label: 'Forms', icon: 'forms' },
     { match: 'talk', label: 'Talk', icon: 'meetings' },
     { match: 'tasks', label: 'Tasks', icon: 'tasks' },
     { match: 'notes', label: 'Notes', icon: 'notes' },
@@ -351,6 +355,7 @@
             case 'calendar': return ncCaps.calendar
             case 'files':    return ncCaps.files
             case 'shares':   return ncCaps.files
+            case 'forms':    return ncCaps.forms
             case 'talk':     return ncCaps.talk
             case 'notes':    return ncCaps.notes
             case 'tasks':    return ncCaps.tasks

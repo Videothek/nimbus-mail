@@ -69,7 +69,8 @@ use unkai_commands::contacts::{
 use unkai_commands::crypto::{PgpKeyStatus, PgpPublicKeyDto, SmimeCertDto, SmimeCertStatus};
 use unkai_commands::mail::{AttachmentPreviewView, InlineImageView, LinkVerdict};
 use unkai_commands::nextcloud::{
-    NextcloudGroupView, NextcloudShareResult, NextcloudShareRow, NextcloudUserLookup,
+    NextcloudFormRow, NextcloudGroupView, NextcloudShareResult, NextcloudShareRow,
+    NextcloudUserLookup,
 };
 use unkai_commands::settings::{
     DatabaseStatusView, FidoStatusView, McpToolView, SettingsSyncStateView, WipePolicyView,
@@ -1189,6 +1190,17 @@ async fn create_nextcloud_note(
     cmds::notes::create_nextcloud_note(nc_id, title, content, category, &h.ctx.cache).await
 }
 
+#[tauri::command]
+async fn create_nextcloud_form(
+    nc_id: String,
+    title: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<NextcloudFormRow, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::create_nextcloud_form(nc_id, title, &h.ctx.cache).await
+}
+
 #[allow(clippy::too_many_arguments)] // Tauri command: invoke parameters plus the profile-routing pair
 #[tauri::command]
 async fn create_nextcloud_share(
@@ -1421,6 +1433,17 @@ async fn delete_nextcloud_note(
 ) -> Result<(), UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
     cmds::notes::delete_nextcloud_note(nc_id, note_id, &h.ctx.cache).await
+}
+
+#[tauri::command]
+async fn delete_nextcloud_form(
+    nc_id: String,
+    form_id: i64,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<(), UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::delete_nextcloud_form(nc_id, form_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -2390,6 +2413,27 @@ fn list_nextcloud_notes(
 ) -> Result<Vec<unkai_core::models::Note>, UnkaiError> {
     let h = profile_ctx(&window, &reg)?;
     cmds::notes::list_nextcloud_notes(nc_id, &h.ctx.cache)
+}
+
+#[tauri::command]
+async fn ensure_nextcloud_form_link(
+    nc_id: String,
+    form_id: i64,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<String, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::ensure_nextcloud_form_link(nc_id, form_id, &h.ctx.cache).await
+}
+
+#[tauri::command]
+async fn list_nextcloud_forms(
+    nc_id: String,
+    window: tauri::Window,
+    reg: State<'_, ProfileRegistry>,
+) -> Result<Vec<NextcloudFormRow>, UnkaiError> {
+    let h = profile_ctx(&window, &reg)?;
+    cmds::nextcloud::list_nextcloud_forms(nc_id, &h.ctx.cache).await
 }
 
 #[tauri::command]
@@ -4469,6 +4513,10 @@ fn main() {
             update_nextcloud_share,
             list_nextcloud_shares,
             delete_nextcloud_share,
+            list_nextcloud_forms,
+            create_nextcloud_form,
+            ensure_nextcloud_form_link,
+            delete_nextcloud_form,
             create_nextcloud_directory,
             list_talk_rooms,
             create_talk_room,

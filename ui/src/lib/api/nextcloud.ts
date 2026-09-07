@@ -1,6 +1,7 @@
 /**
  * Nextcloud account plumbing plus Files and Shares: Login Flow v2,
- * DAV account setup, capabilities, file browsing/transfer, shares.
+ * DAV account setup, capabilities, file browsing/transfer, shares,
+ * and Nextcloud Forms (#572).
  *
  * Generated wrappers over the backend commands (#473) — one typed
  * function per `#[tauri::command]`. Argument keys mirror the Rust
@@ -12,6 +13,7 @@ import type {
   FileEntry,
   LoginFlowInit,
   NextcloudAccount,
+  NextcloudFormRow,
   NextcloudGroupView,
   NextcloudShareResult,
   NextcloudShareRow,
@@ -152,4 +154,32 @@ export function updateNextcloudShareLabel(args: {
   label: string
 }): Promise<void> {
   return call('update_nextcloud_share_label', args)
+}
+
+// ── Nextcloud Forms (#572) ─────────────────────────────────────
+
+export function listNextcloudForms(args: { ncId: string }): Promise<NextcloudFormRow[]> {
+  return call('list_nextcloud_forms', args)
+}
+
+/** Create a form shell (title + public link share).  Questions are
+ *  added afterwards in the Nextcloud editor at `edit_url`. */
+export function createNextcloudForm(args: {
+  ncId: string
+  title: string
+}): Promise<NextcloudFormRow> {
+  return call('create_nextcloud_form', args)
+}
+
+/** Resolve the form's public URL, minting a link share if the form
+ *  has none yet. */
+export function ensureNextcloudFormLink(args: {
+  ncId: string
+  formId: number
+}): Promise<string> {
+  return call('ensure_nextcloud_form_link', args)
+}
+
+export function deleteNextcloudForm(args: { ncId: string; formId: number }): Promise<void> {
+  return call('delete_nextcloud_form', args)
 }

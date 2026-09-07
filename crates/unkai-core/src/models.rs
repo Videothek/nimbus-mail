@@ -1273,6 +1273,11 @@ pub struct NextcloudCapabilities {
     /// Same purpose as `notes` — chip-only signal in settings.
     #[serde(default)]
     pub tasks: bool,
+    /// Nextcloud Forms (`forms` app id) is installed and enabled
+    /// (#572).  Gates the Forms rail view and Compose's "Form"
+    /// insert button.
+    #[serde(default)]
+    pub forms: bool,
 }
 
 /// Represents a contact from CardDAV / Nextcloud.

@@ -48,6 +48,7 @@
   import OutboxView from './lib/OutboxView.svelte'
   import FilesView from './lib/FilesView.svelte'
   import SharesView from './lib/SharesView.svelte'
+  import FormsView from './lib/FormsView.svelte'
   import TalkView from './lib/TalkView.svelte'
   import NotesView from './lib/NotesView.svelte'
   import TasksView from './lib/TasksView.svelte'
@@ -114,6 +115,7 @@
     | 'calendar'
     | 'files'
     | 'shares'
+    | 'forms'
     | 'talk'
     | 'notes'
     | 'tasks'
@@ -148,6 +150,7 @@
       carddav?: boolean
       notes?: boolean
       tasks?: boolean
+      forms?: boolean
     } | null
   }
   // Settings category persistence (#318) — lifted out of
@@ -170,6 +173,7 @@
     talk: false,
     notes: false,
     tasks: false,
+    forms: false,
   })
 
   async function refreshNextcloudCapabilities() {
@@ -191,6 +195,7 @@
         // future-proofs against partial setups) doesn't surface a
         // dead icon.
         tasks: any((a) => a.capabilities?.tasks === true && a.capabilities?.caldav === true),
+        forms: any((a) => a.capabilities?.forms === true),
       }
     } catch (e) {
       console.warn('refreshNextcloudCapabilities failed', e)
@@ -3933,6 +3938,10 @@
     {:else if currentView === 'shares'}
       <div class="flex-1 min-w-0">
         <SharesView />
+      </div>
+    {:else if currentView === 'forms'}
+      <div class="flex-1 min-w-0">
+        <FormsView oncompose={openCompose} />
       </div>
     {:else if currentView === 'talk'}
       <div class="flex-1 min-w-0">
