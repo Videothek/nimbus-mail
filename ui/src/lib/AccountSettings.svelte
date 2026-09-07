@@ -277,6 +277,12 @@
      *  sends automatically on display.  Non-optional because the
      *  Rust side serialises a default. */
     mdn_response_mode: 'never' | 'ask' | 'always'
+    /** #574 — where a document clicked in Share Links opens:
+     *  `'popout'` (default) is an in-app window on the Nextcloud
+     *  viewer, `'desktop'` downloads a copy and opens it with the
+     *  OS default app.  Non-optional because the Rust side
+     *  serialises a default. */
+    share_open_mode: 'popout' | 'desktop'
   }
   interface CustomThemeRow {
     id: string
@@ -313,6 +319,7 @@
     nominatim_base_url: '',
     notes_mail_open_in_view: false,
     mdn_response_mode: 'ask',
+    share_open_mode: 'popout',
   })
 
   /** The default Nominatim base URL — surfaced in the settings
@@ -1329,6 +1336,27 @@
             </span>
           </span>
         </div>
+
+        <!-- #574 — share-open mode.  Same select shape as the
+             read-receipts control in the Mail section: the
+             in-app viewer (default) mirrors the attachment flow,
+             the desktop option is for users whose Nextcloud has
+             no Office / viewer apps or who simply prefer their
+             local editor. -->
+        <label class="flex items-center gap-2">
+          <span class="shrink-0">{m.settings_shares_open_mode_label()}</span>
+          <select
+            class="select px-2 py-1 text-sm rounded-lg max-w-65"
+            bind:value={appSettings.share_open_mode}
+            onchange={() => scheduleSave()}
+          >
+            <option value="popout">{m.settings_shares_open_mode_popout()}</option>
+            <option value="desktop">{m.settings_shares_open_mode_desktop()}</option>
+          </select>
+        </label>
+        <p class="text-xs text-surface-400 -mt-1">
+          {m.settings_shares_open_mode_hint()}
+        </p>
 
         <!-- #280 — location autocomplete + inline map preview.
              Off by default because each typed query goes to

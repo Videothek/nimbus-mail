@@ -558,6 +558,12 @@ pub struct PublicShareInfo {
     /// File mimetype as reported by Nextcloud; helps the UI pick the
     /// right icon glyph.  May be empty for folders.
     pub mimetype: String,
+    /// Nextcloud file id of the shared node (`file_source` on the
+    /// wire), stringified.  Powers the owner-side deep link
+    /// `index.php/f/<id>` that opens the node in the Files app with
+    /// whatever viewer the server has registered for its type
+    /// (#574).  `None` when the server omitted the field.
+    pub file_id: Option<String>,
 }
 
 /// Wire shape of one item in the OCS `shares` list response.
@@ -597,6 +603,10 @@ struct ListShareItem {
     stime: i64,
     #[serde(default)]
     mimetype: Option<String>,
+    /// Integer on modern servers, occasionally a string — held as
+    /// raw JSON and stringified below, same as `id`.
+    #[serde(default)]
+    file_source: Option<serde_json::Value>,
 }
 
 /// List every public share link the authenticated user currently owns
@@ -714,6 +724,11 @@ fn parse_list_response(body: &str) -> Result<Vec<PublicShareInfo>, UnkaiError> {
             expiration,
             stime: it.stime,
             mimetype: it.mimetype.unwrap_or_default(),
+            file_id: it.file_source.and_then(|v| match v {
+                serde_json::Value::String(s) if !s.is_empty() => Some(s),
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            }),
         });
     }
     Ok(out)
@@ -948,6 +963,8 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, "11");
         assert_eq!(out[0].path, "/Documents/keep.pdf");
+        // No `file_source` in the fixture → no deep link, no error.
+        assert!(out[0].file_id.is_none());
     }
 
     /// `list_public_shares` parser: filters to share_type=3 and
@@ -971,7 +988,8 @@ mod tests {
                 "password": "$2y$10$hash",
                 "expiration": "2026-06-01 00:00:00",
                 "stime": 1716700000,
-                "mimetype": "application/pdf"
+                "mimetype": "application/pdf",
+                "file_source": 4242
               },
               {
                 "id": 2,
@@ -998,7 +1016,8 @@ mod tests {
                 "password": null,
                 "expiration": null,
                 "stime": 1716700200,
-                "mimetype": "httpd/unix-directory"
+                "mimetype": "httpd/unix-directory",
+                "file_source": "77"
               }
             ]
           }
@@ -1010,9 +1029,11 @@ mod tests {
         assert!(out[0].has_password);
         assert_eq!(out[0].expiration.as_deref(), Some("2026-06-01"));
         assert_eq!(out[0].label.as_deref(), Some("for Alex"));
+        assert_eq!(out[0].file_id.as_deref(), Some("4242"));
         assert_eq!(out[1].id, "3");
         assert_eq!(out[1].item_type, "folder");
         assert!(!out[1].has_password);
+        assert_eq!(out[1].file_id.as_deref(), Some("77"));
         assert!(out[1].expiration.is_none());
     }
 }

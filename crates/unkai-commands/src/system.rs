@@ -369,15 +369,93 @@ pub async fn office_sweep_temp(nc_id: String, cache: &Cache) -> Result<u32, Unka
 /// The temp file is kept for 10 minutes so the user has time
 /// to actually print before we clean up.
 pub async fn print_attachment(file_name: String, bytes: Vec<u8>) -> Result<(), UnkaiError> {
+    let dir = drop_and_open_in_default_app("unkai-print", &file_name, &bytes)?;
+
+    let cleanup_dir = dir;
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+        if let Err(e) = tokio::fs::remove_dir_all(&cleanup_dir).await {
+            tracing::debug!(
+                "print_attachment cleanup: failed to remove {}: {e}",
+                cleanup_dir.display()
+            );
+        }
+    });
+
+    Ok(())
+}
+
+/// Temp-dir prefix for files opened from the Share Links view in
+/// the user's desktop app (#574).  Distinct from `unkai-print-` so
+/// the two sweep policies never touch each other's files.
+const SHARE_OPEN_TEMP_PREFIX: &str = "unkai-open";
+
+/// How long a downloaded share file stays on disk before the next
+/// open sweeps it.  Generous on purpose: unlike the print flow the
+/// user may be *editing* the document in Word / LibreOffice, and
+/// pulling the file out from under an open editor breaks its save.
+const SHARE_OPEN_TEMP_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Download a file the user shared from Nextcloud and open it in
+/// the OS default app for its type (#574, "desktop" share-open
+/// mode).  `path` is the node's path in the user's Nextcloud root,
+/// exactly as the share row reports it.
+///
+/// The fetch happens here rather than in the frontend so the
+/// (potentially multi-MB) payload never rides through IPC
+/// serialisation, and so no raw filesystem path crosses the
+/// boundary — the temp location is chosen and owned by this side.
+///
+/// No timed deletion (see `SHARE_OPEN_TEMP_TTL`): each call instead
+/// sweeps leftover `unkai-open-*` dirs older than the TTL, so the
+/// temp folder can't grow without bound but a document that's
+/// still open in an editor is never yanked mid-session.
+pub async fn open_nextcloud_file_in_desktop_app(
+    nc_id: String,
+    path: String,
+    cache: &Cache,
+) -> Result<(), UnkaiError> {
+    let account = load_nextcloud_account(cache, &nc_id)?;
+    let app_password = credentials::get_nextcloud_password(&nc_id)?;
+    let bytes = unkai_nextcloud::download_file(
+        &account.server_url,
+        &account.username,
+        &app_password,
+        &path,
+        &account.trusted_certs,
+    )
+    .await?;
+
+    let file_name = path
+        .rsplit('/')
+        .find(|seg| !seg.is_empty())
+        .unwrap_or("document")
+        .to_string();
+
+    sweep_stale_temp_dirs(SHARE_OPEN_TEMP_PREFIX, SHARE_OPEN_TEMP_TTL);
+    drop_and_open_in_default_app(SHARE_OPEN_TEMP_PREFIX, &file_name, &bytes)?;
+    Ok(())
+}
+
+/// Write `bytes` under a fresh `<temp>/<prefix>-<uuid>/<file_name>`
+/// and hand the file to the OS default app.  Returns the per-call
+/// directory so the caller can decide its cleanup policy — the
+/// print flow deletes it on a timer, the share-open flow sweeps by
+/// age.  On launch failure the directory is removed again.
+fn drop_and_open_in_default_app(
+    prefix: &str,
+    file_name: &str,
+    bytes: &[u8],
+) -> Result<std::path::PathBuf, UnkaiError> {
     // Per-call subdir name is a UUID v4 — not a predictable
     // path, which is exactly what the lint is meant to catch.
     // nosemgrep: rust.lang.security.temp-dir.temp-dir
     let mut dir = std::env::temp_dir();
-    dir.push(format!("unkai-print-{}", uuid::Uuid::new_v4()));
+    dir.push(format!("{prefix}-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir)
-        .map_err(|e| UnkaiError::Other(format!("create print temp dir: {e}")))?;
+        .map_err(|e| UnkaiError::Other(format!("create temp dir: {e}")))?;
 
-    // Strip path separators / NUL from the filename so the spooler
+    // Strip path separators / NUL from the filename so the shell
     // sees a flat name in our temp dir, not a path traversal.
     let safe_name: String = file_name
         .chars()
@@ -393,8 +471,7 @@ pub async fn print_attachment(file_name: String, bytes: Vec<u8>) -> Result<(), U
     };
     let mut path = dir.clone();
     path.push(&safe_name);
-    std::fs::write(&path, &bytes)
-        .map_err(|e| UnkaiError::Other(format!("write print temp file: {e}")))?;
+    std::fs::write(&path, bytes).map_err(|e| UnkaiError::Other(format!("write temp file: {e}")))?;
 
     // `open::that_detached` is the cross-platform "default verb"
     // launcher: ShellExecute open on Windows, `open` on macOS,
@@ -403,23 +480,44 @@ pub async fn print_attachment(file_name: String, bytes: Vec<u8>) -> Result<(), U
     if let Err(e) = open::that_detached(&path) {
         let _ = std::fs::remove_dir_all(&dir);
         return Err(UnkaiError::Other(format!(
-            "failed to open '{}' for printing: {e}",
+            "failed to open '{}': {e}",
             path.display()
         )));
     }
+    Ok(dir)
+}
 
-    let cleanup_dir = dir;
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
-        if let Err(e) = tokio::fs::remove_dir_all(&cleanup_dir).await {
+/// Remove `<temp>/<prefix>-*` directories whose modification time
+/// is older than `ttl`.  Best-effort and synchronous: the temp
+/// root holds at most a handful of our dirs, and a failed removal
+/// (file still locked by an editor on Windows) is simply retried
+/// on the next call.
+fn sweep_stale_temp_dirs(prefix: &str, ttl: std::time::Duration) {
+    // nosemgrep: rust.lang.security.temp-dir.temp-dir
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    let marker = format!("{prefix}-");
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(&marker) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .map(|age| age > ttl)
+            .unwrap_or(false);
+        if stale && let Err(e) = std::fs::remove_dir_all(entry.path()) {
             tracing::debug!(
-                "print_attachment cleanup: failed to remove {}: {e}",
-                cleanup_dir.display()
+                "temp sweep: failed to remove {}: {e}",
+                entry.path().display()
             );
         }
-    });
-
-    Ok(())
+    }
 }
 
 /// Walk the OS font catalogue and return the sorted, de-duped
