@@ -3008,7 +3008,7 @@
              convention: `close` for cancel on the left, `save-draft`
              for commit (swapping to `loading` mid-save) on the right
              — the primary action sits last, like a modal footer. -->
-        <div class="flex items-center gap-2 pt-2">
+        <div class="flex items-center justify-end gap-2 pt-2">
           <button
             class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
             disabled={saving}
