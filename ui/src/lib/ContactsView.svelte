@@ -3005,16 +3005,10 @@
              screen) so the editing path stays focused on
              "commit or discard the in-flight changes".  Icon-only
              confirm / cancel pair per the CLAUDE.md inline-form
-             convention: `save-draft` for commit (swapping to
-             `loading` mid-save), `close` for cancel. -->
+             convention: `close` for cancel on the left, `save-draft`
+             for commit (swapping to `loading` mid-save) on the right
+             — the primary action sits last, like a modal footer. -->
         <div class="flex items-center gap-2 pt-2">
-          <button
-            class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
-            disabled={saving}
-            onclick={saveContact}
-            title={saving ? m.contact_form_button_saving() : m.contact_form_button_save()}
-            aria-label={saving ? m.contact_form_button_saving() : m.contact_form_button_save()}
-          ><Icon name={saving ? 'loading' : 'save-draft'} size={14} /></button>
           <button
             class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
             disabled={saving}
@@ -3022,6 +3016,13 @@
             title={m.contact_form_button_cancel()}
             aria-label={m.contact_form_button_cancel()}
           ><Icon name="close" size={14} /></button>
+          <button
+            class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
+            disabled={saving}
+            onclick={saveContact}
+            title={saving ? m.contact_form_button_saving() : m.contact_form_button_save()}
+            aria-label={saving ? m.contact_form_button_saving() : m.contact_form_button_save()}
+          ><Icon name={saving ? 'loading' : 'save-draft'} size={14} /></button>
         </div>
       </div>
     {/if}
@@ -3160,17 +3161,10 @@
       {/if}
 
       <!-- Icon-only confirm / cancel — same pair AND order as the
-           inline-form convention: commit (`save-draft`, with the
-           `loading` swap) on the left, cancel (`close`) on the
-           right, tooltips + aria carrying the labels. -->
+           contact form above: cancel (`close`) on the left, commit
+           (`save-draft`, with the `loading` swap) on the right,
+           tooltips + aria carrying the labels. -->
       <div class="flex justify-end gap-2">
-        <button
-          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
-          disabled={newListBusy || !newListForm.name.trim()}
-          onclick={() => void commitNewMailingList()}
-          title={newListBusy ? m.contacts_view_list_creating() : m.contacts_view_list_create()}
-          aria-label={newListBusy ? m.contacts_view_list_creating() : m.contacts_view_list_create()}
-        ><Icon name={newListBusy ? 'loading' : 'save-draft'} size={14} /></button>
         <button
           class="btn btn-sm preset-outlined-surface-500 inline-flex items-center justify-center"
           disabled={newListBusy}
@@ -3178,6 +3172,13 @@
           title={m.contacts_view_list_cancel()}
           aria-label={m.contacts_view_list_cancel()}
         ><Icon name="close" size={14} /></button>
+        <button
+          class="btn btn-sm preset-filled-primary-500 inline-flex items-center justify-center"
+          disabled={newListBusy || !newListForm.name.trim()}
+          onclick={() => void commitNewMailingList()}
+          title={newListBusy ? m.contacts_view_list_creating() : m.contacts_view_list_create()}
+          aria-label={newListBusy ? m.contacts_view_list_creating() : m.contacts_view_list_create()}
+        ><Icon name={newListBusy ? 'loading' : 'save-draft'} size={14} /></button>
       </div>
     </div>
   </div>
