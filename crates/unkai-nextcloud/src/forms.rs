@@ -68,21 +68,33 @@ pub const FORM_STATE_ACTIVE: u8 = 0;
 pub const FORM_STATE_CLOSED: u8 = 1;
 pub const FORM_STATE_ARCHIVED: u8 = 2;
 
+/// A fresh `POST /forms` answers with explicit `null` for fields the
+/// user hasn't touched yet (`state`, `expires`, `lastUpdated`, …).
+/// `#[serde(default)]` only covers *missing* keys, so every scalar
+/// the Forms app may null out goes through this instead.
+fn null_to_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
 /// Condensed row from `GET /forms` (the Forms app calls this the
 /// "partial" form — no questions, no shares).
 #[derive(Debug, Clone, Deserialize)]
 pub struct FormSummary {
     pub id: i64,
     pub hash: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub title: String,
     /// Unix timestamp; `0` = never expires.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub expires: i64,
     /// Unix timestamp of the last edit (questions included).
-    #[serde(default, rename = "lastUpdated")]
+    #[serde(default, rename = "lastUpdated", deserialize_with = "null_to_default")]
     pub last_updated: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub state: u8,
     /// Only present when the caller may see results — for owned
     /// forms that's always.
@@ -97,9 +109,9 @@ pub struct FormShare {
     pub id: i64,
     #[serde(rename = "shareType")]
     pub share_type: u8,
-    #[serde(default, rename = "shareWith")]
+    #[serde(default, rename = "shareWith", deserialize_with = "null_to_default")]
     pub share_with: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub permissions: Vec<String>,
 }
 
@@ -109,22 +121,22 @@ pub struct FormShare {
 pub struct FormDetails {
     pub id: i64,
     pub hash: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub description: String,
     /// Unix timestamp of creation.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub created: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub expires: i64,
-    #[serde(default, rename = "lastUpdated")]
+    #[serde(default, rename = "lastUpdated", deserialize_with = "null_to_default")]
     pub last_updated: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub state: u8,
     #[serde(default, rename = "submissionCount")]
     pub submission_count: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub shares: Vec<FormShare>,
 }
 
@@ -455,6 +467,22 @@ mod tests {
         let text = format!("{err}");
         assert!(text.contains("403"), "{text}");
         assert!(text.contains("Forbidden"), "{text}");
+    }
+
+    #[test]
+    fn fresh_form_with_null_fields_parses() {
+        // Shape of a `POST /forms` answer before the user touched
+        // anything — nulls, not absent keys.
+        let body = r#"{"ocs":{"meta":{"status":"ok","statuscode":200},
+          "data":{"id":9,"hash":"newhash","title":"","description":null,
+                  "created":1700000000,"expires":null,"lastUpdated":null,
+                  "state":null,"submissionCount":null,"shares":null}}}"#;
+        let data = parse_ocs_data(body, "t").unwrap();
+        let form: FormDetails = serde_json::from_value(data).unwrap();
+        assert_eq!(form.id, 9);
+        assert_eq!(form.state, FORM_STATE_ACTIVE);
+        assert_eq!(form.expires, 0);
+        assert!(form.shares.is_empty());
     }
 
     #[test]
