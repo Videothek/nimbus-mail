@@ -290,11 +290,11 @@ fn parse_sync_response(
 fn end_local(end: &quick_xml::events::BytesEnd<'_>) -> String {
     let name_owned = end.name();
     let bytes = name_owned.as_ref();
-    let local = match bytes.iter().position(|&b| b == b':') {
-        Some(i) => &bytes[i + 1..],
+    let local = match bytes.split_once(':') {
+        Some((_, local)) => local,
         None => bytes,
     };
-    String::from_utf8_lossy(local).to_ascii_lowercase()
+    local.to_ascii_lowercase()
 }
 
 /// Phase 2: fetch the actual vCards for the hrefs we know changed.

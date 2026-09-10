@@ -863,12 +863,12 @@ fn local_name_end(end: &quick_xml::events::BytesEnd<'_>) -> String {
     strip_prefix_lowercase(end.name().as_ref())
 }
 
-fn strip_prefix_lowercase(bytes: &[u8]) -> String {
-    let local = match bytes.iter().position(|&b| b == b':') {
-        Some(i) => &bytes[i + 1..],
+fn strip_prefix_lowercase(bytes: &str) -> String {
+    let local = match bytes.split_once(':') {
+        Some((_, local)) => local,
         None => bytes,
     };
-    String::from_utf8_lossy(local).to_ascii_lowercase()
+    local.to_ascii_lowercase()
 }
 
 /// Every value read here is a scalar (href, displayname, size, type,
@@ -885,13 +885,13 @@ fn read_text_until(
     let mut buf = String::new();
     loop {
         match reader.read_event()? {
-            Event::Text(t) => buf.push_str(&t.xml10_content().unwrap_or_default()),
-            Event::CData(c) => buf.push_str(&String::from_utf8_lossy(&c)),
+            Event::Text(t) => buf.push_str(&t.xml10_content()),
+            Event::CData(c) => buf.push_str(&c),
             Event::GeneralRef(r) => {
                 if let Some(ch) = r.resolve_char_ref()? {
                     buf.push(ch);
                 } else {
-                    match r.decode()?.as_ref() {
+                    match &*r {
                         "lt" => buf.push('<'),
                         "gt" => buf.push('>'),
                         "amp" => buf.push('&'),

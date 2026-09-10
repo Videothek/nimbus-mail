@@ -186,8 +186,8 @@ fn parse_task_list_response(
                             Event::Empty(e) | Event::Start(e) if local_name(&e) == "comp" => {
                                 for attr in e.attributes().flatten() {
                                     let key = attr.key.as_ref();
-                                    if key == b"name" || key.ends_with(b":name") {
-                                        let v = String::from_utf8_lossy(&attr.value);
+                                    if key == "name" || key.ends_with(":name") {
+                                        let v = &attr.value;
                                         if v.eq_ignore_ascii_case("VTODO") {
                                             supports_vtodo = true;
                                         }
