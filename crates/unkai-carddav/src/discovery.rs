@@ -419,11 +419,11 @@ fn parse_response(
 fn local_name_end(end: &quick_xml::events::BytesEnd<'_>) -> String {
     let bytes_owned = end.name();
     let bytes = bytes_owned.as_ref();
-    let local = match bytes.iter().position(|&b| b == b':') {
-        Some(i) => &bytes[i + 1..],
+    let local = match bytes.split_once(':') {
+        Some((_, local)) => local,
         None => bytes,
     };
-    String::from_utf8_lossy(local).to_ascii_lowercase()
+    local.to_ascii_lowercase()
 }
 
 #[cfg(test)]

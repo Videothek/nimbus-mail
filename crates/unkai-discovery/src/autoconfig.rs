@@ -105,15 +105,13 @@ fn parse(xml: &str, source: DiscoverySource) -> Result<DiscoveredAccount, Discov
         match reader.read_event_into(&mut buf) {
             Ok(Event::Eof) => break,
             Ok(Event::Start(e)) => {
-                let tag = std::str::from_utf8(e.name().as_ref())
-                    .map_err(|err| DiscoveryError::Parse(format!("bad utf8 tag: {err}")))?
-                    .to_string();
+                let tag = e.name().as_ref().to_string();
                 match tag.as_str() {
                     "incomingServer" | "outgoingServer" => {
                         let mut typ: Option<String> = None;
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"type" {
-                                typ = std::str::from_utf8(&attr.value).ok().map(|s| s.to_string());
+                            if attr.key.as_ref() == "type" {
+                                typ = Some(attr.value.to_string());
                             }
                         }
                         current = match (tag.as_str(), typ.as_deref()) {
@@ -139,10 +137,7 @@ fn parse(xml: &str, source: DiscoverySource) -> Result<DiscoveredAccount, Discov
                 if let Some(target) = text_target.take()
                     && let Some(curr) = current.as_mut()
                 {
-                    let text = t
-                        .xml10_content()
-                        .map_err(|e| DiscoveryError::Parse(format!("unescape text: {e}")))?
-                        .to_string();
+                    let text = t.xml10_content().to_string();
                     match target {
                         Field::Hostname => curr.entry.hostname = Some(text),
                         Field::Port => curr.entry.port = text.parse().ok(),
@@ -152,9 +147,7 @@ fn parse(xml: &str, source: DiscoverySource) -> Result<DiscoveredAccount, Discov
             }
             Ok(Event::End(e)) => {
                 let name = e.name();
-                let tag = std::str::from_utf8(name.as_ref())
-                    .map_err(|err| DiscoveryError::Parse(format!("bad utf8 end tag: {err}")))?;
-                match tag {
+                match name.as_ref() {
                     "incomingServer" | "outgoingServer" => {
                         if let Some(curr) = current.take()
                             && curr.entry.is_complete()
